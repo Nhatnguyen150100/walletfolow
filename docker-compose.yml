@@ -1,0 +1,159 @@
+# =====================================================================
+# WalletFlow — Milestone 0: hạ tầng + discovery/config/gateway + auth
+#   docker compose up -d --build
+#
+# Thứ tự khởi động (qua depends_on + healthcheck):
+#   hạ tầng (postgres/kafka/redis/jaeger) -> discovery -> config -> auth -> gateway
+# Các service nghiệp vụ (wallet/ledger/transaction/bank-adapter/notification)
+# sẽ được thêm vào ở milestone sau.
+# =====================================================================
+services:
+
+  # ---------------- HẠ TẦNG DÙNG CHUNG ----------------
+  postgres:
+    image: postgres:16
+    container_name: wf-postgres
+    environment:
+      POSTGRES_USER: walletflow
+      POSTGRES_PASSWORD: walletflow
+      POSTGRES_DB: walletflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U walletflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: wf-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: wf-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft mode (không cần Zookeeper)
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: wf-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP HTTP (service gửi trace vào đây)
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: wf-prometheus
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: wf-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - ./deploy/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  # ---------------- NỀN TẢNG SPRING CLOUD ----------------
+  discovery-server:
+    build:
+      context: .
+      dockerfile: infrastructure/discovery-server/Dockerfile
+    container_name: wf-discovery
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8761/actuator/health | grep UP || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  config-server:
+    build:
+      context: .
+      dockerfile: infrastructure/config-server/Dockerfile
+    container_name: wf-config
+    environment:
+      EUREKA_URL: http://discovery-server:8761/eureka/
+    ports:
+      - "8888:8888"
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+
+  # ---------------- SERVICE NGHIỆP VỤ (M0: chỉ auth) ----------------
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    container_name: wf-auth
+    environment: &common-env
+      EUREKA_URL: http://discovery-server:8761/eureka/
+      CONFIG_SERVER_URL: http://config-server:8888
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: walletflow
+      DB_PASS: walletflow
+      KAFKA_BROKERS: kafka:9092
+      REDIS_HOST: redis
+      OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+      JWT_SECRET: V2FsbGV0Rmxvd1N1cGVyU2VjcmV0S2V5Rm9ySldUSFMyNTZBbGdvcml0aG0xMjM0NTY3ODkw
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: infrastructure/api-gateway/Dockerfile
+    container_name: wf-gateway
+    environment: *common-env
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+
+volumes:
+  pgdata:

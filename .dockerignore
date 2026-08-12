@@ -1,0 +1,7 @@
+# Giảm build context cho Docker (mỗi Dockerfile build lại từ source qua Maven)
+**/target/
+.git/
+.idea/
+*.iml
+docs/
+README.md

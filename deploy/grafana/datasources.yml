@@ -1,0 +1,13 @@
+apiVersion: 1
+
+# Tự động khai báo nguồn dữ liệu cho Grafana khi khởi động.
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686

@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 10s
+
+# Prometheus thu thập metrics từ endpoint /actuator/prometheus của mỗi service.
+scrape_configs:
+  - job_name: 'api-gateway'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['api-gateway:8080']
+  - job_name: 'auth-service'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['auth-service:8081']
+  # Các service sau sẽ được thêm target khi ra đời (milestone sau):
+  # wallet-service:8082, ledger-service:8083, transaction-service:8084,
+  # bank-adapter:8085, notification-service:8086
