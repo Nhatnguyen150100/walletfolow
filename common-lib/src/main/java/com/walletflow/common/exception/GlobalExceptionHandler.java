@@ -35,6 +35,16 @@ public class GlobalExceptionHandler {
     return ResponseBuilder.error(HttpStatus.BAD_REQUEST, "BAD_REQUEST", ex.getMessage());
   }
 
+  /**
+   * Tràn số khi tính tiền ({@code Math.addExact}/{@code subtractExact}/{@code negateExact} ném
+   * {@link ArithmeticException}). Đây là LỖI DỮ LIỆU VÀO chứ không phải lỗi hệ thống, nên trả 400
+   * với mã ổn định thay vì 500 — tràn số phải lộ ra rõ ràng (plan §6 quy tắc 4, §14).
+   */
+  @ExceptionHandler(ArithmeticException.class)
+  public ResponseEntity<BaseResponse<Void>> handleArithmetic(ArithmeticException ex) {
+    return ResponseBuilder.error(HttpStatus.BAD_REQUEST, "AMOUNT_OVERFLOW", ex.getMessage());
+  }
+
   @ExceptionHandler(Exception.class)
   public ResponseEntity<BaseResponse<Void>> handleGeneric(Exception ex) {
     return ResponseBuilder.error(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR",

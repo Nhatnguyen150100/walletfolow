@@ -13,7 +13,7 @@
 
   <artifactId>auth-service</artifactId>
   <name>auth-service</name>
-  <description>Auth Service - Đăng ký, đăng nhập, cấp JWT</description>
+  <description>Auth Service - Registration, Login, Provide JWT</description>
 
   <dependencies>
     <dependency>
