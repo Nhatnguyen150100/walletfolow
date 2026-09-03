@@ -12,6 +12,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * Bản ghi OUTBOX — trái tim của Transactional Outbox pattern (giải bài toán P1: dual-write).
@@ -42,11 +43,21 @@ public class OutboxEvent extends BaseEntity {
   @Column(name = "msg_key")
   private String msgKey;
 
-  /** Tên class đầy đủ của payload, để relay deserialize lại đúng kiểu khi publish. */
+  /**
+   * eventId của envelope, lặp lại ra một cột riêng (dù đã có trong JSON) để tra cứu/đối soát:
+   * "event X đã được phát chưa?" là câu hỏi thường trực khi debug hệ phân tán.
+   */
+  @Column(name = "event_id", nullable = false)
+  private UUID eventId;
+
+  /** Tên loại event (vd {@code LedgerPosted}) — dùng cho lọc log/metric. */
   @Column(nullable = false)
   private String eventType;
 
-  /** Payload đã serialize sang JSON. */
+  /**
+   * ĐÚNG chuỗi JSON sẽ được gửi lên Kafka: một {@link com.walletflow.common.event.EventEnvelope}
+   * đã serialize. Relay chỉ việc gửi nguyên văn, không cần biết kiểu dữ liệu nghiệp vụ.
+   */
   @Column(nullable = false, columnDefinition = "text")
   private String payload;
 

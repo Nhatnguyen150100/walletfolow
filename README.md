@@ -19,7 +19,7 @@ Hệ thống ví điện tử phân tán xây bằng **Java 21 · Spring Boot 3.
 | api-gateway | 8080 | Cổng vào: routing, verify JWT, rate limit | ✅ M0 |
 | auth-service | 8081 | Đăng ký, đăng nhập, cấp JWT | ✅ M0 |
 | common-lib | — | Money, response, exception, event envelope, outbox, dedup | ✅ M0 |
-| ledger-service | 8083 | Sổ cái double-entry (source of truth) | ⏳ M1 |
+| ledger-service | 8083 | Sổ cái double-entry (source of truth) | ✅ M1 |
 | wallet-service | 8082 | Read model số dư (CQRS) | ⏳ M2 |
 | transaction-service | 8084 | Orchestrator Saga + idempotency | ⏳ M3 |
 | bank-adapter | 8085 | Mock cổng ngân hàng ngoài | ⏳ M4 |
@@ -78,5 +78,23 @@ docker run --rm -v "$PWD":/w -w /w maven:3.9-eclipse-temurin-21 \
 
 ## 🗺️ Trạng thái
 
-Đang ở **Milestone 0** (nền móng). Xem lộ trình đầy đủ 7 milestone trong master plan.
-Bước tiếp theo: **Milestone 1 — ledger-service** (sổ cái double-entry + test bất biến `SUM = 0`).
+Đã xong **Milestone 1**: sổ cái double-entry là nguồn sự thật về tiền, nhận `PostJournalCommand`
+qua Kafka và phát `LedgerPostedEvent`/`LedgerRejectedEvent` qua Transactional Outbox.
+
+Được chứng minh bằng test (Testcontainers: Postgres + Kafka thật):
+
+| Tính chất | Test |
+|---|---|
+| Bảo toàn tiền: `SUM(mọi posting) = 0` | `LedgerServiceIT` |
+| Bút toán lệch / tràn số / thiếu vế đều bị từ chối trọn vẹn | `LedgerServiceIT` |
+| Idempotent: lệnh trùng **trả về** bút toán cũ, không nhân đôi tiền | `LedgerServiceIT` |
+| 100 luồng rút cùng một ví: đúng 10 lần thành công, không bao giờ âm | `LedgerServiceIT` |
+| Sổ cái append-only: DB từ chối UPDATE/DELETE kể cả bằng SQL trực tiếp | `LedgerServiceIT` |
+| Outbox thật sự publish được lên Kafka, quét lại không gửi lặp | `OutboxRelayIT` |
+| Cả chuỗi: lệnh vào Kafka → ghi sổ → event đi ra; dedup message trùng | `LedgerCommandFlowIT` |
+
+```bash
+mvn -pl common-lib,services/ledger-service -am verify   # cần Docker cho Testcontainers
+```
+
+Bước tiếp theo: **Milestone 2 — wallet-service** (read model số dư, consume `LedgerPostedEvent`).

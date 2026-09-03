@@ -25,14 +25,27 @@ import java.util.UUID;
 @EntityListeners(AuditingEntityListener.class)
 public abstract class BaseEntity {
 
-  @Id
-  @GeneratedValue(strategy = GenerationType.UUID)
-  private UUID id;
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
 
-  @CreatedDate
-  @Column(updatable = false)
-  private Instant createdAt;
+    @CreatedDate
+    @Column(updatable = false)
+    private Instant createdAt;
 
-  @LastModifiedDate
-  private Instant updatedAt;
+    @LastModifiedDate
+    private Instant updatedAt;
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof BaseEntity other)) return false;
+        return id != null && id.equals(other.getId());
+    }
+
+    @Override
+    public int hashCode() {
+        return getClass().hashCode();
+    }
+
 }

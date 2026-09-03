@@ -1,0 +1,47 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: ledger-service
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/ledgerdb
+    username: ${DB_USER:walletflow}
+    password: ${DB_PASS:walletflow}
+  jpa:
+    hibernate:
+      ddl-auto: validate      # Flyway quản schema; Hibernate chỉ validate
+    open-in-view: false
+    properties:
+      hibernate.format_sql: true
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+  kafka:
+    # Chạy độc lập không cần config-server: mặc định của Spring Boot cho serializer/deserializer đã
+    # là String — đúng với thiết kế "message là chuỗi JSON của EventEnvelope" (xem EnvelopeReader).
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    consumer:
+      group-id: ledger-service   # mỗi service 1 group để nhận đủ event
+      auto-offset-reset: earliest
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}

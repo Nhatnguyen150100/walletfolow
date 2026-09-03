@@ -25,14 +25,28 @@ management:
     key-values:
       application: ${spring.application.name}
 
-# Cấu hình Kafka dùng chung
+# Cấu hình Kafka dùng chung.
+#
+# Toàn hệ thống truyền message dưới dạng CHUỖI JSON của EventEnvelope, nên serializer hai đầu đều là
+# String. Consumer tự parse envelope bằng ObjectMapper (xem EnvelopeReader ở common-lib) thay vì
+# dùng JsonDeserializer, vì:
+#   - JsonDeserializer suy kiểu qua header __TypeId__ hoặc `spring.json.value.default.type`, tức là
+#     kiểu Java của producer bị rò ra thành phần của hợp đồng message giữa các service;
+#   - EventEnvelope<T> là generic, ánh xạ nó qua cấu hình rất dễ sai và chỉ nổ lúc runtime;
+#   - parse tường minh cho phép đọc envelope trước, quyết định rồi mới parse payload.
 spring:
   kafka:
     bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
     consumer:
       auto-offset-reset: earliest
-      properties:
-        spring.json.trusted.packages: "com.walletflow.common.event,com.walletflow.common.outbox"
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Tự commit offset là sai với luồng tiền: offset chỉ được commit SAU KHI transaction nghiệp vụ
+      # (gồm cả bản ghi dedup) đã commit, nếu không thì crash giữa hai bước làm mất message.
+      enable-auto-commit: false
     producer:
-      properties:
-        spring.json.add.type.headers: true
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+    listener:
+      ack-mode: record
