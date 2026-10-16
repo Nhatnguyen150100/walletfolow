@@ -1,7 +1,10 @@
 package com.walletflow.ledger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.walletflow.common.event.AccountOpenedEvent;
+import com.walletflow.common.event.EAccountStatus;
 import com.walletflow.common.event.EnvelopeReader;
+import com.walletflow.common.event.OpenAccountCommand;
 import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.tenant.TenantContext;
@@ -206,6 +209,54 @@ class LedgerCommandFlowIT {
     }
 
     // ------------------------------------------------------------------
+    // Test 4 — ⭐ Mở tài khoản: gửi lại LUÔN nhận được câu trả lời (roadmap 1.0b)
+    // ------------------------------------------------------------------
+    @Test
+    @DisplayName("OpenAccount gửi hai lần cùng eventId: AccountOpened đi ra CẢ HAI lần, cùng eventId")
+    void mo_tai_khoan_gui_lai_van_nhan_duoc_cau_tra_loi() {
+        String wallet = UUID.randomUUID().toString();
+        UUID eventId = UUID.randomUUID();
+        OpenAccountCommand command = new OpenAccountCommand(wallet, ECurrency.VND);
+
+        sendTo(WalletTopics.CMD_OPEN_ACCOUNT, wallet, eventId, "OpenAccount", command);
+        sendTo(WalletTopics.CMD_OPEN_ACCOUNT, wallet, eventId, "OpenAccount", command);
+
+        List<EventEnvelope<AccountOpenedEvent>> opened =
+                awaitEvents(WalletTopics.EVT_ACCOUNT_OPENED, wallet, 2, AccountOpenedEvent.class);
+
+        assertThat(opened)
+                .as("nếu lệnh trùng bị dedup nuốt như PostJournal, lần gửi lại không có câu trả lời "
+                        + "— ví của producer nằm ở PENDING mãi khi event đầu bị mất")
+                .hasSize(2);
+        assertThat(opened).extracting(EventEnvelope::eventId)
+                .as("eventId = accountId cố định -> consumer dedup được bản phát lại")
+                .containsOnly(opened.get(0).payload().accountId());
+        assertThat(opened.get(0).payload().status()).isEqualTo(EAccountStatus.ACTIVE);
+        assertThat(opened.get(0).tenantId()).isEqualTo(TENANT);
+
+        assertThat(accountRepository.findByTenantIdAndExternalRefAndCurrency(TENANT, wallet, ECurrency.VND))
+                .as("sổ cái chỉ có MỘT tài khoản dù lệnh đến hai lần")
+                .isPresent();
+    }
+
+    @Test
+    @DisplayName("OpenAccount với ref không hợp lệ: vào DLT (bug phía producer), không âm thầm bỏ qua")
+    void mo_tai_khoan_khong_hop_le_vao_dlt() {
+        String marker = "WALLET-KHONG-PHAI-UUID-" + UUID.randomUUID();
+
+        sendTo(WalletTopics.CMD_OPEN_ACCOUNT, marker, UUID.randomUUID(), "OpenAccount",
+                new OpenAccountCommand(marker, ECurrency.VND));
+
+        List<EventEnvelope<OpenAccountCommand>> dead = awaitEvents(
+                WalletTopics.CMD_OPEN_ACCOUNT + WalletTopics.DLT_SUFFIX, marker, 1,
+                OpenAccountCommand.class);
+
+        assertThat(dead.get(0).payload().accountRef()).isEqualTo(marker);
+        assertThat(accountRepository.findByTenantId(TENANT))
+                .noneMatch(account -> account.getExternalRef().equals(marker));
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
     private PostJournalCommand topUp(UUID transactionId, long amountMinor) {
@@ -216,8 +267,12 @@ class LedgerCommandFlowIT {
 
     /** Đóng vai transaction-service: gửi command đã bọc envelope lên topic lệnh. */
     private void send(UUID eventId, PostJournalCommand command) {
-        EventEnvelope<PostJournalCommand> envelope =
-                EventEnvelope.of(eventId, "PostJournal", TENANT, null, command, Instant.now());
+        sendTo(WalletTopics.CMD_POST_JOURNAL, WALLET_A, eventId, "PostJournal", command);
+    }
+
+    private void sendTo(String topic, String key, UUID eventId, String eventType, Object payload) {
+        EventEnvelope<Object> envelope =
+                EventEnvelope.of(eventId, eventType, TENANT, null, payload, Instant.now());
 
         Map<String, Object> config = new HashMap<>();
         config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
@@ -225,21 +280,25 @@ class LedgerCommandFlowIT {
         config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
 
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(config)) {
-            producer.send(new ProducerRecord<>(
-                    WalletTopics.CMD_POST_JOURNAL, WALLET_A,
+            producer.send(new ProducerRecord<>(topic, key,
                     objectMapper.writeValueAsString(envelope))).get();
         } catch (Exception e) {
             throw new IllegalStateException("Không gửi được command lên Kafka", e);
         }
     }
 
-    /**
-     * Chờ event của {@code transactionId} xuất hiện trên topic.
-     *
-     * <p>Lọc theo transactionId vì Kafka container dùng chung cho cả class: topic không được xoá
-     * giữa các ca test, nên đọc từ earliest sẽ thấy cả event của ca test khác.
-     */
     private <T> EventEnvelope<T> awaitEvent(String topic, UUID transactionId, Class<T> payloadType) {
+        return awaitEvents(topic, transactionId.toString(), 1, payloadType).get(0);
+    }
+
+    /**
+     * Chờ đủ {@code count} message chứa {@code marker} xuất hiện trên topic.
+     *
+     * <p>Lọc theo marker vì Kafka container dùng chung cho cả class: topic không được xoá giữa các
+     * ca test, nên đọc từ earliest sẽ thấy cả message của ca test khác.
+     */
+    private <T> List<EventEnvelope<T>> awaitEvents(
+            String topic, String marker, int count, Class<T> payloadType) {
         Map<String, Object> config = new HashMap<>();
         config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
         config.put(ConsumerConfig.GROUP_ID_CONFIG, "flow-it-" + UUID.randomUUID());
@@ -248,6 +307,7 @@ class LedgerCommandFlowIT {
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
 
         List<String> seen = new ArrayList<>();
+        List<EventEnvelope<T>> matched = new ArrayList<>();
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(config)) {
             consumer.subscribe(List.of(topic));
             long deadline = System.nanoTime() + TIMEOUT.toNanos();
@@ -255,14 +315,17 @@ class LedgerCommandFlowIT {
                 ConsumerRecords<String, String> batch = consumer.poll(Duration.ofSeconds(1));
                 for (ConsumerRecord<String, String> record : batch.records(topic)) {
                     seen.add(record.value());
-                    if (record.value().contains(transactionId.toString())) {
-                        return envelopeReader.read(record.value(), payloadType);
+                    if (record.value().contains(marker)) {
+                        matched.add(envelopeReader.read(record.value(), payloadType));
+                        if (matched.size() == count) {
+                            return matched;
+                        }
                     }
                 }
             }
         }
-        throw new AssertionError("Không nhận được event cho transaction " + transactionId
-                + " trên " + topic + " trong " + TIMEOUT + ". Đã thấy: " + seen);
+        throw new AssertionError("Chỉ nhận được " + matched.size() + "/" + count + " message chứa "
+                + marker + " trên " + topic + " trong " + TIMEOUT + ". Đã thấy: " + seen);
     }
 
     private void awaitCondition(java.util.function.BooleanSupplier condition) {

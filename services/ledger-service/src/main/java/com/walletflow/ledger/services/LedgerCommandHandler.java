@@ -1,6 +1,9 @@
 package com.walletflow.ledger.services;
 
 import com.walletflow.common.dedup.EventDeduplicator;
+import com.walletflow.common.event.AccountOpenedEvent;
+import com.walletflow.common.event.OpenAccountCommand;
+import com.walletflow.ledger.entity.Account;
 import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.exception.AppException;
 import com.walletflow.common.outbox.OutboxPublisher;
@@ -38,6 +41,7 @@ public class LedgerCommandHandler {
     public static final String CONSUMER = "ledger-service";
 
     private final LedgerService ledgerService;
+    private final AccountService accountService;
     private final EventDeduplicator deduplicator;
     private final OutboxPublisher outboxPublisher;
 
@@ -93,6 +97,34 @@ public class LedgerCommandHandler {
                         command.type(),
                         rejection.getErrorCode(),
                         rejection.getMessage()));
+    }
+
+    /**
+     * Mở tài khoản cho một ví và phát {@code AccountOpenedEvent} (roadmap 1.0b, ADR-011).
+     *
+     * <p><b>Cố ý KHÔNG đi qua bảng dedup</b>, khác với {@link #handle}. Dedup theo {@code eventId}
+     * có một hệ quả phụ: lệnh trùng bị bỏ qua <b>và không phát lại event</b>. Nếu event gốc bị mất
+     * (relay chết giữa chừng, consumer xử lý hỏng), producer gửi lại đúng lệnh cũ sẽ không bao giờ
+     * nhận được câu trả lời — ví nằm ở {@code PENDING} mãi mãi.
+     *
+     * <p>Ở đây không cần dedup vì thao tác vốn đã idempotent tự nhiên ({@code ON CONFLICT DO
+     * NOTHING}) và event có {@code eventId = accountId} cố định: xử lý lại thì sổ không đổi, còn
+     * event phát lại thì consumer dedup được. Đổi lại, MỌI lần gửi lệnh đều nhận được câu trả lời.
+     */
+    @Transactional
+    public void openAccount(OpenAccountCommand command) {
+        Account account = accountService.openUserAccount(command);
+
+        outboxPublisher.publish(
+                WalletTopics.EVT_ACCOUNT_OPENED,
+                account.getExternalRef(),
+                account.getId(),
+                "AccountOpened",
+                new AccountOpenedEvent(
+                        account.getId(),
+                        account.getExternalRef(),
+                        account.getCurrency(),
+                        account.getStatus()));
     }
 
     /**

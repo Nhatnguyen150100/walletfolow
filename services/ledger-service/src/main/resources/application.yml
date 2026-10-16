@@ -27,6 +27,13 @@ spring:
       group-id: ledger-service   # mỗi service 1 group để nhận đủ event
       auto-offset-reset: earliest
 
+walletflow:
+  ledger:
+    # Tenant được cấp tài khoản hệ thống (EXTERNAL_BANK, FEE_INCOME, SETTLEMENT × mọi currency) lúc
+    # khởi động — idempotent, chạy lại không sao. Phân cách bằng dấu phẩy. Phase 5 thay bằng API
+    # onboarding gọi cùng SystemAccountProvisioner.
+    provision-tenants: ${LEDGER_PROVISION_TENANTS:00000000-0000-0000-0000-000000000001}
+
 eureka:
   client:
     service-url:

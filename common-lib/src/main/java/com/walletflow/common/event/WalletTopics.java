@@ -25,9 +25,13 @@ public final class WalletTopics {
   public static final String CMD_BANK_PAYOUT = "txn.command.bank-payout.v1";      // -> bank-adapter (withdraw)
   public static final String CMD_BANK_REFUND = "txn.command.bank-refund.v1";      // -> bank-adapter (bù trừ)
 
+  // ---- COMMAND: wallet-service -> ledger (vòng đời tài khoản, roadmap 1.0b) ----
+  public static final String CMD_OPEN_ACCOUNT = "wallet.command.open-account.v1";
+
   // ---- EVENT: participant -> orchestrator / read model ----
   public static final String EVT_LEDGER_POSTED = "ledger.event.posted.v1";
   public static final String EVT_LEDGER_REJECTED = "ledger.event.rejected.v1";
+  public static final String EVT_ACCOUNT_OPENED = "ledger.event.account-opened.v1";
   public static final String EVT_BANK_COMPLETED = "bank.event.completed.v1";
   public static final String EVT_BANK_FAILED = "bank.event.failed.v1";
 

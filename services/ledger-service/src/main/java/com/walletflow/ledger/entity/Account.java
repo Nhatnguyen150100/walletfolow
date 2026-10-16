@@ -1,6 +1,7 @@
 package com.walletflow.ledger.entity;
 
 import com.walletflow.common.entity.BaseEntity;
+import com.walletflow.common.event.EAccountStatus;
 import com.walletflow.common.money.ECurrency;
 import com.walletflow.ledger.enums.ETypeAccount;
 import jakarta.persistence.*;
@@ -35,4 +36,10 @@ public class Account extends BaseEntity {
     @Enumerated(EnumType.STRING)
     @Column(name = "currency", nullable = false, length = 3)
     private ECurrency currency;
+
+    /** Ledger cưỡng chế lúc ghi bút toán — xem V5 và {@code LedgerService.validateAccountStatus}. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 16)
+    @Builder.Default
+    private EAccountStatus status = EAccountStatus.ACTIVE;
 }

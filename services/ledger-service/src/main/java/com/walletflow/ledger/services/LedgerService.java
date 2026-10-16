@@ -1,5 +1,6 @@
 package com.walletflow.ledger.services;
 
+import com.walletflow.common.exception.AccountNotActiveException;
 import com.walletflow.common.exception.BadRequestException;
 import com.walletflow.common.exception.InsufficientFundsException;
 import com.walletflow.common.exception.ResourceNotFoundException;
@@ -92,6 +93,7 @@ public class LedgerService {
             return postedWhileWaiting.get();
         }
 
+        validateAccountStatus(resolvedLegs);
         validateSufficientFunds(tenantId, resolvedLegs, command);
 
         JournalEntry entry = journalEntryRepository.saveAndFlush(
@@ -248,6 +250,39 @@ public class LedgerService {
         }
 
         return resolvedLegs;
+    }
+
+    /**
+     * Cưỡng chế trạng thái tài khoản (V5).
+     *
+     * <p>Kiểm tra SAU khi đã khoá hàng: trạng thái đọc được lúc này là trạng thái đúng cho tới khi
+     * transaction kết thúc. Kiểm tra trước khi khoá thì một lệnh đóng băng ví có thể commit chen vào
+     * giữa lúc kiểm tra và lúc ghi, và tiền vẫn ra khỏi ví vừa bị đóng băng.
+     *
+     * <p>Áp cho MỌI loại tài khoản, không riêng {@code USER}: vận hành cần đóng băng được cả tài khoản
+     * hệ thống khi điều tra sự cố.
+     */
+    private void validateAccountStatus(List<ResolvedLeg> resolvedLegs) {
+        for (ResolvedLeg resolvedLeg : resolvedLegs) {
+            Account account = resolvedLeg.account();
+            boolean isDebit = resolvedLeg.leg().amountMinor() < 0;
+
+            switch (account.getStatus()) {
+                case ACTIVE -> {
+                }
+                case CLOSED -> throw new AccountNotActiveException("ACCOUNT_CLOSED",
+                        "Tài khoản đã đóng: " + account.getExternalRef());
+                case FROZEN -> {
+                    // Chỉ chặn GHI NỢ. Nhận tiền vẫn phải được: bước bù trừ của saga hoàn tiền về
+                    // chính ví này, và chặn nó nghĩa là tiền kẹt ở tài khoản trung gian.
+                    if (isDebit) {
+                        throw new AccountNotActiveException("ACCOUNT_FROZEN",
+                                "Tài khoản đang bị đóng băng, không thể ghi nợ: "
+                                        + account.getExternalRef());
+                    }
+                }
+            }
+        }
     }
 
     /**
