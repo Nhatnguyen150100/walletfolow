@@ -1,0 +1,15 @@
+{
+  "eventId": "8b3e4c5d-6f70-4182-9c93-d4e5f6071823",
+  "eventType": "AccountOpened",
+  "version": 1,
+  "occurredAt": "2026-10-16T08:32:00Z",
+  "tenantId": "00000000-0000-0000-0000-000000000001",
+  "traceId": null,
+  "payload": {
+    "accountId": "2d1f0a9b-8c7d-4e6f-9a41-3c2d1e0f9a81",
+    "accountRef": "a1a1a1a1-b2b2-4c3c-8d4d-e5e5e5e5e5e5",
+    "currency": "VND",
+    "status": "FROZEN",
+    "statusVersion": 2
+  }
+}

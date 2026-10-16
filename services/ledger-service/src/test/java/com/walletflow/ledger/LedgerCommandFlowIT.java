@@ -1,6 +1,7 @@
 package com.walletflow.ledger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.walletflow.common.contract.EventSchemas;
 import com.walletflow.common.event.AccountOpenedEvent;
 import com.walletflow.common.event.EAccountStatus;
 import com.walletflow.common.event.EnvelopeReader;
@@ -346,6 +347,11 @@ class LedgerCommandFlowIT {
                 for (ConsumerRecord<String, String> record : batch.records(topic)) {
                     seen.add(record.value());
                     if (record.value().contains(marker)) {
+                        // Contract test phía producer: message THẬT ledger phát ra phải đúng schema.
+                        // DLT chứa message của người khác gửi vào (có thể cố ý sai) nên không kiểm.
+                        if (!topic.endsWith(WalletTopics.DLT_SUFFIX)) {
+                            EventSchemas.assertValid(topic, record.value());
+                        }
                         matched.add(envelopeReader.read(record.value(), payloadType));
                         if (matched.size() == count) {
                             return matched;
