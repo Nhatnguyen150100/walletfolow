@@ -382,7 +382,7 @@ Mỗi file ≤ 1 trang: Context → Decision → Consequences → Alternatives r
 ```bash
 gh api -X PUT repos/<owner>/<repo>/branches/master/protection --input - <<'EOF'
 {"required_status_checks":{"strict":true,
-  "contexts":["Build & test","Kiểm tra quy tắc bất biến","Quét bí mật lọt vào repo"]},
+  "contexts":["Build & test","Guardrails","Secret scan"]},
  "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
 EOF
 ```
