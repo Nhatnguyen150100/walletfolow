@@ -1,7 +1,6 @@
-package com.walletflow.ledger.dto;
+package com.walletflow.common.event;
 
-import com.walletflow.ledger.enums.ECurrency;
-import com.walletflow.ledger.enums.EJournalType;
+import com.walletflow.common.money.ECurrency;
 
 import java.util.List;
 import java.util.UUID;

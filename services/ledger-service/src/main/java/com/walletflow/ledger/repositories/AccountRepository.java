@@ -1,7 +1,7 @@
 package com.walletflow.ledger.repositories;
 
 import com.walletflow.ledger.entity.Account;
-import com.walletflow.ledger.enums.ECurrency;
+import com.walletflow.common.money.ECurrency;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;

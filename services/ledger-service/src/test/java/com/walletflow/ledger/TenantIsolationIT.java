@@ -1,12 +1,12 @@
 package com.walletflow.ledger;
 
 import com.walletflow.common.tenant.TenantContext;
-import com.walletflow.ledger.dto.Leg;
-import com.walletflow.ledger.dto.PostJournalCommand;
+import com.walletflow.common.event.Leg;
+import com.walletflow.common.event.PostJournalCommand;
 import com.walletflow.ledger.entity.Account;
 import com.walletflow.ledger.entity.JournalEntry;
-import com.walletflow.ledger.enums.ECurrency;
-import com.walletflow.ledger.enums.EJournalType;
+import com.walletflow.common.money.ECurrency;
+import com.walletflow.common.event.EJournalType;
 import com.walletflow.ledger.enums.ETypeAccount;
 import com.walletflow.ledger.repositories.AccountRepository;
 import com.walletflow.ledger.repositories.JournalEntryRepository;

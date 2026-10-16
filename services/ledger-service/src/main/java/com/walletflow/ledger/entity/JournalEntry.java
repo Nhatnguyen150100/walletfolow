@@ -1,7 +1,7 @@
 package com.walletflow.ledger.entity;
 
 import com.walletflow.common.entity.ImmutableEntity;
-import com.walletflow.ledger.enums.EJournalType;
+import com.walletflow.common.event.EJournalType;
 import jakarta.persistence.*;
 import lombok.*;
 

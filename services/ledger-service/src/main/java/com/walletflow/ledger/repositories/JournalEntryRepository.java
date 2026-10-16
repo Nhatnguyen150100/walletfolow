@@ -1,7 +1,7 @@
 package com.walletflow.ledger.repositories;
 
 import com.walletflow.ledger.entity.JournalEntry;
-import com.walletflow.ledger.enums.EJournalType;
+import com.walletflow.common.event.EJournalType;
 import org.springframework.data.repository.Repository;
 
 import java.util.Optional;

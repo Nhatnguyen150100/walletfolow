@@ -1,4 +1,4 @@
-package com.walletflow.ledger.enums;
+package com.walletflow.common.money;
 
 public enum ECurrency {
     VND,

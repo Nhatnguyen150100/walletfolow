@@ -5,7 +5,7 @@ import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.exception.AppException;
 import com.walletflow.common.tenant.TenantContext;
-import com.walletflow.ledger.dto.PostJournalCommand;
+import com.walletflow.common.event.PostJournalCommand;
 import com.walletflow.ledger.services.LedgerCommandHandler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

@@ -2,7 +2,7 @@ package com.walletflow.ledger.entity;
 
 import com.walletflow.common.entity.ImmutableEntity;
 import com.walletflow.common.money.Money;
-import com.walletflow.ledger.enums.ECurrency;
+import com.walletflow.common.money.ECurrency;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;

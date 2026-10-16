@@ -1,7 +1,7 @@
 package com.walletflow.ledger.entity;
 
 import com.walletflow.common.entity.BaseEntity;
-import com.walletflow.ledger.enums.ECurrency;
+import com.walletflow.common.money.ECurrency;
 import com.walletflow.ledger.enums.ETypeAccount;
 import jakarta.persistence.*;
 import lombok.*;

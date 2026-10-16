@@ -1,4 +1,4 @@
-package com.walletflow.ledger.enums;
+package com.walletflow.common.event;
 
 public enum EJournalType {
     TRANSFER,
