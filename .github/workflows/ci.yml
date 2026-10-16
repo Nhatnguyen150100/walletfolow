@@ -121,6 +121,84 @@ jobs:
           fi
 
   # ==================================================================
+  # Gán nhãn cho PR theo kết quả CI
+  # ==================================================================
+  # ⚠️ Nhãn này chỉ để NHÌN cho nhanh, nó KHÔNG chặn được merge. Thứ thực sự
+  # chặn là branch protection + required status checks (xem docs/runbooks/).
+  # Đừng nhầm hai thứ: một PR mang nhãn "mergeable" vẫn merge được khi CI đỏ,
+  # và một PR không có nhãn vẫn merge được bình thường.
+  label-ci-result:
+    name: Gán nhãn kết quả CI
+    needs: [verify, guardrails, secrets-scan]
+    # always(): phải chạy CẢ KHI job phía trước thất bại — đó mới là lúc cần gỡ
+    # nhãn "mergeable" cũ xuống. Không có always() thì nhãn xanh của lần push
+    # trước sẽ nằm lại trên một PR đang đỏ.
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write        # API gán nhãn nằm dưới namespace issues
+      contents: read
+    steps:
+      - name: Tổng hợp kết quả
+        id: outcome
+        run: |
+          echo "verify=${{ needs.verify.result }}"
+          echo "guardrails=${{ needs.guardrails.result }}"
+          echo "secrets=${{ needs['secrets-scan'].result }}"
+          # Bắt buộc dùng bracket notation cho job id có dấu gạch ngang:
+          # `needs.secrets-scan.result` bị parser hiểu thành phép trừ
+          # (needs.secrets - scan.result) và cho ra kết quả rỗng một cách im lặng.
+          if [[ "${{ needs.verify.result }}"          == "success" && \
+                "${{ needs.guardrails.result }}"      == "success" && \
+                "${{ needs['secrets-scan'].result }}" == "success" ]]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gán / gỡ nhãn
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const passed = '${{ steps.outcome.outputs.passed }}' === 'true';
+            const MERGEABLE = 'mergeable';
+            const FAILING   = 'ci-failed';
+
+            // Nhãn chưa tồn tại thì tự tạo. Không làm bước này, lần chạy đầu tiên
+            // trên một repo mới sẽ hỏng với 422 và trông như lỗi workflow.
+            const ensureLabel = async (name, color, description) => {
+              try {
+                await github.rest.issues.getLabel({ ...context.repo, name });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({ ...context.repo, name, color, description });
+              }
+            };
+
+            await ensureLabel(MERGEABLE, '0e8a16', 'CI xanh — KHÔNG thay thế required status checks');
+            await ensureLabel(FAILING,   'd73a4a', 'CI đỏ — xem tab Checks');
+
+            const issue_number = context.issue.number;
+            const [toAdd, toRemove] = passed ? [MERGEABLE, FAILING] : [FAILING, MERGEABLE];
+
+            await github.rest.issues.addLabels({
+              ...context.repo, issue_number, labels: [toAdd],
+            });
+
+            // Gỡ nhãn ngược lại. 404 = PR chưa từng mang nhãn đó, không phải lỗi.
+            try {
+              await github.rest.issues.removeLabel({
+                ...context.repo, issue_number, name: toRemove,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            core.info(`PR #${issue_number}: +${toAdd} / -${toRemove}`);
+
+  # ==================================================================
   # Build image — chỉ trên master, sau khi test xanh
   # ==================================================================
   images:
