@@ -43,7 +43,7 @@ jobs:
 
       - name: Upload báo cáo coverage
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jacoco-reports
           path: '**/target/site/jacoco*/'
@@ -51,7 +51,7 @@ jobs:
 
       - name: Upload log test khi thất bại
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: surefire-failsafe-reports
           path: '**/target/*-reports/'
