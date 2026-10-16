@@ -22,7 +22,7 @@
     <java.version>21</java.version>
     <spring-cloud.version>2025.0.0</spring-cloud.version>
     <jjwt.version>0.12.6</jjwt.version>
-    <springdoc.version>2.8.8</springdoc.version>
+    <springdoc.version>2.9.1</springdoc.version>
     <testcontainers.version>1.20.4</testcontainers.version>
     <jacoco.version>0.8.15</jacoco.version>
     <!-- docker-java (lõi của Testcontainers) mặc định chào Docker API 1.32, trong khi
