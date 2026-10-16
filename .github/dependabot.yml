@@ -1,6 +1,9 @@
 version: 2
 updates:
 
+  # ==================================================================
+  # Maven
+  # ==================================================================
   # Gom thành một PR mỗi tuần thay vì một PR cho mỗi dependency: với một dự án
   # multi-module, cập nhật lẻ tẻ tạo ra lượng PR mà không ai review nổi — và PR
   # không ai review thì không khác gì không có Dependabot.
@@ -10,15 +13,57 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+
+    # --------------------------------------------------------------
+    # KHÔNG nhận bump MAJOR tự động
+    # --------------------------------------------------------------
+    # Dự án đứng trên một nền tảng có phiên bản cố định (Spring Boot 3.5 /
+    # Spring Cloud 2025.0). Với thư viện nằm trong hệ sinh thái đó, một bản
+    # major không phải "cập nhật" mà là một dự án migration. Ba PR đầu tiên
+    # Dependabot mở đều chứng minh đúng điều này:
+    #
+    #   • testcontainers 1.20 -> 2.0  : BOM 2.x bỏ quản version của
+    #     postgresql/kafka/junit-jupiter -> toàn bộ reactor không đọc được pom
+    #   • spring-cloud (major)        : spring-cloud-starter-gateway đổi tên,
+    #     api-gateway mất dependency
+    #   • springdoc 2.8 -> 3.1        : springdoc 3.x nhắm Spring Boot 4,
+    #     gây BeanDefinitionOverrideException lúc khởi động
+    #
+    # Để chúng nằm đỏ trong hàng đợi còn tệ hơn là không có: màu đỏ thường trực
+    # huấn luyện người ta bỏ qua màu đỏ. Major sẽ được làm có chủ đích, thành
+    # một task riêng, khi quyết định nâng nền tảng.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+    # Nhóm nhỏ và theo rủi ro, không gom tất cả vào một rổ: gom quá rộng thì một
+    # dependency hỏng kéo cả nhóm thành đỏ, và những bản vá vô hại đi cùng nó
+    # cũng bị kẹt lại.
     groups:
       spring:
-        patterns: ["org.springframework*", "io.micrometer*"]
+        patterns: ["org.springframework*", "io.micrometer*", "io.opentelemetry*"]
+        update-types: ["minor", "patch"]
       testing:
-        patterns: ["org.testcontainers*", "org.junit*", "org.assertj*"]
+        patterns: ["org.testcontainers*", "org.junit*", "org.assertj*", "org.mockito*"]
+        update-types: ["minor", "patch"]
+      security:
+        # Nhóm riêng vì đây là thứ cần merge nhanh, không chờ gộp với thứ khác
+        patterns: ["io.jsonwebtoken*", "org.bouncycastle*", "org.postgresql*"]
+        update-types: ["minor", "patch"]
       others:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
+  # ==================================================================
+  # GitHub Actions
+  # ==================================================================
+  # Action thì NHẬN major: chúng không bị ràng buộc với nền tảng Java, và bản
+  # major thường chỉ là đổi runtime của Node. Bốn PR action đầu tiên đều CI xanh.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]

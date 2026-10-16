@@ -24,3 +24,6 @@ secrets/
 
 # OS
 .DS_Store
+
+# Bản sao lưu DB — dữ liệu, không phải mã nguồn
+backups/

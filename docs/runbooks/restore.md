@@ -1,9 +1,7 @@
 # Runbook — Khôi phục database từ backup
 
-> **Trạng thái diễn tập:** ⚠️ **CHƯA DIỄN TẬP LẦN NÀO.**
-> Một bản backup chưa từng restore thử thì chưa phải là backup — nó chỉ là một thư mục file.
-> Hạng mục này của Phase 0 chỉ được coi là xong khi bảng "Lịch sử diễn tập" bên dưới có ít nhất
-> một dòng với thời gian **đo thật**.
+> **Trạng thái diễn tập:** ✅ **ĐÃ DIỄN TẬP 2026-10-16 — RTO đo được: 4 giây.**
+> Xem bảng "Lịch sử diễn tập" ở cuối file.
 
 ## Bối cảnh rủi ro
 
@@ -65,11 +63,31 @@ docker exec wf-postgres psql -U walletflow -d ledgerdb -c \
   "SELECT version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
 
 # 5. Trigger append-only còn sống (pg_restore có thể bỏ sót function/trigger)
-docker exec wf-postgres psql -U walletflow -d ledgerdb -c \
-  "UPDATE postings SET amount_minor = 1 WHERE true;"
-# Kỳ vọng: ERROR ... APPEND-ONLY. Nếu lệnh này THÀNH CÔNG -> lá chắn cuối cùng
-# của sổ cái đã mất sau khi restore. Phải chạy lại V2 trước khi mở dịch vụ.
+#    HỎI THẲNG CATALOG, đừng dựa vào một lệnh UPDATE.
+docker exec wf-postgres psql -U walletflow -d ledgerdb -tAc \
+  "SELECT c.relname||' -> '||t.tgname FROM pg_trigger t
+     JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE NOT t.tgisinternal ORDER BY 1;"
+# Kỳ vọng ĐÚNG 2 dòng:
+#   journal_entries -> trg_journal_entries_append_only
+#   postings        -> trg_postings_append_only
 ```
+
+> ⚠️ **Đừng kiểm tra trigger bằng `UPDATE postings ... WHERE true`.** Trigger là `FOR EACH ROW`,
+> nên trên một bảng RỖNG nó không bao giờ kích hoạt: lệnh trả về `UPDATE 0` và trông hệt như
+> "đã bị chặn". Một bản restore mất sạch trigger sẽ **pass** phép kiểm tra đó.
+> *(Đây chính là cái bẫy đã vấp phải trong lần diễn tập 2026-10-16 — phép kiểm tra cũ ghi ở đây
+> cho ra kết quả dương tính giả.)*
+>
+> Muốn kiểm bằng DML thì phải có ít nhất một hàng thật:
+> ```bash
+> docker exec wf-postgres psql -U walletflow -d ledgerdb -c "
+>   INSERT INTO journal_entries(id,transaction_id,type,created_at)
+>     VALUES (gen_random_uuid(), gen_random_uuid(), 'TOPUP', now());
+>   UPDATE journal_entries SET type='TRANSFER' WHERE true;"
+> # Kỳ vọng: ERROR ... APPEND-ONLY
+> # Dọn: TRUNCATE journal_entries, postings;  (TRUNCATE không kích hoạt trigger FOR EACH ROW)
+> ```
 
 Bước 5 là bước dễ quên nhất và nguy hiểm nhất: sổ cái vẫn còn đủ dữ liệu, nhưng tính bất biến —
 thứ làm nên giá trị của nó — đã biến mất, một cách hoàn toàn im lặng.
@@ -88,9 +106,36 @@ Cách giảm thiệt hại trong lúc chưa có PITR:
 
 ## Lịch sử diễn tập
 
-| Ngày | Người thực hiện | Dung lượng | Thời gian restore (RTO đo thật) | Ghi chú |
-|---|---|---|---|---|
-| _(chưa có)_ | | | | |
+| Ngày | Dung lượng | RTO đo thật | Kết quả |
+|---|---|---|---|
+| 2026-10-16 | 52 KB (5 DB, dữ liệu dev) | **4 giây** | ✅ Đạt — chi tiết bên dưới |
 
-**Việc cần làm:** chạy một lần `backup.sh` → `restore.sh` khi chưa có sự cố, rồi điền vào bảng trên.
-Cho tới lúc đó, RTO của hệ thống này là **một con số chưa ai biết**.
+### Diễn tập 2026-10-16
+
+**Kịch bản:** tạo dữ liệu thật (1 user qua `POST /api/auth/register`, 3 tài khoản hệ thống trong
+ledger) → `backup.sh` → **cố ý phá** (`DELETE FROM users`, `DELETE FROM accounts WHERE type='SYSTEM'`)
+→ `restore.sh` → kiểm chứng.
+
+| Kiểm chứng | Kết quả |
+|---|---|
+| `users` quay về | ✅ 1 hàng, đúng `drill@walletflow.test` |
+| `accounts` quay về | ✅ 3 → 0 → **3** |
+| `SUM(postings)` | ✅ **0** |
+| `flyway_schema_history` ledgerdb | ✅ V1, V2, V3 đều `success=true` |
+| `flyway_schema_history` authdb | ✅ V1 `success=true` |
+| Trigger append-only (3 cái) | ✅ còn đủ, và chặn thật khi thử `UPDATE` trên hàng thật |
+| Partial index outbox | ✅ `idx_outbox_unpublished`, `idx_outbox_published_cleanup` còn |
+
+**Hai thứ học được:**
+
+1. **Phép kiểm tra trigger cũ trong runbook này cho dương tính giả.** `UPDATE postings WHERE true`
+   trên bảng rỗng trả `UPDATE 0` và trông như đã bị chặn — trong khi trigger có thể đã mất sạch.
+   Đã sửa thành truy vấn `pg_trigger`. Xem cảnh báo ở mục kiểm chứng phía trên.
+2. **`pg_dumpall --globals-only` in `ERROR: role "walletflow" already exists`** khi restore vào một
+   instance đã có sẵn role. Vô hại (psql đi tiếp), nhưng dòng ERROR giữa một quy trình khôi phục
+   là thứ làm người vận hành hoảng đúng lúc không nên hoảng. `restore.sh` nay lọc riêng trường hợp này.
+
+**Cảnh báo về con số 4 giây:** đây là RTO với **52 KB dữ liệu dev**. Nó chứng minh *quy trình* chạy
+đúng, **không** chứng minh thời gian khôi phục ở quy mô thật. Phải đo lại khi ledger có hàng triệu
+posting — và ở quy mô đó, `pg_restore` một file dump sẽ không còn là chiến lược đúng nữa; đó là lý do
+Phase 4 chuyển sang PITR.

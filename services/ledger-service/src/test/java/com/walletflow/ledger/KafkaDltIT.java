@@ -11,6 +11,8 @@ import com.walletflow.ledger.enums.EJournalType;
 import com.walletflow.ledger.enums.ETypeAccount;
 import com.walletflow.ledger.repositories.AccountRepository;
 import com.walletflow.ledger.repositories.JournalEntryRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -108,6 +110,8 @@ class KafkaDltIT {
     JdbcTemplate jdbcTemplate;
     @Autowired
     ObjectMapper objectMapper;
+    @Autowired
+    MeterRegistry meterRegistry;
 
     @BeforeEach
     void resetLedger() {
@@ -157,6 +161,34 @@ class KafkaDltIT {
                 .contains("PoisonMessageException");
         assertThat(header(dead, KafkaHeaders.DLT_EXCEPTION_MESSAGE))
                 .contains("EventEnvelope<PostJournalCommand>");
+
+        // Metric là thứ alert DltNotEmpty dựa vào. Không assert ở đây thì một lần đổi tên metric
+        // sẽ làm alert câm lặng mà mọi test vẫn xanh — đúng kiểu hỏng mà Phase 0 tồn tại để chặn.
+        Counter dltCounter = meterRegistry.find("walletflow.dlt.messages")
+                .tag("topic", WalletTopics.CMD_POST_JOURNAL)
+                .tag("exception", "InvalidFormatException")
+                .counter();
+        assertThat(dltCounter)
+                .as("counter walletflow.dlt.messages phải tồn tại sau khi có message vào DLT")
+                .isNotNull();
+        assertThat(dltCounter.count()).isGreaterThanOrEqualTo(1.0);
+    }
+
+    // ------------------------------------------------------------------
+    // Tên metric trên dây phải khớp chính xác với tên dashboard/alert dùng
+    // ------------------------------------------------------------------
+    @Test
+    @DisplayName("Tên metric xuất ra Prometheus khớp với tên dùng trong dashboard và alert rule")
+    void ten_metric_khop_voi_dashboard_va_alert() {
+        // Micrometer đổi dấu chấm thành gạch dưới và thêm hậu tố _total cho counter khi xuất sang
+        // Prometheus. Dashboard (deploy/grafana/dashboards/) và alert (deploy/prometheus/alerts.yml)
+        // viết tay tên ở DẠNG ĐÃ ĐỔI, nên giữa code và cấu hình quan sát không có gì ràng buộc nhau
+        // ngoài test này. Đổi tên metric mà quên sửa alert thì alert không báo lỗi — nó chỉ im lặng
+        // không bao giờ bắn nữa.
+        assertThat(meterRegistry.find("walletflow.outbox.pending").gauge())
+                .as("-> walletflow_outbox_pending").isNotNull();
+        assertThat(meterRegistry.find("walletflow.outbox.oldest.age.seconds").gauge())
+                .as("-> walletflow_outbox_oldest_age_seconds, nền của alert OutboxStalled").isNotNull();
     }
 
     // ------------------------------------------------------------------
