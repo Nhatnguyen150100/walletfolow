@@ -1,44 +1,59 @@
 package com.walletflow.auth.service;
 
+import com.walletflow.auth.config.JwtKeyProvider;
 import com.walletflow.auth.entity.User;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.io.Decoders;
-import io.jsonwebtoken.security.Keys;
+import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import javax.crypto.SecretKey;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Date;
-import java.util.Map;
 
 /**
- * Sinh JWT. Khoá ký (jwt.secret) PHẢI trùng với khoá verify bên api-gateway, vì gateway mới là nơi
- * kiểm tra chữ ký token cho toàn hệ thống.
+ * Sinh ACCESS TOKEN ký bằng RS256.
+ *
+ * <p>Chỉ auth-service có private key nên chỉ nó phát hành được token; gateway lấy public key qua
+ * JWKS và chỉ verify được — xem {@link JwtKeyProvider}.
+ *
+ * <p><b>Access token cố tình sống rất ngắn (mặc định 15 phút).</b> Nó không thu hồi được: một khi
+ * đã ký thì mọi bên verify đều chấp nhận cho tới lúc hết hạn, vì verify là thao tác offline không
+ * hỏi lại auth-service. Thời hạn ngắn chính là cơ chế thu hồi duy nhất. Khả năng duy trì phiên dài
+ * được chuyển sang refresh token — thứ CÓ thể thu hồi vì nó được tra trong DB mỗi lần dùng.
+ * (Bản trước của dự án dùng token 24 giờ không thu hồi được — mất token là mất ví trọn một ngày.)
  */
 @Service
+@RequiredArgsConstructor
 public class JwtService {
 
-  @Value("${jwt.secret}")
-  private String secret;
+  private final JwtKeyProvider keyProvider;
 
-  @Value("${jwt.expiration}")
-  private long expiration;
+  @Value("${jwt.access-ttl-seconds}")
+  private long accessTtlSeconds;
 
-  public String generateToken(User user) {
-    Date now = new Date();
+  @Value("${jwt.issuer}")
+  private String issuer;
+
+  public String generateAccessToken(User user) {
+    Instant now = Instant.now();
+    Instant expiry = now.plusSeconds(accessTtlSeconds);
+
     return Jwts.builder()
-        .claims(Map.of(
-            "id", user.getId().toString(),
-            "role", user.getRole().name(),
-            "email", user.getEmail()))
-        .subject(user.getEmail())
-        .issuedAt(now)
-        .expiration(new Date(now.getTime() + expiration))
-        .signWith(signingKey(), Jwts.SIG.HS256)
+        // kid để gateway chọn đúng khoá trong JWKS -> xoay khoá không gây downtime
+        .header().keyId(keyProvider.getKeyId()).and()
+        // sub = userId chứ không phải email: email đổi được, danh tính thì không.
+        .subject(user.getId().toString())
+        .claim("email", user.getEmail())
+        .claim("role", user.getRole().name())
+        .issuer(issuer)
+        .issuedAt(Date.from(now))
+        .expiration(Date.from(expiry))
+        .signWith(keyProvider.getPrivateKey(), Jwts.SIG.RS256)
         .compact();
   }
 
-  private SecretKey signingKey() {
-    return Keys.hmacShaKeyFor(Decoders.BASE64.decode(secret));
+  public Duration accessTokenTtl() {
+    return Duration.ofSeconds(accessTtlSeconds);
   }
 }

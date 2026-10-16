@@ -1,0 +1,246 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Testcontainers: docker-java mặc định chào Docker API 1.32, Docker Engine >= 25 chỉ chấp
+  # nhận >= 1.40. Xem ghi chú ở pom cha.
+  MAVEN_ARGS: "-B -ntp"
+
+jobs:
+
+  # ==================================================================
+  # Build + toàn bộ test, BAO GỒM integration test chạy Postgres/Kafka thật
+  # ==================================================================
+  verify:
+    name: Build & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # Runner của GitHub đã có sẵn Docker daemon -> Testcontainers chạy được.
+      # Đây là lý do pipeline này đáng giá: nó chạy ĐÚNG những test chứng minh
+      # tính đúng đắn về tiền (trigger append-only, SKIP LOCKED, DLT, idempotency),
+      # những thứ không thể kiểm chứng bằng H2 hay mock.
+      - name: mvn verify (unit + Testcontainers IT)
+        run: ./mvnw $MAVEN_ARGS verify
+
+      - name: Upload báo cáo coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-reports
+          path: '**/target/site/jacoco*/'
+          retention-days: 7
+
+      - name: Upload log test khi thất bại
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-failsafe-reports
+          path: '**/target/*-reports/'
+          retention-days: 7
+
+  # ==================================================================
+  # Quét bí mật — chạy song song, không phụ thuộc build
+  # ==================================================================
+  secrets-scan:
+    name: Quét bí mật lọt vào repo
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks cần toàn bộ lịch sử để quét commit cũ
+
+      # Dự án này TỪNG commit secret JWT vào application.yml và docker-compose.yml.
+      # Job này tồn tại để chuyện đó không lặp lại một cách im lặng.
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ==================================================================
+  # Kiểm tra: không ai lén đưa ddl-auto=update hay secret mặc định trở lại
+  # ==================================================================
+  guardrails:
+    name: Kiểm tra quy tắc bất biến
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # Những quy tắc dưới đây là kết luận của Phase 0, không phải sở thích.
+      # Linter rẻ hơn nhiều so với việc phát hiện lại chúng trong một sự cố.
+      - name: Không được dùng ddl-auto=update
+        run: |
+          if grep -rn "ddl-auto:\s*update" --include="*.yml" --include="*.yaml" .; then
+            echo "::error::ddl-auto=update làm schema không review/rollback được. Dùng Flyway."
+            exit 1
+          fi
+
+      - name: Không được bật auto-create topic
+        run: |
+          if grep -rn "KAFKA_AUTO_CREATE_TOPICS_ENABLE:\s*\"true\"" --include="*.yml" .; then
+            echo "::error::Auto-create topic biến lỗi gõ sai tên topic thành lỗi câm."
+            exit 1
+          fi
+
+      - name: Không được có giá trị mặc định cho khoá JWT
+        run: |
+          if grep -rnE '(JWT_PRIVATE_KEY|JWT_SECRET)\s*[:=]\s*[A-Za-z0-9+/]{16,}' \
+               --include="*.yml" --include="*.yaml" . | grep -v ".env.example"; then
+            echo "::error::Khoá/secret mặc định trong repo sẽ theo lên production."
+            exit 1
+          fi
+
+      - name: Không gọi thẳng kafkaTemplate.send trong code nghiệp vụ
+        run: |
+          # Mọi dual-write phải đi qua OutboxPublisher (plan §7.1). Ngoại lệ hợp lệ chỉ nằm
+          # trong chính hạ tầng outbox/DLT ở common-lib.
+          if grep -rn "kafkaTemplate.send" --include="*.java" services/ \
+               | grep -v "/test/"; then
+            echo "::error::Dùng OutboxPublisher thay vì gọi thẳng Kafka (tránh dual-write)."
+            exit 1
+          fi
+
+  # ==================================================================
+  # Gán nhãn cho PR theo kết quả CI
+  # ==================================================================
+  # ⚠️ Nhãn này chỉ để NHÌN cho nhanh, nó KHÔNG chặn được merge. Thứ thực sự
+  # chặn là branch protection + required status checks (xem docs/runbooks/).
+  # Đừng nhầm hai thứ: một PR mang nhãn "mergeable" vẫn merge được khi CI đỏ,
+  # và một PR không có nhãn vẫn merge được bình thường.
+  label-ci-result:
+    name: Gán nhãn kết quả CI
+    needs: [verify, guardrails, secrets-scan]
+    # always(): phải chạy CẢ KHI job phía trước thất bại — đó mới là lúc cần gỡ
+    # nhãn "mergeable" cũ xuống. Không có always() thì nhãn xanh của lần push
+    # trước sẽ nằm lại trên một PR đang đỏ.
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write        # API gán nhãn nằm dưới namespace issues
+      contents: read
+    steps:
+      - name: Tổng hợp kết quả
+        id: outcome
+        run: |
+          echo "verify=${{ needs.verify.result }}"
+          echo "guardrails=${{ needs.guardrails.result }}"
+          echo "secrets=${{ needs['secrets-scan'].result }}"
+          # Bắt buộc dùng bracket notation cho job id có dấu gạch ngang:
+          # `needs.secrets-scan.result` bị parser hiểu thành phép trừ
+          # (needs.secrets - scan.result) và cho ra kết quả rỗng một cách im lặng.
+          if [[ "${{ needs.verify.result }}"          == "success" && \
+                "${{ needs.guardrails.result }}"      == "success" && \
+                "${{ needs['secrets-scan'].result }}" == "success" ]]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gán / gỡ nhãn
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const passed = '${{ steps.outcome.outputs.passed }}' === 'true';
+            const MERGEABLE = 'mergeable';
+            const FAILING   = 'ci-failed';
+
+            // Nhãn chưa tồn tại thì tự tạo. Không làm bước này, lần chạy đầu tiên
+            // trên một repo mới sẽ hỏng với 422 và trông như lỗi workflow.
+            const ensureLabel = async (name, color, description) => {
+              try {
+                await github.rest.issues.getLabel({ ...context.repo, name });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({ ...context.repo, name, color, description });
+              }
+            };
+
+            await ensureLabel(MERGEABLE, '0e8a16', 'CI xanh — KHÔNG thay thế required status checks');
+            await ensureLabel(FAILING,   'd73a4a', 'CI đỏ — xem tab Checks');
+
+            const issue_number = context.issue.number;
+            const [toAdd, toRemove] = passed ? [MERGEABLE, FAILING] : [FAILING, MERGEABLE];
+
+            await github.rest.issues.addLabels({
+              ...context.repo, issue_number, labels: [toAdd],
+            });
+
+            // Gỡ nhãn ngược lại. 404 = PR chưa từng mang nhãn đó, không phải lỗi.
+            try {
+              await github.rest.issues.removeLabel({
+                ...context.repo, issue_number, name: toRemove,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            core.info(`PR #${issue_number}: +${toAdd} / -${toRemove}`);
+
+  # ==================================================================
+  # Build image — chỉ trên master, sau khi test xanh
+  # ==================================================================
+  images:
+    name: Build & push image
+    needs: [verify, guardrails]
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - { name: discovery-server, path: infrastructure/discovery-server }
+          - { name: config-server,    path: infrastructure/config-server }
+          - { name: api-gateway,      path: infrastructure/api-gateway }
+          - { name: auth-service,     path: services/auth-service }
+          - { name: ledger-service,   path: services/ledger-service }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Đăng nhập GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push ${{ matrix.service.name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.service.path }}/Dockerfile
+          push: true
+          # Tag bằng SHA chứ không chỉ `latest`: phải truy được image đang chạy
+          # tương ứng với commit nào — điều kiện cần để rollback và để điều tra sự cố.
+          tags: |
+            ghcr.io/${{ github.repository }}/${{ matrix.service.name }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}/${{ matrix.service.name }}:latest
+          cache-from: type=gha,scope=${{ matrix.service.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service.name }}

@@ -137,6 +137,37 @@
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
+            <!-- Ngưỡng độ phủ đặt trên dữ liệu INTEGRATION TEST, vì toàn bộ giá trị kiểm chứng
+                 của service này nằm ở các test Testcontainers. Mức đo được lúc đặt gate là 94,7%;
+                 ngưỡng 85% để bắt được sụt giảm thật mà không vỡ vì dao động vài phần trăm. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>check-integration</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <dataFile>${project.build.directory}/jacoco-it.exec</dataFile>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.85</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>

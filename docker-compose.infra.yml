@@ -1,0 +1,88 @@
+# =====================================================================
+# WalletFlow — HẠ TẦNG TỐI THIỂU cho chế độ phát triển "Lite"
+#
+#   docker compose -f docker-compose.infra.yml up -d
+#
+# Chỉ Postgres + Kafka + Redis. Service nghiệp vụ chạy bằng JVM trên host:
+#   ./mvnw -pl services/ledger-service -am spring-boot:run -Dspring-boot.run.profiles=local
+#
+# Vì sao tách khỏi docker-compose.yml: full stack (11 container) cần ~7GB RAM và
+# mỗi lần sửa code phải build lại image ~2 phút. Bản này tốn ~1.3GB và vòng lặp
+# sửa-chạy tính bằng giây. application.yml của mọi service đã mặc định về
+# localhost nên chạy ngoài Docker không cần sửa config.
+# =====================================================================
+name: walletflow          # giữ nguyên tên project -> dùng lại volume walletflow_pgdata đã có
+
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: wf-postgres
+    environment:
+      POSTGRES_USER: walletflow
+      POSTGRES_PASSWORD: walletflow
+      POSTGRES_DB: walletflow
+    ports:
+      - "5432:5432"
+    volumes:
+      # init.sql CHỈ chạy khi volume còn rỗng. Volume hiện tại đã có đủ 5 database
+      # nên file này thực tế không chạy lại — giữ để dựng lại từ đầu được.
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U walletflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 512m
+
+  kafka:
+    image: apache/kafka:3.9.1
+    container_name: wf-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: "0"
+      KAFKA_PROCESS_ROLES: "controller,broker"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "0@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      # ⚠️ KHÁC docker-compose.yml: quảng bá 'localhost' chứ không phải 'kafka'.
+      # Kafka trả địa chỉ này cho client để client kết nối tới broker. Service chạy
+      # trên host không phân giải được tên 'kafka' (nó chỉ tồn tại trong mạng Docker)
+      # nên sẽ treo rồi timeout — triệu chứng rất khó đoán vì bước bootstrap vẫn OK.
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      # Tắt auto-create: topic chỉ được sinh ra từ KafkaTopicsAutoConfiguration.
+      # Gõ sai tên topic phải BÁO LỖI, không được âm thầm tạo topic mới rồi để
+      # message nằm đó mãi mãi không ai consume.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    mem_limit: 768m
+
+  redis:
+    image: redis:7
+    container_name: wf-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 128m
+
+volumes:
+  pgdata:
+    external: true
+    name: walletflow_pgdata

@@ -14,8 +14,12 @@ spring:
     gateway:
       discovery:
         locator:
-          enabled: true
-          lower-case-service-id: true
+          # TẮT. Khi bật, MỌI service đăng ký Eureka tự động có một đường vào qua
+          # /{service-id}/** — kể cả service không hề định công khai (ledger-service là
+          # nguồn sự thật về tiền và không có API công khai nào). Bề mặt tấn công khi đó
+          # là hệ quả của việc service có đăng ký danh bạ hay không, chứ không phải của
+          # một quyết định tường minh. Route nào cần public thì khai dưới đây.
+          enabled: false
       routes:
         # Đăng nhập/đăng ký: công khai + rate limit theo IP (chống brute-force)
         - id: auth-service
@@ -28,6 +32,12 @@ spring:
                 key-resolver: "#{@ipKeyResolver}"
                 redis-rate-limiter.replenishRate: 5
                 redis-rate-limiter.burstCapacity: 10
+
+        # JWKS: công khai (chỉ chứa public key) để client/công cụ tự verify được token
+        - id: auth-jwks
+          uri: lb://AUTH-SERVICE
+          predicates:
+            - Path=/.well-known/**
 
         # ----- Các route sau sẽ hoạt động khi service tương ứng ra đời (milestone sau) -----
         # Lệnh ghi tiền: rate limit theo user đã xác thực (chống spam giao dịch)
@@ -46,9 +56,12 @@ spring:
           predicates:
             - Path=/api/v1/wallets/**
 
-# Khoá bí mật JWT — PHẢI trùng với khoá ký token bên auth-service
 jwt:
-  secret: ${JWT_SECRET:V2FsbGV0Rmxvd1N1cGVyU2VjcmV0S2V5Rm9ySldUSFMyNTZBbGdvcml0aG0xMjM0NTY3ODkw}
+  # Gateway CHỈ verify. Nó lấy public key qua JWKS và không hề biết private key —
+  # nên gateway bị chiếm cũng không phát hành được token. Xem ADR-009.
+  jwks-uri: ${JWKS_URI:http://auth-service/.well-known/jwks.json}
+  jwks-refresh-ms: ${JWKS_REFRESH_MS:300000}
+  issuer: ${JWT_ISSUER:walletflow-auth}
 
 eureka:
   client:

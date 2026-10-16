@@ -1,0 +1,27 @@
+# =====================================================================
+# Profile `local` — chạy service bằng JVM trên host, hạ tầng trong Docker.
+#   ./mvnw -pl services/ledger-service -am spring-boot:run -Dspring-boot.run.profiles=local
+#
+# Không cần discovery-server/config-server: chạy một instance thì danh bạ và
+# cấu hình tập trung chỉ làm chậm khởi động và làm bẩn log.
+# =====================================================================
+spring:
+  cloud:
+    config:
+      # Tắt HẲN chứ không chỉ dựa vào tiền tố `optional:` ở application.yml:
+      # `optional:` vẫn thử kết nối rồi mới bỏ qua, tốn vài giây mỗi lần khởi động.
+      enabled: false
+
+eureka:
+  client:
+    enabled: false
+
+# Relay chạy dày hơn mặc định (2s) để nhìn thấy luồng outbox gần như tức thì khi debug.
+outbox:
+  relay:
+    delay-ms: 1000
+
+logging:
+  level:
+    com.walletflow: DEBUG          # thấy nhịp outbox relay, dedup, phân loại lỗi
+    org.hibernate.SQL: DEBUG

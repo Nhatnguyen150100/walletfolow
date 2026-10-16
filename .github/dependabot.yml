@@ -1,0 +1,24 @@
+version: 2
+updates:
+
+  # Gom thành một PR mỗi tuần thay vì một PR cho mỗi dependency: với một dự án
+  # multi-module, cập nhật lẻ tẻ tạo ra lượng PR mà không ai review nổi — và PR
+  # không ai review thì không khác gì không có Dependabot.
+  - package-ecosystem: maven
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      spring:
+        patterns: ["org.springframework*", "io.micrometer*"]
+      testing:
+        patterns: ["org.testcontainers*", "org.junit*", "org.assertj*"]
+      others:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

@@ -31,6 +31,13 @@
       <artifactId>spring-kafka</artifactId>
       <optional>true</optional>
     </dependency>
+    <!-- Metrics cho outbox/DLT. optional=true: service nào có actuator thì metric tự xuất hiện,
+         service không có thì code vẫn chạy (lấy MeterRegistry qua ObjectProvider). -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+      <optional>true</optional>
+    </dependency>
     <dependency>
       <groupId>org.projectlombok</groupId>
       <artifactId>lombok</artifactId>

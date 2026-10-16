@@ -1,7 +1,18 @@
 target/
-!.mvn/wrapper/maven-wrapper.jar
 *.class
 *.log
+
+# Bí mật — KHÔNG BAO GIỜ commit. Dùng .env.example làm mẫu.
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.p12
+*.jks
+
+# Maven wrapper: chỉ commit script + properties, không commit Maven đã tải về
+.mvn/wrapper/maven-wrapper.jar
 
 # IDE
 .idea/

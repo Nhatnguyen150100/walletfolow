@@ -12,15 +12,29 @@ spring:
     password: ${DB_PASS:walletflow}
   jpa:
     hibernate:
-      ddl-auto: update    # Học/dev cho nhanh; production nên dùng Flyway
+      # Flyway quản schema; Hibernate chỉ validate. KHÔNG BAO GIỜ quay lại `update`:
+      # schema do Hibernate suy diễn thì không review được, không rollback được, và khác nhau
+      # giữa các môi trường tuỳ theo lịch sử deploy.
+      ddl-auto: validate
     open-in-view: false
     properties:
       hibernate.format_sql: true
+  flyway:
+    enabled: true
+    # Cố tình KHÔNG bật baseline-on-migrate: authdb cũ (do ddl-auto sinh) sẽ bị Flyway từ chối
+    # với thông báo rõ ràng, thay vì lặng lẽ đánh dấu V1 "đã chạy" rồi vỡ ở Hibernate validate.
+    # Dựng lại: DROP DATABASE authdb; CREATE DATABASE authdb;
+    baseline-on-migrate: false
 
 jwt:
-  # PHẢI trùng với jwt.secret bên api-gateway
-  secret: ${JWT_SECRET:V2FsbGV0Rmxvd1N1cGVyU2VjcmV0S2V5Rm9ySldUSFMyNTZBbGdvcml0aG0xMjM0NTY3ODkw}
-  expiration: ${JWT_EXPIRATION:86400000}   # 24 giờ (ms)
+  # KHÔNG CÓ GIÁ TRỊ MẶC ĐỊNH — thiếu biến thì service phải chết lúc khởi động.
+  # Sinh khoá: ./scripts/gen-keys.sh  (ghi vào .env, đã gitignore)
+  private-key: ${JWT_PRIVATE_KEY}
+  public-key: ${JWT_PUBLIC_KEY}
+  issuer: ${JWT_ISSUER:walletflow-auth}
+  # 15 phút: access token không thu hồi được, nên thời hạn ngắn chính là cơ chế thu hồi.
+  access-ttl-seconds: ${JWT_ACCESS_TTL_SECONDS:900}
+  refresh-ttl-days: ${JWT_REFRESH_TTL_DAYS:30}
 
 eureka:
   client:

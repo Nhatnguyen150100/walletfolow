@@ -1,0 +1,18 @@
+# =====================================================================
+# Override CHỈ DÙNG KHI DEBUG — mở cổng của service nội bộ ra host.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# ⚠️ Không bao giờ dùng file này ở môi trường có người khác truy cập được: service
+# nội bộ tin tuyệt đối header X-User-*, nên mọi đường vào không qua gateway đều là
+# đường vòng qua xác thực.
+# =====================================================================
+services:
+
+  ledger-service:
+    ports:
+      - "8083:8083"
+
+  auth-service:
+    ports:
+      - "8081:8081"

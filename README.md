@@ -5,60 +5,82 @@ Hệ thống ví điện tử phân tán xây bằng **Java 21 · Spring Boot 3.
 **idempotency (chống double-charge)**, **Saga orchestration**, **Transactional Outbox**,
 **Kafka at-least-once + dedup**, **reconciliation**.
 
-> 📚 Kế hoạch kỹ thuật đầy đủ: [`docs/walletflow-master-plan.md`](docs/walletflow-master-plan.md)
-> · Quyết định kiến trúc: [`docs/adr/`](docs/adr/)
+> 📚 [Kế hoạch kỹ thuật](docs/walletflow-master-plan.md) ·
+> [Lộ trình lên production](docs/walletflow-production-roadmap.md) ·
+> [Hướng dẫn chạy local](docs/local-setup-plan.md) ·
+> [ADR](docs/adr/) · [Runbook](docs/runbooks/)
 
 ---
 
-## 🧩 Thành phần (theo milestone)
+## 🧩 Thành phần
 
-| Thành phần | Cổng | Vai trò | Milestone |
+| Thành phần | Cổng | Vai trò | Trạng thái |
 |---|---|---|---|
-| discovery-server (Eureka) | 8761 | Danh bạ service | ✅ M0 |
-| config-server | 8888 | Cấu hình tập trung | ✅ M0 |
-| api-gateway | 8080 | Cổng vào: routing, verify JWT, rate limit | ✅ M0 |
-| auth-service | 8081 | Đăng ký, đăng nhập, cấp JWT | ✅ M0 |
-| common-lib | — | Money, response, exception, event envelope, outbox, dedup | ✅ M0 |
-| ledger-service | 8083 | Sổ cái double-entry (source of truth) | ✅ M1 |
-| wallet-service | 8082 | Read model số dư (CQRS) | ⏳ M2 |
-| transaction-service | 8084 | Orchestrator Saga + idempotency | ⏳ M3 |
-| bank-adapter | 8085 | Mock cổng ngân hàng ngoài | ⏳ M4 |
-| notification-service | 8086 | Thông báo kết quả | ⏳ M4 |
+| discovery-server (Eureka) | 8761 | Danh bạ service | ✅ |
+| config-server | 8888 | Cấu hình tập trung | ✅ |
+| api-gateway | 8080 | Routing, verify JWT qua JWKS, rate limit | ✅ |
+| auth-service | 8081 | Đăng ký/đăng nhập, ký JWT RS256, refresh token | ✅ |
+| common-lib | — | Money, outbox, dedup, xử lý lỗi Kafka + DLT | ✅ |
+| ledger-service | 8083 | Sổ cái double-entry (nguồn sự thật) | ✅ |
+| wallet-service | 8082 | Read model số dư (CQRS) | ⏳ Phase 1 |
+| transaction-service | 8084 | Orchestrator Saga + idempotency | ⏳ Phase 1 |
+| bank-adapter | 8085 | Cổng ngân hàng ngoài | ⏳ Phase 2 |
+| notification-service | 8086 | Thông báo kết quả | ⏳ Phase 1 |
 
 **Hạ tầng:** PostgreSQL (DB-per-service), Redis, Apache Kafka, Jaeger, Prometheus + Grafana.
 
 ---
 
-## 🚀 Chạy (Docker)
+## 🚀 Chạy
+
+### Lần đầu — bắt buộc
 
 ```bash
-cd walletflow
+cp .env.example .env
+./scripts/gen-keys.sh        # sinh cặp khoá RSA cho JWT
+```
+
+Không có bước này thì service **không khởi động** — cố ý như vậy: một khoá mặc định "chỉ dùng cho
+dev" là khoá sẽ theo lên production (xem [ADR-009](docs/adr/ADR-009-asymmetric-jwt-jwks.md)).
+
+### Chế độ Lite — dùng hằng ngày (~1,3 GB RAM)
+
+Hạ tầng trong Docker, service chạy bằng JVM trên host. Vòng lặp sửa–chạy tính bằng giây.
+
+```bash
+docker compose -f docker-compose.infra.yml up -d
+set -a && source .env && set +a
+./mvnw -pl services/ledger-service -am spring-boot:run -Dspring-boot.run.profiles=local
+```
+
+### Chế độ Full — toàn bộ stack (~7 GB RAM)
+
+```bash
+set -a && source .env && set +a
 docker compose up -d --build
 ```
 
-Lần đầu build lâu (Maven tải dependency). Kiểm tra sau khi lên:
-
 | Thành phần | URL |
 |---|---|
-| Eureka | http://localhost:8761 |
 | API Gateway | http://localhost:8080 |
-| Auth Swagger | http://localhost:8081/swagger-ui.html |
+| Eureka | http://localhost:8761 |
 | Jaeger | http://localhost:16686 |
 | Prometheus | http://localhost:9090 |
-| Grafana (admin/admin) | http://localhost:3000 |
+| Grafana (admin/admin) | http://localhost:3000 → dashboard **WalletFlow — Tổng quan** |
 
-**Thử nhanh auth (qua Gateway):**
+**Thử nhanh auth:**
 
 ```bash
-# Đăng ký
 curl -X POST http://localhost:8080/api/auth/register \
   -H 'Content-Type: application/json' \
-  -d '{"email":"a@b.com","password":"secret1","fullName":"Nguyen Van A"}'
+  -d '{"email":"a@b.com","password":"mat-khau-du-dai-12","fullName":"Nguyen Van A"}'
 
-# Đăng nhập -> nhận accessToken
-curl -X POST http://localhost:8080/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"a@b.com","password":"secret1"}'
+# -> accessToken (15 phút) + refreshToken (30 ngày, xoay vòng mỗi lần dùng)
+curl -X POST http://localhost:8080/api/auth/refresh \
+  -H 'Content-Type: application/json' -d '{"refreshToken":"<token>"}'
+
+# Public key để tự verify token
+curl http://localhost:8080/.well-known/jwks.json
 ```
 
 ---
@@ -66,22 +88,10 @@ curl -X POST http://localhost:8080/api/auth/login \
 ## 🧪 Test
 
 ```bash
-# Chạy toàn bộ test (cần Maven, hoặc dùng Docker maven image)
-mvn -pl common-lib test          # Money value object
-
-# Nếu không có mvn local:
-docker run --rm -v "$PWD":/w -w /w maven:3.9-eclipse-temurin-21 \
-  mvn -q -pl common-lib -am test
+./mvnw verify          # toàn bộ: unit + integration (cần Docker cho Testcontainers)
 ```
 
----
-
-## 🗺️ Trạng thái
-
-Đã xong **Milestone 1**: sổ cái double-entry là nguồn sự thật về tiền, nhận `PostJournalCommand`
-qua Kafka và phát `LedgerPostedEvent`/`LedgerRejectedEvent` qua Transactional Outbox.
-
-Được chứng minh bằng test (Testcontainers: Postgres + Kafka thật):
+**34 test, tất cả chạy trên Postgres + Kafka thật.** Mỗi tính chất về tiền có một test chứng minh:
 
 | Tính chất | Test |
 |---|---|
@@ -92,9 +102,39 @@ qua Kafka và phát `LedgerPostedEvent`/`LedgerRejectedEvent` qua Transactional 
 | Sổ cái append-only: DB từ chối UPDATE/DELETE kể cả bằng SQL trực tiếp | `LedgerServiceIT` |
 | Outbox thật sự publish được lên Kafka, quét lại không gửi lặp | `OutboxRelayIT` |
 | Cả chuỗi: lệnh vào Kafka → ghi sổ → event đi ra; dedup message trùng | `LedgerCommandFlowIT` |
+| **Message hỏng vào DLT nguyên văn, không chặn message hợp lệ phía sau** | `KafkaDltIT` |
+| **Dọn outbox không bao giờ đụng hàng chưa gửi** | `OutboxRetentionIT` |
+| **Gauge tuổi outbox phản ánh đúng tồn đọng** (phát hiện relay chết) | `OutboxRetentionIT` |
+| **Token ký RS256, verify được bằng khoá từ JWKS; JWKS không lộ private key** | `AuthFlowIT` |
+| **Refresh xoay vòng; dùng lại token đã thu hồi giết cả chuỗi** | `AuthFlowIT` |
+| **Bộ đếm đăng nhập sai sống sót qua rollback** | `AuthFlowIT` |
 
-```bash
-mvn -pl common-lib,services/ledger-service -am verify   # cần Docker cho Testcontainers
-```
+Độ phủ (integration): ledger-service **94,7%**, auth-service **79,8%** — có gate trong CI.
 
-Bước tiếp theo: **Milestone 2 — wallet-service** (read model số dư, consume `LedgerPostedEvent`).
+---
+
+## 🛡️ Những gì Phase 0 đã siết
+
+| Trước | Sau |
+|---|---|
+| DLT chỉ tồn tại trong javadoc; message lỗi bị **log rồi bỏ qua** sau 10 lần thử | `DefaultErrorHandler` + `DeadLetterPublishingRecoverer` thật, poison message đi thẳng DLT không chặn partition |
+| Secret JWT HS256 **commit trong repo**, gateway cũng ký được token | RS256 + JWKS, gateway chỉ verify; thiếu khoá thì service chết lúc khởi động |
+| Access token 24 giờ, không thu hồi được | 15 phút + refresh token xoay vòng, phát hiện tái sử dụng |
+| `ddl-auto: update` ở auth-service | Flyway, `ddl-auto: validate` |
+| Header `X-User-*` của client đi thẳng xuống service trên path công khai | Strip vô điều kiện trên **mọi** path |
+| Mọi service trên Eureka tự có đường vào qua gateway | Discovery locator tắt, chỉ route khai tường minh |
+| Auto-create topic: gõ sai tên topic là lỗi câm | Khai báo topic tường minh, auto-create tắt |
+| Outbox phình vô hạn, không metric | Job dọn + partial index + gauge/counter + alert |
+| Không có CI | `mvn verify` với Testcontainers + quét secret + guardrail + coverage gate |
+| 1/8 ADR, không dashboard, không alert, không backup | 9 ADR, dashboard + 8 alert rule, script backup/restore + 4 runbook |
+
+---
+
+## 🗺️ Bước tiếp theo
+
+**Phase 1** — `wallet-service` (read model số dư) + `transaction-service` (Saga + idempotency key),
+để có API chuyển tiền end-to-end. Chi tiết: [roadmap §Phase 1](docs/walletflow-production-roadmap.md).
+
+Hai việc tồn đọng của Phase 0:
+- [ ] Diễn tập restore một lần và điền RTO đo thật vào [`docs/runbooks/restore.md`](docs/runbooks/restore.md)
+- [ ] Bật branch protection trên `master` (bắt buộc PR + CI xanh)
