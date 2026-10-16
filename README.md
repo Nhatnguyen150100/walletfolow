@@ -50,8 +50,14 @@ Hạ tầng trong Docker, service chạy bằng JVM trên host. Vòng lặp sử
 ```bash
 docker compose -f docker-compose.infra.yml up -d
 set -a && source .env && set +a
-./mvnw -pl services/ledger-service -am spring-boot:run -Dspring-boot.run.profiles=local
+
+./mvnw -o -q install -DskipTests          # một lần, để common-lib vào local repo
+./mvnw -pl services/ledger-service spring-boot:run -Dspring-boot.run.profiles=local
 ```
+
+> ⚠️ **Không thêm `-am` vào `spring-boot:run`.** `-am` kéo cả parent pom vào reactor, và
+> `spring-boot:run` sẽ chạy trên parent trước → `Unable to find a suitable main class`.
+> `-am` chỉ dùng cho `package`/`verify`.
 
 ### Chế độ Full — toàn bộ stack (~7 GB RAM)
 

@@ -57,7 +57,7 @@ echo "✅ Đã ghi JWT_PRIVATE_KEY và JWT_PUBLIC_KEY vào $ENV_FILE (chmod 600)
 echo
 echo "Chạy auth-service với khoá vừa sinh:"
 echo "   set -a && source .env && set +a"
-echo "   ./mvnw -pl services/auth-service -am spring-boot:run -Dspring-boot.run.profiles=local"
+echo "   ./mvnw -pl services/auth-service spring-boot:run -Dspring-boot.run.profiles=local"
 echo
 echo "⚠️  Đây là khoá DEV. Môi trường thật phải sinh khoá riêng và giữ trong"
 echo "    secret manager (Vault / AWS Secrets Manager), không nằm trong file."
