@@ -159,11 +159,12 @@ class OutboxRetentionIT {
         UUID id = UUID.randomUUID();
         jdbcTemplate.update("""
                         INSERT INTO outbox_event
-                            (id, created_at, updated_at, topic, msg_key, event_type,
+                            (id, tenant_id, created_at, updated_at, topic, msg_key, event_type,
                              payload, published, published_at, event_id)
-                        VALUES (?, ?, ?, 'test.topic.v1', 'KEY', 'TestEvent', '{}', ?, ?, ?)
+                        VALUES (?, ?, ?, ?, 'test.topic.v1', 'KEY', 'TestEvent', '{}', ?, ?, ?)
                         """,
                 id,
+                com.walletflow.common.tenant.TenantContext.DEFAULT_TENANT,
                 Timestamp.from(createdAt),
                 Timestamp.from(createdAt),
                 published,

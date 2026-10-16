@@ -1,5 +1,7 @@
 package com.walletflow.ledger.dto;
 
+import com.walletflow.common.event.Leg;
+
 import java.util.List;
 
 /**

@@ -1,6 +1,5 @@
-package com.walletflow.ledger.dto;
+package com.walletflow.common.event;
 
-import com.walletflow.ledger.enums.EJournalType;
 
 import java.util.UUID;
 

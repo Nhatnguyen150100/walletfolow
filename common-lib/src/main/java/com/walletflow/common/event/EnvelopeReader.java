@@ -25,20 +25,32 @@ public class EnvelopeReader {
   /**
    * @param json        thân message thô trên Kafka
    * @param payloadType kiểu payload mà consumer này muốn đọc
-   * @throws PoisonMessageException nếu JSON không đọc được. Đây là lỗi KHÔNG BAO GIỜ tự khỏi khi
-   *                                thử lại, nên {@code KafkaErrorHandlingAutoConfiguration} khai nó
-   *                                là non-retryable → message đi thẳng DLT thay vì chặn cả partition
-   *                                (plan §12, bài toán P9). Kiểu này kế thừa
-   *                                {@code IllegalArgumentException} nên hợp đồng cũ vẫn giữ nguyên.
+   * @throws PoisonMessageException nếu JSON không đọc được, hoặc thiếu {@code tenantId}. Cả hai đều
+   *                                là lỗi KHÔNG BAO GIỜ tự khỏi khi thử lại, nên
+   *                                {@code KafkaErrorHandlingAutoConfiguration} khai chúng là
+   *                                non-retryable → message đi thẳng DLT thay vì chặn cả partition
+   *                                (plan §12, bài toán P9).
    */
   public <T> EventEnvelope<T> read(String json, Class<T> payloadType) {
     JavaType type = objectMapper.getTypeFactory()
         .constructParametricType(EventEnvelope.class, payloadType);
+
+    EventEnvelope<T> envelope;
     try {
-      return objectMapper.readValue(json, type);
+      envelope = objectMapper.readValue(json, type);
     } catch (Exception e) {
       throw new PoisonMessageException(
           "Message không đọc được thành EventEnvelope<" + payloadType.getSimpleName() + ">", e);
     }
+
+    // Thiếu tenantId là message KHÔNG XỬ LÝ ĐƯỢC, không phải message dùng tenant mặc định.
+    // Đoán tenant cho một lệnh tiền là cách ghi dữ liệu của khách này vào sổ của khách khác.
+    if (envelope.tenantId() == null) {
+      throw new PoisonMessageException(
+          "Message thiếu tenantId (eventId=" + envelope.eventId()
+              + ", eventType=" + envelope.eventType() + "). Không đoán tenant cho lệnh tiền.");
+    }
+
+    return envelope;
   }
 }

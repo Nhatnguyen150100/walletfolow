@@ -2,6 +2,7 @@ package com.walletflow.common.outbox;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.walletflow.common.event.EventEnvelope;
+import com.walletflow.common.tenant.TenantContext;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
@@ -47,10 +48,16 @@ public class OutboxPublisher {
    */
   @Transactional(propagation = Propagation.MANDATORY)
   public void publish(String topic, String msgKey, UUID eventId, String eventType, Object payload) {
+    // Lấy tenant từ ngữ cảnh chứ không nhận qua tham số: nếu để người gọi truyền vào, sớm muộn sẽ
+    // có một chỗ truyền nhầm tenant của request khác. TenantContext.require() ném lỗi khi chưa
+    // được đặt, nên một đường code quên đặt tenant sẽ hỏng ngay thay vì ghi vào tenant mặc định.
+    UUID tenantId = TenantContext.require();
+
     EventEnvelope<Object> envelope =
-        EventEnvelope.of(eventId, eventType, currentTraceId(), payload, Instant.now());
+        EventEnvelope.of(eventId, eventType, tenantId, currentTraceId(), payload, Instant.now());
     try {
       OutboxEvent event = OutboxEvent.builder()
+          .tenantId(tenantId)
           .topic(topic)
           .msgKey(msgKey)
           .eventId(eventId)

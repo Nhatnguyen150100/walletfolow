@@ -4,7 +4,8 @@ import com.walletflow.common.event.EnvelopeReader;
 import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.exception.AppException;
-import com.walletflow.ledger.dto.PostJournalCommand;
+import com.walletflow.common.tenant.TenantContext;
+import com.walletflow.common.event.PostJournalCommand;
 import com.walletflow.ledger.services.LedgerCommandHandler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -44,16 +45,22 @@ public class LedgerCommandListener {
                 envelopeReader.read(message, PostJournalCommand.class);
         PostJournalCommand command = envelope.payload();
 
-        try {
-            boolean processed = handler.handle(envelope.eventId(), command);
-            if (!processed) {
-                log.debug("Ledger: bỏ qua message trùng eventId={}", envelope.eventId());
+        // Đây là BIÊN VÀO của luồng Kafka: nơi duy nhất được phép đặt tenant. Dùng runWith thay vì
+        // set()+clear() vì thread của listener container được tái sử dụng cho message kế tiếp —
+        // quên clear() nghĩa là message sau thừa hưởng tenant của message trước, và nó sẽ ghi sổ
+        // cho đúng ví đó dưới sai khách hàng.
+        TenantContext.runWith(envelope.tenantId(), () -> {
+            try {
+                boolean processed = handler.handle(envelope.eventId(), command);
+                if (!processed) {
+                    log.debug("Ledger: bỏ qua message trùng eventId={}", envelope.eventId());
+                }
+            } catch (AppException rejection) {
+                log.warn("Ledger từ chối transaction {} ({}): {} - {}",
+                        command.transactionId(), command.type(),
+                        rejection.getErrorCode(), rejection.getMessage());
+                handler.reject(envelope.eventId(), command, rejection);
             }
-        } catch (AppException rejection) {
-            log.warn("Ledger từ chối transaction {} ({}): {} - {}",
-                    command.transactionId(), command.type(),
-                    rejection.getErrorCode(), rejection.getMessage());
-            handler.reject(envelope.eventId(), command, rejection);
-        }
+        });
     }
 }

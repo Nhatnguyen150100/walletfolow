@@ -41,6 +41,15 @@ public class ProcessedEvent {
   @Column(name = "consumer", nullable = false, length = 64)
   private String consumer;
 
+  /**
+   * Tenant sở hữu event. KHÔNG nằm trong khoá chính: {@code eventId} đã là UUID duy nhất toàn cục
+   * nên thêm tenant vào khoá không mua thêm tính đúng đắn, mà lại mở ra khả năng cùng một eventId
+   * được xử lý hai lần dưới hai tenant khác nhau — đúng thứ dedup sinh ra để chặn.
+   * Cột này để lọc/dọn dẹp và để điều tra theo khách hàng.
+   */
+  @Column(name = "tenant_id", nullable = false)
+  private UUID tenantId;
+
   @Column(name = "processed_at", nullable = false)
   private Instant processedAt;
 

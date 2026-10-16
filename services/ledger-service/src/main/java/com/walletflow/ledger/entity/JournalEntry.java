@@ -1,7 +1,7 @@
 package com.walletflow.ledger.entity;
 
 import com.walletflow.common.entity.ImmutableEntity;
-import com.walletflow.ledger.enums.EJournalType;
+import com.walletflow.common.event.EJournalType;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -20,10 +20,19 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 @Table(name = "journal_entries", uniqueConstraints = @UniqueConstraint(
-        name = "uk_journal_txn_type",
-        columnNames = {"transaction_id", "type"}
+        name = "uk_journal_tenant_txn_type",
+        columnNames = {"tenant_id", "transaction_id", "type"}
 ))
 public class JournalEntry extends ImmutableEntity {
+
+    /**
+     * Tenant sở hữu bút toán, và là thành phần đầu của khoá idempotency.
+     *
+     * <p>Thiếu nó, {@code transactionId} của khách A có thể va vào khoá của khách B: lệnh tiền hợp
+     * lệ bị coi là trùng và lặng lẽ không được thực thi — thất bại tệ nhất vì không ai thấy lỗi.
+     */
+    @Column(name = "tenant_id", nullable = false)
+    private UUID tenantId;
 
     /**
      * Khoá idempotency nghiệp vụ, cùng với {@code type} tạo thành ràng buộc
