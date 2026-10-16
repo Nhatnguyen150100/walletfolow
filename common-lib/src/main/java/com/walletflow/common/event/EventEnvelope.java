@@ -6,10 +6,14 @@ import java.util.UUID;
 /**
  * Bao bì chuẩn (envelope) cho MỌI message Kafka trong hệ thống (plan §11).
  *
- * <p>Hai trường quan trọng nhất về mặt kiến trúc phân tán:
+ * <p>Ba trường quan trọng nhất về mặt kiến trúc phân tán:
  * <ul>
  *   <li>{@code eventId}: định danh DUY NHẤT của message — phía consumer dùng để KHỬ TRÙNG
  *       (dedup), giải quyết việc Kafka giao at-least-once có thể gửi lặp (bài toán P5).</li>
+ *   <li>{@code tenantId}: khách hàng mà message này thuộc về. Nằm ở envelope chứ không nằm trong
+ *       payload vì nó là ngữ cảnh vận chuyển, đúng như {@code traceId} — mọi consumer đều cần nó
+ *       để đặt {@link com.walletflow.common.tenant.TenantContext} trước khi chạm dữ liệu, kể cả
+ *       consumer không quan tâm nội dung nghiệp vụ.</li>
  *   <li>{@code traceId}: nối ngữ cảnh trace xuyên suốt nhiều service để quan sát 1 giao dịch
  *       trên một dòng thời gian (bài toán P11). Đi trong THÂN message chứ không chỉ trong header
  *       Kafka, vì message được relay gửi đi trên một luồng nền — lúc đó span của giao dịch nghiệp
@@ -26,6 +30,7 @@ public record EventEnvelope<T>(
     String eventType,
     int version,
     Instant occurredAt,
+    UUID tenantId,
     String traceId,
     T payload) {
 
@@ -42,8 +47,9 @@ public record EventEnvelope<T>(
    * "at-least-once + dedup theo eventId".
    */
   public static <T> EventEnvelope<T> of(
-      UUID eventId, String eventType, String traceId, T payload, Instant occurredAt) {
-    return new EventEnvelope<>(eventId, eventType, CURRENT_VERSION, occurredAt, traceId, payload);
+      UUID eventId, String eventType, UUID tenantId, String traceId, T payload, Instant occurredAt) {
+    return new EventEnvelope<>(
+        eventId, eventType, CURRENT_VERSION, occurredAt, tenantId, traceId, payload);
   }
 
   /**
@@ -51,7 +57,7 @@ public record EventEnvelope<T>(
    * (vd thông báo, log nghiệp vụ) và việc xử lý trùng là vô hại.
    */
   public static <T> EventEnvelope<T> ofRandomId(
-      String eventType, String traceId, T payload, Instant occurredAt) {
-    return of(UUID.randomUUID(), eventType, traceId, payload, occurredAt);
+      String eventType, UUID tenantId, String traceId, T payload, Instant occurredAt) {
+    return of(UUID.randomUUID(), eventType, tenantId, traceId, payload, occurredAt);
   }
 }

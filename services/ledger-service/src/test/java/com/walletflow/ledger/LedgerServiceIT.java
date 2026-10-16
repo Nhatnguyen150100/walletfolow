@@ -1,5 +1,6 @@
 package com.walletflow.ledger;
 
+import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.common.exception.BadRequestException;
 import com.walletflow.common.exception.InsufficientFundsException;
 import com.walletflow.common.exception.ResourceNotFoundException;
@@ -66,6 +67,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Testcontainers
 class LedgerServiceIT {
 
+    /** Mọi test chạy dưới tenant mặc định; TenantContext được đặt tường minh ở helper. */
+    private static final UUID TENANT = TenantContext.DEFAULT_TENANT;
+
     private static final String EXTERNAL_BANK = "EXTERNAL_BANK";
     private static final String WALLET_A = "WALLET_A";
     private static final String WALLET_B = "WALLET_B";
@@ -116,8 +120,8 @@ class LedgerServiceIT {
         seedWallet(WALLET_A);
         seedWallet(WALLET_B);
 
-        ledgerService.postJournal(topUp(WALLET_A, 100_000));
-        ledgerService.postJournal(transfer(WALLET_A, WALLET_B, 30_000));
+        post(topUp(WALLET_A, 100_000));
+        post(transfer(WALLET_A, WALLET_B, 30_000));
 
         assertThat(balanceOf(WALLET_A)).isEqualTo(70_000);
         assertThat(balanceOf(WALLET_B)).isEqualTo(30_000);
@@ -138,7 +142,7 @@ class LedgerServiceIT {
                 UUID.randomUUID(), EJournalType.TRANSFER, null, ECurrency.VND,
                 List.of(new Leg(WALLET_A, -100_000), new Leg(EXTERNAL_BANK, 50_000)));
 
-        assertThatThrownBy(() -> ledgerService.postJournal(lechVe))
+        assertThatThrownBy(() -> post(lechVe))
                 .isInstanceOf(BadRequestException.class);
 
         assertThat(postingRepository.count()).isZero();
@@ -161,7 +165,7 @@ class LedgerServiceIT {
                         new Leg(WALLET_B, Long.MAX_VALUE),
                         new Leg(EXTERNAL_BANK, 2)));
 
-        assertThatThrownBy(() -> ledgerService.postJournal(tranSo))
+        assertThatThrownBy(() -> post(tranSo))
                 .isInstanceOf(BadRequestException.class);
 
         assertThat(postingRepository.count()).isZero();
@@ -177,17 +181,17 @@ class LedgerServiceIT {
         seedWallet(WALLET_A);
 
         // legs rỗng có SUM = 0 nên "cân bằng" một cách vô nghĩa
-        assertThatThrownBy(() -> ledgerService.postJournal(new PostJournalCommand(
+        assertThatThrownBy(() -> post(new PostJournalCommand(
                 UUID.randomUUID(), EJournalType.TRANSFER, null, ECurrency.VND, List.of())))
                 .isInstanceOf(BadRequestException.class);
 
-        assertThatThrownBy(() -> ledgerService.postJournal(new PostJournalCommand(
+        assertThatThrownBy(() -> post(new PostJournalCommand(
                 UUID.randomUUID(), EJournalType.TRANSFER, null, ECurrency.VND,
                 List.of(new Leg(WALLET_A, 0)))))
                 .isInstanceOf(BadRequestException.class);
 
         // Vế 0 không mang thông tin: phải bị chặn ở tầng app (400) chứ không để CHECK ở DB nổ (500)
-        assertThatThrownBy(() -> ledgerService.postJournal(new PostJournalCommand(
+        assertThatThrownBy(() -> post(new PostJournalCommand(
                 UUID.randomUUID(), EJournalType.TRANSFER, null, ECurrency.VND,
                 List.of(new Leg(WALLET_A, 0), new Leg(EXTERNAL_BANK, 0)))))
                 .isInstanceOf(BadRequestException.class);
@@ -207,8 +211,8 @@ class LedgerServiceIT {
         seedWallet(WALLET_A);
         PostJournalCommand command = topUp(WALLET_A, 100_000);
 
-        JournalEntry first = ledgerService.postJournal(command);
-        JournalEntry replay = ledgerService.postJournal(command);
+        JournalEntry first = post(command);
+        JournalEntry replay = post(command);
 
         assertThat(replay.getId())
                 .as("lệnh trùng KHÔNG được ném lỗi — Saga sẽ hiểu nhầm là ghi sổ thất bại và hoàn tiền")
@@ -226,9 +230,9 @@ class LedgerServiceIT {
     @DisplayName("Rút quá số dư bị từ chối, ví không bị chạm tới")
     void tu_choi_khi_khong_du_so_du() {
         seedWallet(WALLET_A);
-        ledgerService.postJournal(topUp(WALLET_A, 50_000));
+        post(topUp(WALLET_A, 50_000));
 
-        assertThatThrownBy(() -> ledgerService.postJournal(withdraw(WALLET_A, 80_000)))
+        assertThatThrownBy(() -> post(withdraw(WALLET_A, 80_000)))
                 .isInstanceOf(InsufficientFundsException.class);
 
         assertThat(balanceOf(WALLET_A)).isEqualTo(50_000);
@@ -242,7 +246,7 @@ class LedgerServiceIT {
     @DisplayName("100 luồng cùng rút một ví: đúng 10 lần thành công, số dư về 0 và không bao giờ âm")
     void ban_100_luong_rut_cung_mot_vi_khong_bao_gio_am() throws Exception {
         seedWallet(WALLET_A);
-        ledgerService.postJournal(topUp(WALLET_A, 100_000));   // đủ cho ĐÚNG 10 lần rút 10_000
+        post(topUp(WALLET_A, 100_000));   // đủ cho ĐÚNG 10 lần rút 10_000
 
         int soLuong = 100;
         int soLuongRut = 10_000;
@@ -257,7 +261,7 @@ class LedgerServiceIT {
                 pool.submit(() -> {
                     try {
                         banDongLoat.await();                       // dồn mọi luồng vào cùng một thời điểm
-                        ledgerService.postJournal(withdraw(WALLET_A, soLuongRut));
+                        post(withdraw(WALLET_A, soLuongRut));
                         thanhCong.incrementAndGet();
                     } catch (InsufficientFundsException expected) {
                         // Luồng "thua cuộc" — đây chính là hành vi ĐÚNG
@@ -299,13 +303,13 @@ class LedgerServiceIT {
         seedWallet(WALLET_A);
         UUID transactionId = UUID.randomUUID();
 
-        JournalEntry original = ledgerService.postJournal(new PostJournalCommand(
+        JournalEntry original = post(new PostJournalCommand(
                 transactionId, EJournalType.TOPUP, null, ECurrency.VND,
                 List.of(new Leg(EXTERNAL_BANK, -100_000), new Leg(WALLET_A, 100_000))));
 
         // Bù trừ dùng CÙNG transactionId, khác type -> uk_journal_txn_type cho phép, và lịch sử
         // của giao dịch gồm cả hai bút toán.
-        JournalEntry reversal = ledgerService.postJournal(new PostJournalCommand(
+        JournalEntry reversal = post(new PostJournalCommand(
                 transactionId, EJournalType.REVERSAL, original.getId(), ECurrency.VND,
                 List.of(new Leg(WALLET_A, -100_000), new Leg(EXTERNAL_BANK, 100_000))));
 
@@ -318,20 +322,20 @@ class LedgerServiceIT {
     @DisplayName("REVERSAL không có referenceId, hoặc trỏ vào bút toán không tồn tại, đều bị từ chối")
     void reversal_bat_buoc_co_reference_hop_le() {
         seedWallet(WALLET_A);
-        ledgerService.postJournal(topUp(WALLET_A, 100_000));
+        post(topUp(WALLET_A, 100_000));
 
-        assertThatThrownBy(() -> ledgerService.postJournal(new PostJournalCommand(
+        assertThatThrownBy(() -> post(new PostJournalCommand(
                 UUID.randomUUID(), EJournalType.REVERSAL, null, ECurrency.VND,
                 List.of(new Leg(WALLET_A, -50_000), new Leg(EXTERNAL_BANK, 50_000)))))
                 .isInstanceOf(BadRequestException.class);
 
-        assertThatThrownBy(() -> ledgerService.postJournal(new PostJournalCommand(
+        assertThatThrownBy(() -> post(new PostJournalCommand(
                 UUID.randomUUID(), EJournalType.REVERSAL, UUID.randomUUID(), ECurrency.VND,
                 List.of(new Leg(WALLET_A, -50_000), new Leg(EXTERNAL_BANK, 50_000)))))
                 .isInstanceOf(ResourceNotFoundException.class);
 
         // Ngược lại: bút toán thường mang referenceId là dấu hiệu hiểu sai ngữ nghĩa
-        assertThatThrownBy(() -> ledgerService.postJournal(new PostJournalCommand(
+        assertThatThrownBy(() -> post(new PostJournalCommand(
                 UUID.randomUUID(), EJournalType.TRANSFER, UUID.randomUUID(), ECurrency.VND,
                 List.of(new Leg(WALLET_A, -50_000), new Leg(EXTERNAL_BANK, 50_000)))))
                 .isInstanceOf(BadRequestException.class);
@@ -346,7 +350,7 @@ class LedgerServiceIT {
     @DisplayName("DB từ chối UPDATE và DELETE trên bút toán, kể cả bằng SQL trực tiếp")
     void so_cai_la_append_only_o_tang_db() {
         seedWallet(WALLET_A);
-        ledgerService.postJournal(topUp(WALLET_A, 100_000));
+        post(topUp(WALLET_A, 100_000));
 
         // SQL trực tiếp = con đường đi tắt duy nhất còn lại sau khi entity đã bỏ setter và
         // repository đã bỏ delete(). Trigger phải chặn được cả đường này.
@@ -372,10 +376,10 @@ class LedgerServiceIT {
     void describe_doc_lai_but_toan_tu_so() {
         seedWallet(WALLET_A);
         seedWallet(WALLET_B);
-        ledgerService.postJournal(topUp(WALLET_A, 100_000));
+        post(topUp(WALLET_A, 100_000));
 
-        JournalEntry entry = ledgerService.postJournal(transfer(WALLET_A, WALLET_B, 30_000));
-        JournalView view = ledgerService.describe(entry);
+        JournalEntry entry = post(transfer(WALLET_A, WALLET_B, 30_000));
+        JournalView view = describe(entry);
 
         assertThat(view.legs()).hasSize(2);
         assertThat(view.legs()).extracting(Leg::accountRef)
@@ -385,9 +389,24 @@ class LedgerServiceIT {
                 .isEqualTo(WALLET_A);
 
         // Nạp tiền không có ví nào bị ghi nợ (vế nợ là tài khoản hệ thống) -> lấy ví được ghi có
-        JournalView topUpView = ledgerService.describe(
-                ledgerService.postJournal(topUp(WALLET_B, 10_000)));
+        JournalView topUpView = describe(
+                post(topUp(WALLET_B, 10_000)));
         assertThat(topUpView.primaryWalletRef()).isEqualTo(WALLET_B);
+    }
+
+    /**
+     * Chạy nghiệp vụ dưới tenant của test.
+     *
+     * <p>TenantContext là ThreadLocal nên KHÔNG tự lan sang thread con — test bắn 100 luồng song
+     * song gọi qua helper này để mỗi luồng tự đặt tenant của mình. Nếu không, các luồng đó sẽ ném
+     * IllegalStateException thay vì kiểm chứng điều cần kiểm chứng.
+     */
+    private JournalEntry post(PostJournalCommand command) {
+        return TenantContext.callWith(TENANT, () -> ledgerService.postJournal(command));
+    }
+
+    private JournalView describe(JournalEntry entry) {
+        return TenantContext.callWith(TENANT, () -> ledgerService.describe(entry));
     }
 
     // ------------------------------------------------------------------
@@ -395,6 +414,7 @@ class LedgerServiceIT {
     // ------------------------------------------------------------------
     private void seedWallet(String externalRef) {
         accountRepository.save(Account.builder()
+                .tenantId(TENANT)
                 .externalRef(externalRef)
                 .type(ETypeAccount.USER)
                 .currency(ECurrency.VND)
@@ -420,9 +440,9 @@ class LedgerServiceIT {
 
     private long balanceOf(String externalRef) {
         UUID accountId = accountRepository
-                .findByExternalRefAndCurrency(externalRef, ECurrency.VND)
+                .findByTenantIdAndExternalRefAndCurrency(TENANT, externalRef, ECurrency.VND)
                 .orElseThrow()
                 .getId();
-        return postingRepository.balanceOf(accountId);
+        return postingRepository.balanceOf(TENANT, accountId);
     }
 }

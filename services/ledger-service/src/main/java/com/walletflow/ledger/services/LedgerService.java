@@ -4,6 +4,7 @@ import com.walletflow.common.exception.BadRequestException;
 import com.walletflow.common.exception.InsufficientFundsException;
 import com.walletflow.common.exception.ResourceNotFoundException;
 import com.walletflow.common.money.Money;
+import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.ledger.dto.JournalView;
 import com.walletflow.ledger.dto.Leg;
 import com.walletflow.ledger.dto.PostJournalCommand;
@@ -68,35 +69,40 @@ public class LedgerService {
     @Transactional
     public JournalEntry postJournal(PostJournalCommand command) {
 
-        validateShape(command);
-        validateReference(command);
+        // Tenant lấy từ ngữ cảnh do listener đặt, KHÔNG lấy từ payload của command: payload đến từ
+        // bên ngoài và có thể nói dối. Ngữ cảnh đến từ envelope, nơi biên vào đã kiểm chứng.
+        UUID tenantId = TenantContext.require();
 
-        Optional<JournalEntry> alreadyPosted = findExisting(command);
+        validateShape(command);
+        validateReference(tenantId, command);
+
+        Optional<JournalEntry> alreadyPosted = findExisting(tenantId, command);
         if (alreadyPosted.isPresent()) {
             log.info("Ledger: lệnh trùng cho transaction {} ({}) -> trả về bút toán đã ghi {}",
                     command.transactionId(), command.type(), alreadyPosted.get().getId());
             return alreadyPosted.get();
         }
 
-        List<ResolvedLeg> resolvedLegs = resolveAccounts(command);
+        List<ResolvedLeg> resolvedLegs = resolveAccounts(tenantId, command);
 
-        Optional<JournalEntry> postedWhileWaiting = findExisting(command);
+        Optional<JournalEntry> postedWhileWaiting = findExisting(tenantId, command);
         if (postedWhileWaiting.isPresent()) {
             log.info("Ledger: một lệnh trùng đã commit trong lúc chờ khoá cho transaction {} ({})",
                     command.transactionId(), command.type());
             return postedWhileWaiting.get();
         }
 
-        validateSufficientFunds(resolvedLegs, command);
+        validateSufficientFunds(tenantId, resolvedLegs, command);
 
         JournalEntry entry = journalEntryRepository.saveAndFlush(
                 JournalEntry.builder()
+                        .tenantId(tenantId)
                         .transactionId(command.transactionId())
                         .type(command.type())
                         .referenceId(command.referenceId())
                         .build());
 
-        postingRepository.saveAll(createPostings(entry, resolvedLegs));
+        postingRepository.saveAll(createPostings(tenantId, entry, resolvedLegs));
 
         return entry;
     }
@@ -107,11 +113,12 @@ public class LedgerService {
      */
     @Transactional(readOnly = true)
     public JournalView describe(JournalEntry entry) {
+        UUID tenantId = TenantContext.require();
         List<Leg> legs = new ArrayList<>();
         String debitedWallet = null;
         String anyWallet = null;
 
-        for (Posting posting : postingRepository.findByEntryId(entry.getId())) {
+        for (Posting posting : postingRepository.findByTenantIdAndEntryId(tenantId, entry.getId())) {
             Account account = accountRepository.findById(posting.getAccountId())
                     .orElseThrow(() -> new ResourceNotFoundException(
                             "Account not found: " + posting.getAccountId()));
@@ -132,9 +139,9 @@ public class LedgerService {
         return new JournalView(legs, debitedWallet != null ? debitedWallet : anyWallet);
     }
 
-    private Optional<JournalEntry> findExisting(PostJournalCommand command) {
-        return journalEntryRepository
-                .findByTransactionIdAndType(command.transactionId(), command.type());
+    private Optional<JournalEntry> findExisting(UUID tenantId, PostJournalCommand command) {
+        return journalEntryRepository.findByTenantIdAndTransactionIdAndType(
+                tenantId, command.transactionId(), command.type());
     }
 
     /**
@@ -192,14 +199,14 @@ public class LedgerService {
      * toán thường là dấu hiệu người gọi đang hiểu sai ngữ nghĩa, nên cũng từ chối luôn thay vì lặng
      * lẽ lưu một trường vô nghĩa.
      */
-    private void validateReference(PostJournalCommand command) {
+    private void validateReference(UUID tenantId, PostJournalCommand command) {
         boolean isReversal = command.type() == EJournalType.REVERSAL;
 
         if (isReversal) {
             if (command.referenceId() == null) {
                 throw new BadRequestException("REVERSAL requires referenceId trỏ về bút toán gốc");
             }
-            if (!journalEntryRepository.existsById(command.referenceId())) {
+            if (!journalEntryRepository.existsByTenantIdAndId(tenantId, command.referenceId())) {
                 throw new ResourceNotFoundException(
                         "Journal gốc không tồn tại: " + command.referenceId());
             }
@@ -223,7 +230,7 @@ public class LedgerService {
      * <p>Đánh đổi đã biết: mọi top-up/withdraw đều khoá {@code EXTERNAL_BANK} nên bị tuần tự hoá
      * với nhau. Transfer nội bộ (ví→ví) không chạm tài khoản hệ thống nên vẫn song song tốt.
      */
-    private List<ResolvedLeg> resolveAccounts(PostJournalCommand command) {
+    private List<ResolvedLeg> resolveAccounts(UUID tenantId, PostJournalCommand command) {
 
         List<Leg> orderedLegs = command.legs().stream()
                 .sorted(Comparator.comparing(Leg::accountRef))
@@ -233,7 +240,7 @@ public class LedgerService {
 
         for (Leg leg : orderedLegs) {
             Account account = accountRepository
-                    .findForUpdate(leg.accountRef(), command.currency())
+                    .findForUpdate(tenantId, leg.accountRef(), command.currency())
                     .orElseThrow(() -> new ResourceNotFoundException(
                             "Account not found: " + leg.accountRef()));
 
@@ -250,7 +257,8 @@ public class LedgerService {
      * âm — số dư âm của nó chính là lượng tiền đã đi vào hệ thống từ thế giới ngoài (plan §5.1).
      * Ràng buộc "không âm" áp cho tài khoản hệ thống sẽ khiến mọi lệnh nạp tiền thất bại.
      */
-    private void validateSufficientFunds(List<ResolvedLeg> resolvedLegs, PostJournalCommand command) {
+    private void validateSufficientFunds(
+            UUID tenantId, List<ResolvedLeg> resolvedLegs, PostJournalCommand command) {
 
         String currency = command.currency().name();
         Map<UUID, Money> debitByAccount = new HashMap<>();
@@ -272,7 +280,8 @@ public class LedgerService {
 
         for (Map.Entry<UUID, Money> debit : debitByAccount.entrySet()) {
             Money required = debit.getValue();
-            Money balance = Money.of(postingRepository.balanceOf(debit.getKey()), currency);
+            Money balance =
+                    Money.of(postingRepository.balanceOf(tenantId, debit.getKey()), currency);
 
             if (!balance.isGreaterThanOrEqual(required)) {
                 throw new InsufficientFundsException(
@@ -286,9 +295,11 @@ public class LedgerService {
         return ETypeAccount.USER.equals(account.getType()) && amount < 0;
     }
 
-    private List<Posting> createPostings(JournalEntry entry, List<ResolvedLeg> resolvedLegs) {
+    private List<Posting> createPostings(
+            UUID tenantId, JournalEntry entry, List<ResolvedLeg> resolvedLegs) {
         return resolvedLegs.stream()
                 .map(resolvedLeg -> Posting.builder()
+                        .tenantId(tenantId)
                         .entryId(entry.getId())
                         .accountId(resolvedLeg.account().getId())
                         .amountMinor(resolvedLeg.leg().amountMinor())

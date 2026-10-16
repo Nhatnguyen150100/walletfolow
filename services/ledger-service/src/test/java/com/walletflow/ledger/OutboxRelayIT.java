@@ -4,6 +4,7 @@ import com.walletflow.common.event.EnvelopeReader;
 import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.outbox.OutboxPublisher;
+import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.common.outbox.OutboxRelay;
 import com.walletflow.ledger.dto.LedgerPostedEvent;
 import com.walletflow.ledger.dto.Leg;
@@ -107,9 +108,10 @@ class OutboxRelayIT {
 
         // Nghiệp vụ chỉ ghi vào outbox trong transaction của mình, không gọi Kafka
         transactionTemplate.executeWithoutResult(status ->
-                outboxPublisher.publish(TOPIC, partitionKey, entryId, "LedgerPosted",
-                        new LedgerPostedEvent(transactionId, entryId, EJournalType.TOPUP,
-                                ECurrency.VND, List.of(new Leg("WALLET_A", 100_000)))));
+                TenantContext.runWith(TenantContext.DEFAULT_TENANT, () ->
+                        outboxPublisher.publish(TOPIC, partitionKey, entryId, "LedgerPosted",
+                                new LedgerPostedEvent(transactionId, entryId, EJournalType.TOPUP,
+                                        ECurrency.VND, List.of(new Leg("WALLET_A", 100_000))))));
 
         assertThat(unpublishedCount()).as("trước khi relay chạy: hàng còn ở trạng thái chờ gửi").isOne();
 
@@ -148,9 +150,11 @@ class OutboxRelayIT {
     void relay_khong_gui_lap_o_lan_quet_sau() {
         UUID entryId = UUID.randomUUID();
         transactionTemplate.executeWithoutResult(status ->
-                outboxPublisher.publish(TOPIC, "WALLET_B", entryId, "LedgerPosted",
-                        new LedgerPostedEvent(UUID.randomUUID(), entryId, EJournalType.TRANSFER,
-                                ECurrency.VND, List.of(new Leg("WALLET_B", 10_000)))));
+                TenantContext.runWith(TenantContext.DEFAULT_TENANT, () ->
+                        outboxPublisher.publish(TOPIC, "WALLET_B", entryId, "LedgerPosted",
+                                new LedgerPostedEvent(UUID.randomUUID(), entryId,
+                                        EJournalType.TRANSFER, ECurrency.VND,
+                                        List.of(new Leg("WALLET_B", 10_000))))));
 
         outboxRelay.publishPending();
         outboxRelay.publishPending();   // hàng đã published=true -> không còn được đọc lại

@@ -35,6 +35,10 @@ import java.util.UUID;
 @AllArgsConstructor
 public class OutboxEvent extends BaseEntity {
 
+  /** Tenant sở hữu message — vào thẳng envelope khi relay gửi đi. */
+  @Column(name = "tenant_id", nullable = false)
+  private UUID tenantId;
+
   /** Topic Kafka đích. */
   @Column(nullable = false)
   private String topic;

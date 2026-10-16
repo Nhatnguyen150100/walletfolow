@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.walletflow.common.event.EnvelopeReader;
 import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.event.WalletTopics;
+import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.ledger.dto.LedgerPostedEvent;
 import com.walletflow.ledger.dto.LedgerRejectedEvent;
 import com.walletflow.ledger.dto.Leg;
@@ -72,6 +73,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 class LedgerCommandFlowIT {
 
+    /** Mọi test chạy dưới tenant mặc định; TenantContext được đặt tường minh ở helper. */
+    private static final UUID TENANT = TenantContext.DEFAULT_TENANT;
+
     private static final String EXTERNAL_BANK = "EXTERNAL_BANK";
     private static final String WALLET_A = "WALLET_A";
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
@@ -115,6 +119,7 @@ class LedgerCommandFlowIT {
                 .filter(account -> account.getType() == ETypeAccount.USER)
                 .forEach(accountRepository::delete);
         accountRepository.save(Account.builder()
+                .tenantId(TENANT)
                 .externalRef(WALLET_A)
                 .type(ETypeAccount.USER)
                 .currency(ECurrency.VND)
@@ -212,7 +217,7 @@ class LedgerCommandFlowIT {
     /** Đóng vai transaction-service: gửi command đã bọc envelope lên topic lệnh. */
     private void send(UUID eventId, PostJournalCommand command) {
         EventEnvelope<PostJournalCommand> envelope =
-                EventEnvelope.of(eventId, "PostJournal", null, command, Instant.now());
+                EventEnvelope.of(eventId, "PostJournal", TENANT, null, command, Instant.now());
 
         Map<String, Object> config = new HashMap<>();
         config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
@@ -284,9 +289,9 @@ class LedgerCommandFlowIT {
 
     private long balanceOf(String externalRef) {
         UUID accountId = accountRepository
-                .findByExternalRefAndCurrency(externalRef, ECurrency.VND)
+                .findByTenantIdAndExternalRefAndCurrency(TENANT, externalRef, ECurrency.VND)
                 .orElseThrow()
                 .getId();
-        return postingRepository.balanceOf(accountId);
+        return postingRepository.balanceOf(TENANT, accountId);
     }
 }

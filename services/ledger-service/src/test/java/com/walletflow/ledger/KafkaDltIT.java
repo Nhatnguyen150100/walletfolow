@@ -3,6 +3,7 @@ package com.walletflow.ledger;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.event.WalletTopics;
+import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.ledger.dto.Leg;
 import com.walletflow.ledger.dto.PostJournalCommand;
 import com.walletflow.ledger.entity.Account;
@@ -77,6 +78,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 class KafkaDltIT {
 
+    /** Mọi test chạy dưới tenant mặc định; TenantContext được đặt tường minh ở helper. */
+    private static final UUID TENANT = TenantContext.DEFAULT_TENANT;
+
     private static final String EXTERNAL_BANK = "EXTERNAL_BANK";
     private static final String WALLET_A = "WALLET_A";
     private static final String DLT_TOPIC = WalletTopics.CMD_POST_JOURNAL + WalletTopics.DLT_SUFFIX;
@@ -122,6 +126,7 @@ class KafkaDltIT {
                 .filter(account -> account.getType() == ETypeAccount.USER)
                 .forEach(accountRepository::delete);
         accountRepository.save(Account.builder()
+                .tenantId(TENANT)
                 .externalRef(WALLET_A)
                 .type(ETypeAccount.USER)
                 .currency(ECurrency.VND)
@@ -219,7 +224,7 @@ class KafkaDltIT {
     private String envelopeJson(UUID eventId, PostJournalCommand command) {
         try {
             return objectMapper.writeValueAsString(
-                    EventEnvelope.of(eventId, "PostJournal", null, command, Instant.now()));
+                    EventEnvelope.of(eventId, "PostJournal", TENANT, null, command, Instant.now()));
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }

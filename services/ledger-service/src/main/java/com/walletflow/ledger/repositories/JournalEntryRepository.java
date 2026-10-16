@@ -28,10 +28,15 @@ public interface JournalEntryRepository extends Repository<JournalEntry, UUID> {
 
     Optional<JournalEntry> findById(UUID id);
 
-    /** Tra bút toán đã ghi theo khoá idempotency nghiệp vụ. */
-    Optional<JournalEntry> findByTransactionIdAndType(UUID transactionId, EJournalType type);
+    /** Tra bút toán đã ghi theo khoá idempotency nghiệp vụ, TRONG PHẠM VI một tenant. */
+    Optional<JournalEntry> findByTenantIdAndTransactionIdAndType(
+            UUID tenantId, UUID transactionId, EJournalType type);
 
-    boolean existsById(UUID id);
+    Optional<JournalEntry> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    boolean existsByTenantIdAndId(UUID tenantId, UUID id);
+
+    long countByTenantId(UUID tenantId);
 
     long count();
 }

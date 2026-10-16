@@ -1,5 +1,6 @@
 package com.walletflow.common.dedup;
 
+import com.walletflow.common.tenant.TenantContext;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.extern.slf4j.Slf4j;
@@ -49,7 +50,8 @@ public class EventDeduplicator {
       log.debug("Dedup: event {} đã được {} xử lý -> bỏ qua", eventId, consumer);
       return false;
     }
-    entityManager.persist(new ProcessedEvent(eventId, consumer, Instant.now()));
+    entityManager.persist(
+        new ProcessedEvent(eventId, consumer, TenantContext.require(), Instant.now()));
     return true;
   }
 }

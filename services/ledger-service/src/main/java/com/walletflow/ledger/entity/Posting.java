@@ -5,7 +5,6 @@ import com.walletflow.common.money.Money;
 import com.walletflow.ledger.enums.ECurrency;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import lombok.*;
 
@@ -22,11 +21,16 @@ import java.util.UUID;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@Table(name = "postings", indexes = @Index(
-        name = "idx_postings_account",
-        columnList = "account_id"
-))
+@Table(name = "postings")
 public class Posting extends ImmutableEntity {
+
+    /**
+     * Phi chuẩn hoá có chủ đích (suy ra được qua {@code entryId}). Bất biến vàng
+     * {@code SUM(amountMinor) = 0} phải kiểm được theo từng tenant, và đó là truy vấn chạy thường
+     * xuyên nhất trên bảng lớn nhất — bắt nó JOIN mỗi lần là trả giá vĩnh viễn để tiết kiệm 16 byte.
+     */
+    @Column(name = "tenant_id", nullable = false)
+    private UUID tenantId;
 
     @Column(name = "entry_id", nullable = false)
     private UUID entryId;
