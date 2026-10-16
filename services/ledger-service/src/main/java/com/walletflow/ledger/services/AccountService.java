@@ -2,16 +2,23 @@ package com.walletflow.ledger.services;
 
 import com.walletflow.common.event.OpenAccountCommand;
 import com.walletflow.common.exception.BadRequestException;
+import com.walletflow.common.exception.ResourceNotFoundException;
+import com.walletflow.common.ledger.AccountStatement;
+import com.walletflow.common.ledger.StatementLine;
 import com.walletflow.common.money.ECurrency;
 import com.walletflow.common.tenant.TenantContext;
+import com.walletflow.ledger.dto.StatementRow;
 import com.walletflow.ledger.entity.Account;
 import com.walletflow.ledger.enums.ETypeAccount;
 import com.walletflow.ledger.repositories.AccountRepository;
+import com.walletflow.ledger.repositories.PostingRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -27,6 +34,7 @@ import java.util.UUID;
 public class AccountService {
 
     private final AccountRepository accountRepository;
+    private final PostingRepository postingRepository;
 
     /**
      * Mở tài khoản {@code USER} cho một ví — idempotent: gọi lại trả về đúng tài khoản đã có, với
@@ -63,6 +71,29 @@ public class AccountService {
         log.info("Ledger: {} tài khoản {} ({}) cho tenant {} — trạng thái {}",
                 created == 1 ? "mở mới" : "đã có", ref, currency, tenantId, account.getStatus());
         return account;
+    }
+
+    /**
+     * Sao kê đầy đủ của một tài khoản — nguồn để dựng lại read model (roadmap 1.1).
+     *
+     * <p>{@code REPEATABLE_READ}: tài khoản và các dòng là HAI câu truy vấn. Ở mức mặc định (READ
+     * COMMITTED) mỗi câu có snapshot riêng, nên trạng thái có thể thuộc một thời điểm khác danh sách
+     * dòng. Ở đây cả hai cùng một snapshot — sao kê là ảnh chụp của sổ tại MỘT thời điểm.
+     */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public AccountStatement statementOf(String ref, ECurrency currency) {
+        UUID tenantId = TenantContext.require();
+        Account account = accountRepository
+                .findByTenantIdAndExternalRefAndCurrency(tenantId, ref, currency)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Không có tài khoản " + ref + " (" + currency + ")"));
+
+        List<StatementLine> lines = postingRepository.statementOf(tenantId, account.getId()).stream()
+                .map(StatementRow::toLine)
+                .toList();
+
+        return new AccountStatement(account.getId(), account.getExternalRef(), account.getCurrency(),
+                account.getStatus(), account.getStatusVersion(), lines);
     }
 
     /**

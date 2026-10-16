@@ -1,5 +1,6 @@
 package com.walletflow.ledger.repositories;
 
+import com.walletflow.ledger.dto.StatementRow;
 import com.walletflow.ledger.entity.Posting;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
@@ -47,6 +48,25 @@ public interface PostingRepository extends Repository<Posting, UUID> {
      */
     @Query("SELECT COALESCE(SUM(p.amountMinor), 0) FROM Posting p")
     long totalOfSystem();
+
+    /**
+     * Các bút toán chạm một tài khoản, mỗi bút toán MỘT dòng (gộp các vế cùng tài khoản), theo thứ
+     * tự ghi sổ — nguồn của sao kê dùng để dựng lại read model.
+     *
+     * <p>Lọc tenant ở CẢ HAI bảng: chỉ lọc ở {@code postings} là đủ về mặt dữ liệu, nhưng điều kiện
+     * thừa trên {@code journal_entries} khiến một lỗi ghi lệch tenant (nếu có) làm dòng biến mất
+     * khỏi sao kê thay vì lặng lẽ trộn sổ của hai khách.
+     */
+    @Query("""
+            SELECT new com.walletflow.ledger.dto.StatementRow(
+                       j.id, j.transactionId, j.type, SUM(p.amountMinor), j.createdAt)
+              FROM Posting p JOIN JournalEntry j ON j.id = p.entryId
+             WHERE p.tenantId = :tenantId AND j.tenantId = :tenantId AND p.accountId = :accountId
+             GROUP BY j.id, j.transactionId, j.type, j.createdAt
+             ORDER BY j.createdAt, j.id
+            """)
+    List<StatementRow> statementOf(@Param("tenantId") UUID tenantId,
+                                   @Param("accountId") UUID accountId);
 
     long countByTenantId(UUID tenantId);
 
