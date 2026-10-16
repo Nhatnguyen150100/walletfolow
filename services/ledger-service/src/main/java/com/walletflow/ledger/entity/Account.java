@@ -42,4 +42,11 @@ public class Account extends BaseEntity {
     @Column(name = "status", nullable = false, length = 16)
     @Builder.Default
     private EAccountStatus status = EAccountStatus.ACTIVE;
+
+    /**
+     * Tăng mỗi lần {@link #status} đổi — do TRIGGER ở DB tăng (V5), không phải code. Hibernate không
+     * bao giờ ghi cột này.
+     */
+    @Column(name = "status_version", nullable = false, insertable = false, updatable = false)
+    private int statusVersion;
 }

@@ -459,7 +459,8 @@ tenant, gateway không truyền tenant, không có filter nào đặt `TenantCon
   gửi. Phase 5 thay bằng tenant suy ra từ API key.
 - JWT thêm claim `tid`. Gateway **xoá `X-Tenant-Id` trên mọi path** rồi gắn lại từ `tid`; token
   thiếu `tid` → 401 (không đoán).
-- `common-lib`: `TenantFilter` (servlet) đọc `X-Tenant-Id` → `TenantContext.callWith(...)`.
+- `common-lib`: `TenantFilter` (servlet) đọc `X-Tenant-Id` → `TenantContext.set` + `clear` trong
+  `finally`.
 
 **Vấn đề 2 — không có cách nào tạo tài khoản sổ cái.** `resolveAccounts()` ném lỗi khi tài khoản
 không tồn tại, ledger không có API/command mở tài khoản, tài khoản hệ thống của tenant mới không
@@ -468,15 +469,22 @@ không tồn tại, ledger không có API/command mở tài khoản, tài khoả
 - ⚠️ **Không** tự tạo tài khoản khi gặp lần đầu: chuyển tới một ví gõ sai mã sẽ "thành công" vào
   tài khoản ma — tiền mất không ai biết.
 - Ledger `V5`: `accounts.status` (`ACTIVE | FROZEN | CLOSED`). `FROZEN` chặn ghi nợ (vẫn nhận
-  tiền — hoàn tiền về ví bị đóng băng phải chạy được); `CLOSED` chặn cả hai chiều.
+  tiền — đóng băng là để tiền không rời ví); `CLOSED` chặn cả hai chiều. `status_version` do
+  **trigger** tăng mỗi lần trạng thái đổi.
+- **`REVERSAL` không qua kiểm tra trạng thái** (bù trừ phải luôn thành công, kể cả khi ví đã bị
+  đóng sau giao dịch gốc) — **nhưng phải là ảnh đối xứng chính xác của bút toán gốc**, và **mỗi
+  bút toán chỉ hoàn tác được một lần**. Thiếu các ràng buộc này thì miễn trừ là cửa hậu rút tiền
+  khỏi ví đóng băng, và hoàn tiền hai lần là tiền tự sinh (lỗ hổng có từ M1, đóng ở đây).
 - Command `wallet.command.open-account.v1` → event `ledger.event.account-opened.v1`. Ref **phải là
   UUID** (wallet id — không bao giờ va với tên tài khoản hệ thống, không chứa PII). Chỉ mở được tài
   khoản `USER`.
 - Mở tài khoản là thao tác **idempotent tự nhiên** (`INSERT … ON CONFLICT DO NOTHING`) với
-  `eventId` tất định theo `(accountId, status)` → **không qua bảng dedup**, nên gửi lại luôn phát lại event. Đây là cách né
-  bẫy "dedup nuốt lệnh retry" mô tả ở 1.2b.
-- `SystemAccountProvisioner`: cấp tài khoản hệ thống cho từng tenant, idempotent; chạy lúc khởi động
-  cho các tenant trong cấu hình. Phase 5 gọi lại đúng service này từ API onboarding.
+  `eventId` tất định theo `(accountId, statusVersion)` → **không qua bảng dedup**, nên gửi lại
+  luôn phát lại event. Đây là cách né bẫy "dedup nuốt lệnh retry" mô tả ở 1.2b. (Không dùng
+  `(accountId, status)`: vỡ ở chuỗi ACTIVE → FROZEN → ACTIVE.)
+- `SystemAccountProvisioner`: cấp tài khoản hệ thống cho từng tenant, idempotent, một transaction
+  mỗi tenant; chạy lúc khởi động **trước khi Kafka listener start** cho các tenant trong cấu hình.
+  Phase 5 gọi lại đúng service này từ API onboarding.
 
 **Test chứng minh:**
 - `AccountLifecycleIT` — mở tài khoản idempotent; ref không phải UUID / trùng tài khoản hệ thống bị

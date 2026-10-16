@@ -2,6 +2,7 @@ package com.walletflow.ledger;
 
 import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.common.exception.BadRequestException;
+import com.walletflow.common.exception.ConflictException;
 import com.walletflow.common.exception.InsufficientFundsException;
 import com.walletflow.common.exception.ResourceNotFoundException;
 import com.walletflow.ledger.dto.JournalView;
@@ -315,6 +316,35 @@ class LedgerServiceIT {
 
         assertThat(reversal.getReferenceId()).isEqualTo(original.getId());
         assertThat(balanceOf(WALLET_A)).isZero();
+        assertThat(postingRepository.totalOfSystem()).isZero();
+    }
+
+    @Test
+    @DisplayName("Một bút toán chỉ hoàn tác được MỘT lần — REVERSAL thứ hai (khác transactionId) bị từ chối")
+    void but_toan_chi_hoan_tac_duoc_mot_lan() {
+        seedWallet(WALLET_A);
+        post(topUp(WALLET_A, 100_000));
+        JournalEntry payout = post(withdraw(WALLET_A, 40_000));
+
+        PostJournalCommand refund = new PostJournalCommand(
+                payout.getTransactionId(), EJournalType.REVERSAL, payout.getId(), ECurrency.VND,
+                List.of(new Leg(WALLET_A, 40_000), new Leg(EXTERNAL_BANK, -40_000)));
+        JournalEntry first = post(refund);
+
+        // Gửi lại ĐÚNG lệnh cũ: idempotent, trả về bút toán đã ghi, không phải lỗi
+        assertThat(post(refund).getId()).isEqualTo(first.getId());
+
+        // Lệnh hoàn tác thứ hai với transactionId khác: khoá idempotency không nhận ra nó là trùng
+        assertThatThrownBy(() -> post(new PostJournalCommand(
+                UUID.randomUUID(), EJournalType.REVERSAL, payout.getId(), ECurrency.VND,
+                List.of(new Leg(WALLET_A, 40_000), new Leg(EXTERNAL_BANK, -40_000)))))
+                .isInstanceOf(ConflictException.class)
+                .extracting(e -> ((ConflictException) e).getErrorCode())
+                .isEqualTo("ALREADY_REVERSED");
+
+        assertThat(balanceOf(WALLET_A))
+                .as("hoàn tiền hai lần là tiền tự sinh — và SUM = 0 vẫn đúng nên bất biến không bắt được")
+                .isEqualTo(100_000);
         assertThat(postingRepository.totalOfSystem()).isZero();
     }
 

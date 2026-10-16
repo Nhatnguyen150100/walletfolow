@@ -8,7 +8,7 @@ package com.walletflow.common.event;
 public enum EAccountStatus {
   /** Bình thường. */
   ACTIVE,
-  /** Chặn ghi nợ, vẫn nhận tiền — để hoàn tiền về ví bị đóng băng vẫn chạy được. */
+  /** Chặn ghi nợ, vẫn nhận tiền — đóng băng là để tiền không RỜI ví trong lúc điều tra. */
   FROZEN,
   /** Chặn cả hai chiều. */
   CLOSED

@@ -21,12 +21,16 @@ mới.
    nhận event.
 3. **Ref phải là UUID dạng chuẩn chữ thường** (chính là wallet id). Chỉ mở được tài khoản `USER`.
 4. **Idempotent tự nhiên, không qua bảng dedup:** `INSERT … ON CONFLICT DO NOTHING`, event có
-   `eventId` tất định theo `(accountId, status)`, và **mỗi** lần nhận lệnh đều phát lại event.
+   `eventId` tất định theo `(accountId, statusVersion)`, và **mỗi** lần nhận lệnh đều phát lại event.
 5. **Trạng thái nằm ở ledger** (`ACTIVE | FROZEN | CLOSED`), kiểm tra **sau** khi đã khoá hàng.
-   `FROZEN` chặn ghi nợ nhưng vẫn nhận tiền; `CLOSED` chặn cả hai.
-6. **`SystemAccountProvisioner`** cấp `EXTERNAL_BANK`, `FEE_INCOME`, `SETTLEMENT` × mọi currency cho
-   một tenant, idempotent. Chạy lúc khởi động cho các tenant trong cấu hình; Phase 5 gọi lại từ API
-   onboarding.
+   `FROZEN` chặn ghi nợ nhưng vẫn nhận tiền; `CLOSED` chặn cả hai. `status_version` do trigger tăng
+   mỗi lần trạng thái đổi.
+6. **`REVERSAL` miễn kiểm tra trạng thái, nhưng phải đối xứng chính xác với bút toán gốc**
+   (cùng tập tài khoản, mỗi tài khoản đúng số tiền ngược dấu), và **mỗi bút toán chỉ hoàn tác được
+   một lần** (kiểm tra sau khi khoá + unique index `uk_journal_one_reversal`).
+7. **`SystemAccountProvisioner`** cấp `EXTERNAL_BANK`, `FEE_INCOME`, `SETTLEMENT` × mọi currency cho
+   một tenant, idempotent, một transaction mỗi tenant. Chạy lúc khởi động — **trước khi Kafka
+   listener start** — cho các tenant trong cấu hình; Phase 5 gọi lại từ API onboarding.
 
 ## Vì sao từng điểm
 
@@ -39,13 +43,24 @@ mới.
   event gốc bị mất, producer gửi lại sẽ không bao giờ có câu trả lời và ví nằm `PENDING` mãi. Mở tài
   khoản vốn đã idempotent, nên bỏ dedup không mất gì mà đổi lại được "gửi lại luôn có câu trả lời".
   (Cùng bẫy này áp cho saga retry `PostJournal` — xem roadmap 1.2b.)
-  `eventId` gộp cả `status` vì event mang trạng thái **hiện tại**: gửi lại lệnh mở sau khi ví bị
-  đóng băng sinh ra nội dung khác (`FROZEN`). Nếu `eventId` chỉ là `accountId`, consumer coi đó là
-  bản lặp của event `ACTIVE` cũ và bỏ đi. Quy tắc: **cùng `eventId` phải nghĩa là cùng nội dung.**
+  `eventId` gộp `statusVersion` vì event mang trạng thái **hiện tại**: gửi lại lệnh mở sau khi ví bị
+  đóng băng sinh ra nội dung khác. Quy tắc: **cùng `eventId` phải nghĩa là cùng nội dung.** Chỉ
+  `accountId` thì event `FROZEN` trùng event `ACTIVE` đầu; `(accountId, status)` thì vỡ ở chuỗi
+  ACTIVE → FROZEN → ACTIVE (event cuối trùng event đầu, read model kẹt ở `FROZEN`). Một số đếm chỉ
+  tăng thì không lặp lại. Nó do **trigger** tăng vì trạng thái có thể bị đổi bằng SQL tay trong sự
+  cố — đúng lúc không ai nhớ tăng version. Consumer chỉ áp trạng thái có `statusVersion` lớn hơn
+  bản đang có.
 - **(5)** Chỉ nơi đang giữ khoá `FOR UPDATE` trên tài khoản mới quyết được "lệnh này có được ghi nợ
   không". Trạng thái chỉ ở read model bị vượt qua bởi mọi lệnh đến trước khi read model cập nhật.
-  `FROZEN` vẫn nhận tiền vì bước bù trừ của saga hoàn tiền về chính ví đó — chặn chiều này thì tiền
-  kẹt ở tài khoản trung gian.
+  `FROZEN` vẫn nhận tiền vì đóng băng là để tiền không **rời** ví trong lúc điều tra; chặn chiều
+  nhận thì mọi khoản chuyển tới bị bật lại và việc ví đang bị điều tra lộ ra cho bên thứ ba.
+- **(6)** Bù trừ phải luôn thành công (roadmap 2.4): ví bị đóng **sau** khi rút tiền, rồi payout thất
+  bại — chặn `REVERSAL` ở đây là để tiền kẹt vĩnh viễn ở tài khoản phía bên kia. Nhưng miễn kiểm tra
+  mà không ràng buộc nội dung là cửa hậu: một "REVERSAL" trỏ vào bút toán có thật nhưng mang vế tuỳ ý
+  rút được tiền khỏi ví đóng băng. Ràng buộc đối xứng chính xác đóng cửa đó.
+- **(7)** Provision phải xong **trước** khi listener nhận message. Nếu chạy ở `ApplicationReadyEvent`
+  (sau khi listener đã chạy), một `PostJournal` của tenant mới gặp "Account not found: EXTERNAL_BANK"
+  — một từ chối nghiệp vụ dứt khoát, không retry — và một giao dịch hợp lệ thất bại.
 - **Lệnh mở không hợp lệ đi DLT**, không phát event "bị từ chối": không có saga nào chờ để bù trừ, và
   nó là bug phía producer — cần người xem, không cần một luồng xử lý tự động.
 

@@ -239,7 +239,7 @@ class LedgerCommandFlowIT {
                 .isPresent();
 
         // Ví bị đóng băng rồi lệnh mở được gửi lại: nội dung event đã khác, nên eventId PHẢI khác.
-        // Giữ eventId = accountId thì consumer coi đây là bản lặp của event ACTIVE và bỏ đi — read
+        // eventId = accountId thì consumer coi đây là bản lặp của event ACTIVE và bỏ đi — read
         // model tin ví còn hoạt động trong khi sổ cái đã chặn.
         jdbcTemplate.update("UPDATE accounts SET status = 'FROZEN' WHERE tenant_id = ? AND external_ref = ?",
                 TENANT, wallet);
@@ -251,6 +251,22 @@ class LedgerCommandFlowIT {
         assertThat(afterFreeze.eventId())
                 .as("cùng eventId nhưng khác nội dung là cách chắc chắn nhất để dedup nuốt mất thay đổi")
                 .isNotEqualTo(opened.get(0).eventId());
+
+        // Mở lại băng: trạng thái quay về ACTIVE nhưng event KHÔNG được trùng event ACTIVE đầu tiên.
+        // eventId theo (accountId, status) sẽ vỡ đúng ở đây — read model kẹt ở FROZEN.
+        jdbcTemplate.update("UPDATE accounts SET status = 'ACTIVE' WHERE tenant_id = ? AND external_ref = ?",
+                TENANT, wallet);
+        sendTo(WalletTopics.CMD_OPEN_ACCOUNT, wallet, UUID.randomUUID(), "OpenAccount", command);
+
+        EventEnvelope<AccountOpenedEvent> afterUnfreeze =
+                awaitEvents(WalletTopics.EVT_ACCOUNT_OPENED, wallet, 4, AccountOpenedEvent.class).get(3);
+        assertThat(afterUnfreeze.payload().status()).isEqualTo(EAccountStatus.ACTIVE);
+        assertThat(afterUnfreeze.payload().statusVersion())
+                .as("consumer chỉ áp trạng thái có version lớn hơn bản đang có")
+                .isEqualTo(2);
+        assertThat(afterUnfreeze.eventId())
+                .isNotEqualTo(opened.get(0).eventId())
+                .isNotEqualTo(afterFreeze.eventId());
     }
 
     @Test

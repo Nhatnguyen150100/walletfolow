@@ -11,6 +11,7 @@ import com.walletflow.common.exception.ResourceNotFoundException;
 import com.walletflow.common.money.ECurrency;
 import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.ledger.entity.Account;
+import com.walletflow.ledger.entity.JournalEntry;
 import com.walletflow.ledger.enums.ETypeAccount;
 import com.walletflow.ledger.repositories.AccountRepository;
 import com.walletflow.ledger.repositories.PostingRepository;
@@ -215,7 +216,7 @@ class AccountLifecycleIT {
         post(transfer(other, frozen, 30_000));
 
         assertThat(balanceOf(frozen))
-                .as("ví đóng băng vẫn nhận tiền; chặn chiều này thì bước bù trừ của saga kẹt")
+                .as("ví đóng băng vẫn nhận tiền; đóng băng chỉ chặn tiền RỜI ví")
                 .isEqualTo(130_000);
         assertThat(postingRepository.totalOfTenant(TENANT)).isZero();
     }
@@ -250,6 +251,77 @@ class AccountLifecycleIT {
         assertThat(reopened.getStatus())
                 .as("lệnh mở bị gửi lại không được là một cách gỡ đóng băng")
                 .isEqualTo(EAccountStatus.FROZEN);
+    }
+
+    @Test
+    @DisplayName("REVERSAL vẫn chạy khi ví đã CLOSED — bù trừ phải luôn thành công")
+    void reversal_van_chay_khi_vi_da_dong() {
+        String wallet = newWalletRef();
+        open(wallet);
+        topUp(wallet, 100_000);
+        JournalEntry withdraw = postEntry(new PostJournalCommand(
+                UUID.randomUUID(), EJournalType.WITHDRAW, null, ECurrency.VND,
+                List.of(new Leg(wallet, -40_000), new Leg(BANK, 40_000))));
+
+        // Ví bị đóng trong lúc chờ ngân hàng xác nhận; rồi payout thất bại -> phải hoàn tiền
+        setStatus(wallet, EAccountStatus.CLOSED);
+        post(new PostJournalCommand(
+                withdraw.getTransactionId(), EJournalType.REVERSAL, withdraw.getId(), ECurrency.VND,
+                List.of(new Leg(wallet, 40_000), new Leg(BANK, -40_000))));
+
+        assertThat(balanceOf(wallet))
+                .as("chặn bù trừ ở đây là để tiền kẹt vĩnh viễn ở tài khoản phía bên kia")
+                .isEqualTo(100_000);
+        assertThat(postingRepository.totalOfTenant(TENANT)).isZero();
+    }
+
+    @Test
+    @DisplayName("REVERSAL không đối xứng với bút toán gốc bị từ chối — không phải cửa hậu rút tiền ví đóng băng")
+    void reversal_khong_doi_xung_bi_tu_choi() {
+        String frozen = newWalletRef();
+        String accomplice = newWalletRef();
+        open(frozen);
+        open(accomplice);
+        JournalEntry topUp = postEntry(topUpCommand(frozen, 100_000));
+        setStatus(frozen, EAccountStatus.FROZEN);
+
+        // Trỏ về một bút toán có thật, nhưng chuyển tiền sang ví khác thay vì hoàn về nguồn gốc
+        assertThatThrownBy(() -> post(new PostJournalCommand(
+                UUID.randomUUID(), EJournalType.REVERSAL, topUp.getId(), ECurrency.VND,
+                List.of(new Leg(frozen, -100_000), new Leg(accomplice, 100_000)))))
+                .isInstanceOf(AppException.class)
+                .extracting(e -> ((AppException) e).getErrorCode())
+                .isEqualTo("REVERSAL_MISMATCH");
+
+        // Đúng tài khoản nhưng sai số tiền cũng không được
+        assertThatThrownBy(() -> post(new PostJournalCommand(
+                UUID.randomUUID(), EJournalType.REVERSAL, topUp.getId(), ECurrency.VND,
+                List.of(new Leg(frozen, -60_000), new Leg(BANK, 60_000)))))
+                .isInstanceOf(AppException.class)
+                .extracting(e -> ((AppException) e).getErrorCode())
+                .isEqualTo("REVERSAL_MISMATCH");
+
+        assertThat(balanceOf(frozen)).isEqualTo(100_000);
+        assertThat(balanceOf(accomplice)).isZero();
+    }
+
+    @Test
+    @DisplayName("status_version do DB tự tăng mỗi lần trạng thái đổi, không lặp lại, không sửa tay được")
+    void status_version_tu_tang_khong_lap_lai() {
+        String wallet = newWalletRef();
+        open(wallet);
+
+        setStatus(wallet, EAccountStatus.FROZEN);
+        setStatus(wallet, EAccountStatus.ACTIVE);
+        assertThat(open(wallet).getStatusVersion())
+                .as("ACTIVE -> FROZEN -> ACTIVE: trạng thái quay lại nhưng version thì không")
+                .isEqualTo(2);
+
+        jdbcTemplate.update("UPDATE accounts SET status_version = 0 WHERE tenant_id = ? AND external_ref = ?",
+                TENANT, wallet);
+        assertThat(open(wallet).getStatusVersion())
+                .as("version chỉ đi lên; kéo lùi nó là làm consumer áp lại trạng thái cũ")
+                .isEqualTo(2);
     }
 
     // ------------------------------------------------------------------
@@ -300,7 +372,11 @@ class AccountLifecycleIT {
     }
 
     private void post(PostJournalCommand command) {
-        TenantContext.runWith(TENANT, () -> ledgerService.postJournal(command));
+        postEntry(command);
+    }
+
+    private JournalEntry postEntry(PostJournalCommand command) {
+        return TenantContext.callWith(TENANT, () -> ledgerService.postJournal(command));
     }
 
     private void topUp(String wallet, long amountMinor) {

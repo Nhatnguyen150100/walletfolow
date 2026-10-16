@@ -125,21 +125,25 @@ public class LedgerCommandHandler {
                         account.getId(),
                         account.getExternalRef(),
                         account.getCurrency(),
-                        account.getStatus()));
+                        account.getStatus(),
+                        account.getStatusVersion()));
     }
 
     /**
-     * eventId tất định theo {@code (accountId, status)} — KHÔNG chỉ theo {@code accountId}.
+     * eventId tất định theo {@code (accountId, statusVersion)}.
      *
      * <p>Quy tắc của dedup: cùng eventId phải nghĩa là cùng NỘI DUNG. Event này mang trạng thái HIỆN
-     * TẠI của tài khoản, nên gửi lại lệnh mở sau khi ví bị đóng băng sinh ra một event có nội dung
-     * khác ({@code FROZEN}). Nếu eventId chỉ là {@code accountId}, consumer coi nó là bản lặp của
-     * event {@code ACTIVE} cũ và bỏ đi — read model tin ví còn hoạt động trong khi sổ cái đã chặn.
-     * Gộp trạng thái vào eventId thì bản phát lại y hệt vẫn dedup được, còn nội dung mới thì không bị
-     * nuốt.
+     * TẠI của tài khoản, nên gửi lại lệnh mở sau khi ví bị đóng băng sinh ra nội dung khác. Hai cách
+     * sai, cả hai đều khiến consumer dedup nuốt mất thay đổi:
+     * <ul>
+     *   <li>chỉ {@code accountId} — event {@code FROZEN} trùng eventId với event {@code ACTIVE} đầu;</li>
+     *   <li>{@code (accountId, status)} — vỡ ở chuỗi ACTIVE → FROZEN → ACTIVE: event cuối trùng
+     *       eventId với event đầu, read model kẹt ở {@code FROZEN} trong khi sổ cái đã mở lại.</li>
+     * </ul>
+     * {@code statusVersion} do trigger ở DB tăng mỗi lần trạng thái đổi, nên không bao giờ lặp lại.
      */
     private static UUID accountOpenedEventId(Account account) {
-        String name = "ledger-account-opened:" + account.getId() + ":" + account.getStatus();
+        String name = "ledger-account-opened:" + account.getId() + ":v" + account.getStatusVersion();
         return UUID.nameUUIDFromBytes(name.getBytes(StandardCharsets.UTF_8));
     }
 
