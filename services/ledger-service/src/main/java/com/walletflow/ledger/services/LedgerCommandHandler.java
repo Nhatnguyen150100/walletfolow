@@ -108,8 +108,9 @@ public class LedgerCommandHandler {
      * nhận được câu trả lời — ví nằm ở {@code PENDING} mãi mãi.
      *
      * <p>Ở đây không cần dedup vì thao tác vốn đã idempotent tự nhiên ({@code ON CONFLICT DO
-     * NOTHING}) và event có {@code eventId = accountId} cố định: xử lý lại thì sổ không đổi, còn
-     * event phát lại thì consumer dedup được. Đổi lại, MỌI lần gửi lệnh đều nhận được câu trả lời.
+     * NOTHING}) và event có {@code eventId} tất định (xem {@link #accountOpenedEventId}): xử lý lại
+     * thì sổ không đổi, còn event phát lại thì consumer dedup được. Đổi lại, MỌI lần gửi lệnh đều
+     * nhận được câu trả lời.
      */
     @Transactional
     public void openAccount(OpenAccountCommand command) {
@@ -118,13 +119,28 @@ public class LedgerCommandHandler {
         outboxPublisher.publish(
                 WalletTopics.EVT_ACCOUNT_OPENED,
                 account.getExternalRef(),
-                account.getId(),
+                accountOpenedEventId(account),
                 "AccountOpened",
                 new AccountOpenedEvent(
                         account.getId(),
                         account.getExternalRef(),
                         account.getCurrency(),
                         account.getStatus()));
+    }
+
+    /**
+     * eventId tất định theo {@code (accountId, status)} — KHÔNG chỉ theo {@code accountId}.
+     *
+     * <p>Quy tắc của dedup: cùng eventId phải nghĩa là cùng NỘI DUNG. Event này mang trạng thái HIỆN
+     * TẠI của tài khoản, nên gửi lại lệnh mở sau khi ví bị đóng băng sinh ra một event có nội dung
+     * khác ({@code FROZEN}). Nếu eventId chỉ là {@code accountId}, consumer coi nó là bản lặp của
+     * event {@code ACTIVE} cũ và bỏ đi — read model tin ví còn hoạt động trong khi sổ cái đã chặn.
+     * Gộp trạng thái vào eventId thì bản phát lại y hệt vẫn dedup được, còn nội dung mới thì không bị
+     * nuốt.
+     */
+    private static UUID accountOpenedEventId(Account account) {
+        String name = "ledger-account-opened:" + account.getId() + ":" + account.getStatus();
+        return UUID.nameUUIDFromBytes(name.getBytes(StandardCharsets.UTF_8));
     }
 
     /**

@@ -212,7 +212,7 @@ class LedgerCommandFlowIT {
     // Test 4 — ⭐ Mở tài khoản: gửi lại LUÔN nhận được câu trả lời (roadmap 1.0b)
     // ------------------------------------------------------------------
     @Test
-    @DisplayName("OpenAccount gửi hai lần cùng eventId: AccountOpened đi ra CẢ HAI lần, cùng eventId")
+    @DisplayName("OpenAccount gửi lại: AccountOpened đi ra mỗi lần; eventId chỉ đổi khi trạng thái đổi")
     void mo_tai_khoan_gui_lai_van_nhan_duoc_cau_tra_loi() {
         String wallet = UUID.randomUUID().toString();
         UUID eventId = UUID.randomUUID();
@@ -229,14 +229,28 @@ class LedgerCommandFlowIT {
                         + "— ví của producer nằm ở PENDING mãi khi event đầu bị mất")
                 .hasSize(2);
         assertThat(opened).extracting(EventEnvelope::eventId)
-                .as("eventId = accountId cố định -> consumer dedup được bản phát lại")
-                .containsOnly(opened.get(0).payload().accountId());
+                .as("eventId tất định -> consumer dedup được bản phát lại y hệt")
+                .containsOnly(opened.get(0).eventId());
         assertThat(opened.get(0).payload().status()).isEqualTo(EAccountStatus.ACTIVE);
         assertThat(opened.get(0).tenantId()).isEqualTo(TENANT);
 
         assertThat(accountRepository.findByTenantIdAndExternalRefAndCurrency(TENANT, wallet, ECurrency.VND))
                 .as("sổ cái chỉ có MỘT tài khoản dù lệnh đến hai lần")
                 .isPresent();
+
+        // Ví bị đóng băng rồi lệnh mở được gửi lại: nội dung event đã khác, nên eventId PHẢI khác.
+        // Giữ eventId = accountId thì consumer coi đây là bản lặp của event ACTIVE và bỏ đi — read
+        // model tin ví còn hoạt động trong khi sổ cái đã chặn.
+        jdbcTemplate.update("UPDATE accounts SET status = 'FROZEN' WHERE tenant_id = ? AND external_ref = ?",
+                TENANT, wallet);
+        sendTo(WalletTopics.CMD_OPEN_ACCOUNT, wallet, UUID.randomUUID(), "OpenAccount", command);
+
+        EventEnvelope<AccountOpenedEvent> afterFreeze =
+                awaitEvents(WalletTopics.EVT_ACCOUNT_OPENED, wallet, 3, AccountOpenedEvent.class).get(2);
+        assertThat(afterFreeze.payload().status()).isEqualTo(EAccountStatus.FROZEN);
+        assertThat(afterFreeze.eventId())
+                .as("cùng eventId nhưng khác nội dung là cách chắc chắn nhất để dedup nuốt mất thay đổi")
+                .isNotEqualTo(opened.get(0).eventId());
     }
 
     @Test

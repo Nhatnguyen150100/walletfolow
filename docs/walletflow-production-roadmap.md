@@ -473,7 +473,7 @@ không tồn tại, ledger không có API/command mở tài khoản, tài khoả
   UUID** (wallet id — không bao giờ va với tên tài khoản hệ thống, không chứa PII). Chỉ mở được tài
   khoản `USER`.
 - Mở tài khoản là thao tác **idempotent tự nhiên** (`INSERT … ON CONFLICT DO NOTHING`) với
-  `eventId = account.id` → **không qua bảng dedup**, nên gửi lại luôn phát lại event. Đây là cách né
+  `eventId` tất định theo `(accountId, status)` → **không qua bảng dedup**, nên gửi lại luôn phát lại event. Đây là cách né
   bẫy "dedup nuốt lệnh retry" mô tả ở 1.2b.
 - `SystemAccountProvisioner`: cấp tài khoản hệ thống cho từng tenant, idempotent; chạy lúc khởi động
   cho các tenant trong cấu hình. Phase 5 gọi lại đúng service này từ API onboarding.

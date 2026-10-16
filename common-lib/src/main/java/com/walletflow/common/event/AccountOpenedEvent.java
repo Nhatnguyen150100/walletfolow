@@ -9,7 +9,8 @@ import java.util.UUID;
  * trạng thái mang trong event.
  *
  * <p>Phát lại MỖI lần nhận {@link OpenAccountCommand}, kể cả khi tài khoản đã có từ trước, với
- * {@code eventId = accountId} cố định. Consumer dedup được, còn producer thì luôn nhận được câu trả
+ * {@code eventId} tất định theo {@code (accountId, status)}. Bản phát lại y hệt thì consumer dedup
+ * được; trạng thái đã đổi thì là event mới, không bị dedup nuốt. Producer luôn nhận được câu trả
  * lời khi gửi lại lệnh — xem {@code LedgerCommandHandler.openAccount}.
  *
  * @param status trạng thái HIỆN TẠI của tài khoản; mở lại một tài khoản đã bị đóng băng trả về

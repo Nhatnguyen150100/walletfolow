@@ -21,7 +21,7 @@ mới.
    nhận event.
 3. **Ref phải là UUID dạng chuẩn chữ thường** (chính là wallet id). Chỉ mở được tài khoản `USER`.
 4. **Idempotent tự nhiên, không qua bảng dedup:** `INSERT … ON CONFLICT DO NOTHING`, event có
-   `eventId = accountId` cố định, và **mỗi** lần nhận lệnh đều phát lại event.
+   `eventId` tất định theo `(accountId, status)`, và **mỗi** lần nhận lệnh đều phát lại event.
 5. **Trạng thái nằm ở ledger** (`ACTIVE | FROZEN | CLOSED`), kiểm tra **sau** khi đã khoá hàng.
    `FROZEN` chặn ghi nợ nhưng vẫn nhận tiền; `CLOSED` chặn cả hai.
 6. **`SystemAccountProvisioner`** cấp `EXTERNAL_BANK`, `FEE_INCOME`, `SETTLEMENT` × mọi currency cho
@@ -39,6 +39,9 @@ mới.
   event gốc bị mất, producer gửi lại sẽ không bao giờ có câu trả lời và ví nằm `PENDING` mãi. Mở tài
   khoản vốn đã idempotent, nên bỏ dedup không mất gì mà đổi lại được "gửi lại luôn có câu trả lời".
   (Cùng bẫy này áp cho saga retry `PostJournal` — xem roadmap 1.2b.)
+  `eventId` gộp cả `status` vì event mang trạng thái **hiện tại**: gửi lại lệnh mở sau khi ví bị
+  đóng băng sinh ra nội dung khác (`FROZEN`). Nếu `eventId` chỉ là `accountId`, consumer coi đó là
+  bản lặp của event `ACTIVE` cũ và bỏ đi. Quy tắc: **cùng `eventId` phải nghĩa là cùng nội dung.**
 - **(5)** Chỉ nơi đang giữ khoá `FOR UPDATE` trên tài khoản mới quyết được "lệnh này có được ghi nợ
   không". Trạng thái chỉ ở read model bị vượt qua bởi mọi lệnh đến trước khi read model cập nhật.
   `FROZEN` vẫn nhận tiền vì bước bù trừ của saga hoàn tiền về chính ví đó — chặn chiều này thì tiền

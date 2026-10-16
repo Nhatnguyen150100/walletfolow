@@ -25,7 +25,8 @@ public class EnvelopeReader {
   /**
    * @param json        thân message thô trên Kafka
    * @param payloadType kiểu payload mà consumer này muốn đọc
-   * @throws PoisonMessageException nếu JSON không đọc được, hoặc thiếu {@code tenantId}. Cả hai đều
+   * @throws PoisonMessageException nếu JSON không đọc được, thiếu {@code tenantId} hoặc thiếu
+   *                                {@code payload}. Cả ba đều
    *                                là lỗi KHÔNG BAO GIỜ tự khỏi khi thử lại, nên
    *                                {@code KafkaErrorHandlingAutoConfiguration} khai chúng là
    *                                non-retryable → message đi thẳng DLT thay vì chặn cả partition
@@ -49,6 +50,15 @@ public class EnvelopeReader {
       throw new PoisonMessageException(
           "Message thiếu tenantId (eventId=" + envelope.eventId()
               + ", eventType=" + envelope.eventType() + "). Không đoán tenant cho lệnh tiền.");
+    }
+
+    // Thiếu payload: để lọt qua thì handler nổ NullPointerException — lỗi KỸ THUẬT trong mắt
+    // DefaultErrorHandler, nên bị retry đủ số lần với backoff và chặn cả partition, rồi cuối cùng
+    // vẫn vào DLT. Không có message nào thiếu payload mà xử lý được, nên phân loại nó ngay tại đây.
+    if (envelope.payload() == null) {
+      throw new PoisonMessageException(
+          "Message thiếu payload (eventId=" + envelope.eventId()
+              + ", eventType=" + envelope.eventType() + ")");
     }
 
     return envelope;
