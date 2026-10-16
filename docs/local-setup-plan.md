@@ -186,8 +186,13 @@ Làm tương tự cho `auth-service` khi cần chạy.
 
 **Chạy:**
 ```bash
-mvn -pl services/ledger-service -am spring-boot:run -Dspring-boot.run.profiles=local
+./mvnw -o -q install -DskipTests          # một lần, để common-lib vào local repo
+./mvnw -pl services/ledger-service spring-boot:run -Dspring-boot.run.profiles=local
 ```
+
+> ⚠️ **Không dùng `-am` với `spring-boot:run`.** `-am` kéo parent pom vào reactor và plugin sẽ
+> chạy trên parent trước → `Unable to find a suitable main class`. `-am` chỉ hợp với
+> `package`/`verify`. (Đã vấp đúng lỗi này khi kiểm chứng.)
 
 **Kiểm chứng:**
 ```bash
@@ -345,7 +350,7 @@ Một CLI nhỏ gói lại những lệnh bạn sẽ gõ hàng trăm lần:
 | Lệnh | Việc |
 |---|---|
 | `wf up` / `wf down` | bật/tắt hạ tầng chế độ A |
-| `wf run <service>` | `./mvnw -pl services/<service> -am spring-boot:run -Dspring-boot.run.profiles=local` |
+| `wf run <service>` | `./mvnw -pl services/<service> spring-boot:run -Dspring-boot.run.profiles=local` (không `-am`) |
 | `wf psql <db>` | vào psql của database đó |
 | `wf balance` | in bảng số dư + bất biến SUM |
 | `wf produce <topic> <file.json>` | bắn message (tự nén JSON về 1 dòng) |

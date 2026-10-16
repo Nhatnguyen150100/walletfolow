@@ -11,8 +11,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Testcontainers: docker-java mặc định chào Docker API 1.32, Docker Engine >= 25 chỉ chấp
-  # nhận >= 1.40. Xem ghi chú ở pom cha.
   MAVEN_ARGS: "-B -ntp"
 
 jobs:
@@ -27,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup JDK 21
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           java-version: '21'
@@ -38,10 +36,10 @@ jobs:
       # Đây là lý do pipeline này đáng giá: nó chạy ĐÚNG những test chứng minh
       # tính đúng đắn về tiền (trigger append-only, SKIP LOCKED, DLT, idempotency),
       # những thứ không thể kiểm chứng bằng H2 hay mock.
-      - name: mvn verify (unit + Testcontainers IT)
+      - name: Run mvn verify (unit + Testcontainers IT)
         run: ./mvnw $MAVEN_ARGS verify
 
-      - name: Upload báo cáo coverage
+      - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -49,7 +47,7 @@ jobs:
           path: '**/target/site/jacoco*/'
           retention-days: 7
 
-      - name: Upload log test khi thất bại
+      - name: Upload test reports on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -61,7 +59,7 @@ jobs:
   # Quét bí mật — chạy song song, không phụ thuộc build
   # ==================================================================
   secrets-scan:
-    name: Quét bí mật lọt vào repo
+    name: Secret scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -71,7 +69,7 @@ jobs:
 
       # Dự án này TỪNG commit secret JWT vào application.yml và docker-compose.yml.
       # Job này tồn tại để chuyện đó không lặp lại một cách im lặng.
-      - name: gitleaks
+      - name: Run gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,7 +78,7 @@ jobs:
   # Kiểm tra: không ai lén đưa ddl-auto=update hay secret mặc định trở lại
   # ==================================================================
   guardrails:
-    name: Kiểm tra quy tắc bất biến
+    name: Guardrails
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -88,35 +86,35 @@ jobs:
 
       # Những quy tắc dưới đây là kết luận của Phase 0, không phải sở thích.
       # Linter rẻ hơn nhiều so với việc phát hiện lại chúng trong một sự cố.
-      - name: Không được dùng ddl-auto=update
+      - name: Forbid ddl-auto=update
         run: |
           if grep -rn "ddl-auto:\s*update" --include="*.yml" --include="*.yaml" .; then
-            echo "::error::ddl-auto=update làm schema không review/rollback được. Dùng Flyway."
+            echo "::error::ddl-auto=update makes the schema unreviewable and unrollbackable. Use Flyway."
             exit 1
           fi
 
-      - name: Không được bật auto-create topic
+      - name: Forbid Kafka topic auto-create
         run: |
           if grep -rn "KAFKA_AUTO_CREATE_TOPICS_ENABLE:\s*\"true\"" --include="*.yml" .; then
-            echo "::error::Auto-create topic biến lỗi gõ sai tên topic thành lỗi câm."
+            echo "::error::Topic auto-create turns a typo in a topic name into a silent failure."
             exit 1
           fi
 
-      - name: Không được có giá trị mặc định cho khoá JWT
+      - name: Forbid default JWT keys in the repo
         run: |
           if grep -rnE '(JWT_PRIVATE_KEY|JWT_SECRET)\s*[:=]\s*[A-Za-z0-9+/]{16,}' \
                --include="*.yml" --include="*.yaml" . | grep -v ".env.example"; then
-            echo "::error::Khoá/secret mặc định trong repo sẽ theo lên production."
+            echo "::error::A default key committed to the repo will follow you into production."
             exit 1
           fi
 
-      - name: Không gọi thẳng kafkaTemplate.send trong code nghiệp vụ
+      - name: Forbid direct kafkaTemplate.send in business code
         run: |
           # Mọi dual-write phải đi qua OutboxPublisher (plan §7.1). Ngoại lệ hợp lệ chỉ nằm
           # trong chính hạ tầng outbox/DLT ở common-lib.
           if grep -rn "kafkaTemplate.send" --include="*.java" services/ \
                | grep -v "/test/"; then
-            echo "::error::Dùng OutboxPublisher thay vì gọi thẳng Kafka (tránh dual-write)."
+            echo "::error::Use OutboxPublisher instead of calling Kafka directly (avoids dual-write)."
             exit 1
           fi
 
@@ -124,11 +122,11 @@ jobs:
   # Gán nhãn cho PR theo kết quả CI
   # ==================================================================
   # ⚠️ Nhãn này chỉ để NHÌN cho nhanh, nó KHÔNG chặn được merge. Thứ thực sự
-  # chặn là branch protection + required status checks (xem docs/runbooks/).
+  # chặn là branch protection + required status checks.
   # Đừng nhầm hai thứ: một PR mang nhãn "mergeable" vẫn merge được khi CI đỏ,
   # và một PR không có nhãn vẫn merge được bình thường.
   label-ci-result:
-    name: Gán nhãn kết quả CI
+    name: Label CI result
     needs: [verify, guardrails, secrets-scan]
     # always(): phải chạy CẢ KHI job phía trước thất bại — đó mới là lúc cần gỡ
     # nhãn "mergeable" cũ xuống. Không có always() thì nhãn xanh của lần push
@@ -141,7 +139,7 @@ jobs:
       issues: write        # API gán nhãn nằm dưới namespace issues
       contents: read
     steps:
-      - name: Tổng hợp kết quả
+      - name: Collect job results
         id: outcome
         run: |
           echo "verify=${{ needs.verify.result }}"
@@ -158,7 +156,7 @@ jobs:
             echo "passed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Gán / gỡ nhãn
+      - name: Apply / remove label
         uses: actions/github-script@v7
         with:
           script: |
@@ -177,8 +175,8 @@ jobs:
               }
             };
 
-            await ensureLabel(MERGEABLE, '0e8a16', 'CI xanh — KHÔNG thay thế required status checks');
-            await ensureLabel(FAILING,   'd73a4a', 'CI đỏ — xem tab Checks');
+            await ensureLabel(MERGEABLE, '0e8a16', 'CI is green — does NOT replace required status checks');
+            await ensureLabel(FAILING,   'd73a4a', 'CI is red — see the Checks tab');
 
             const issue_number = context.issue.number;
             const [toAdd, toRemove] = passed ? [MERGEABLE, FAILING] : [FAILING, MERGEABLE];
@@ -224,7 +222,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Đăng nhập GHCR
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io

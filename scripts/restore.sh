@@ -35,7 +35,11 @@ START=$(date +%s)
 
 if [[ -f "$SRC/00-globals.sql" ]]; then
   echo "   • role & quyền"
-  docker exec -i "$CONTAINER" psql -U "$PG_USER" -d postgres < "$SRC/00-globals.sql" >/dev/null
+  # Lọc 'role ... already exists': khi restore vào instance đã có sẵn role, psql in ERROR rồi
+  # đi tiếp bình thường. Để nguyên thì giữa một quy trình khôi phục sẽ có dòng ERROR đỏ làm
+  # người vận hành hoảng đúng lúc không nên hoảng. Mọi lỗi KHÁC vẫn hiện nguyên.
+  docker exec -i "$CONTAINER" psql -U "$PG_USER" -d postgres < "$SRC/00-globals.sql" 2>&1 \
+    | grep -vE 'ERROR:  role ".*" already exists' | grep -v '^$' || true
 fi
 
 for DUMP in "$SRC"/*.dump; do

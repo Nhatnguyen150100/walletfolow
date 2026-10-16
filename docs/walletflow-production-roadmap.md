@@ -363,15 +363,43 @@ Chưa cần HA, nhưng **phải có bản sao lưu ngay** — mất volume lúc 
 ADR-001…004, 006…008 theo chỉ mục có sẵn trong master plan §24, cộng ADR-009 (JWT bất đối xứng).
 Mỗi file ≤ 1 trang: Context → Decision → Consequences → Alternatives rejected.
 
-### ✅ Definition of Done — Phase 0
+### ✅ Definition of Done — Phase 0 · **ĐÃ ĐÓNG 2026-10-16**
 
-- [ ] `mvn verify` xanh trên CI, bao gồm toàn bộ Testcontainers IT
-- [ ] Không có bí mật nào trong repo; `gitleaks` xanh; thiếu env → service **không** khởi động
-- [ ] Message lỗi đi vào DLT và có alert; không có đường nào mất message âm thầm
-- [ ] `grep -r "ddl-auto: update"` không trả về kết quả
-- [ ] Dashboard Grafana có số liệu thật; 4 alert rule hoạt động (thử bằng cách gây lỗi chủ động)
-- [ ] Đã restore thành công một bản backup và ghi lại thời gian
-- [ ] 9 ADR đầy đủ
+| # | Tiêu chí | Bằng chứng |
+|---|---|---|
+| 1 | `mvn verify` xanh **trên CI**, gồm toàn bộ Testcontainers IT | ✅ PR #9 — `Build & test: success` trên GitHub runner, 35 test |
+| 2 | `gitleaks` xanh; thiếu env → service **không** khởi động | ✅ `Quét bí mật: success` mọi run · `JwtKeyProvider` ném `IllegalStateException` khi thiếu khoá |
+| 3 | Message lỗi đi vào DLT, không có đường nào mất message âm thầm | ✅ `KafkaDltIT` — 3 test: vào DLT nguyên văn, không chặn partition, **counter metric tăng** |
+| 4 | `grep -r "ddl-auto: update"` rỗng | ✅ guardrail trong CI chặn nó quay lại |
+| 5 | Alert rule hoạt động, thử bằng cách gây lỗi chủ động | ✅ Prometheus nạp **8/8 rule**; `ServiceDown` **bắn thật** cho 3 service đang tắt |
+| 6 | Dashboard có số liệu thật | ✅ provision vào folder WalletFlow; 11 panel trỏ đúng uid `walletflow-prometheus`; **12/12 câu PromQL hợp lệ**; 5 tên metric khớp chính xác tên service xuất ra |
+| 7 | Đã restore thành công một bản backup và ghi lại thời gian | ✅ **RTO đo thật: 4 giây** — [`runbooks/restore.md`](runbooks/restore.md) |
+| 8 | 9 ADR đầy đủ | ✅ ADR-001…009 |
+| 9 | Branch protection bắt buộc CI xanh | ⬜ **cần quyền admin repo** — xem bên dưới |
+
+**Hạng mục duy nhất còn mở là #9**, và nó không làm được bằng code:
+
+```bash
+gh api -X PUT repos/<owner>/<repo>/branches/master/protection --input - <<'EOF'
+{"required_status_checks":{"strict":true,
+  "contexts":["Build & test","Guardrails","Secret scan"]},
+ "enforce_admins":false,"required_pull_request_reviews":null,"restrictions":null}
+EOF
+```
+
+Không có nó thì mọi guardrail ở mục 1–4 đều bypass được bằng một cú merge — CI chỉ còn là gợi ý.
+
+### Hai lỗi do chính quá trình kiểm chứng phát hiện
+
+Ghi lại vì cả hai đều thuộc loại **cho kết quả dương tính giả** — nguy hiểm hơn lỗi làm vỡ build:
+
+1. **Phép kiểm tra trigger append-only trong runbook restore cho pass giả.**
+   `UPDATE postings WHERE true` trên bảng rỗng trả `UPDATE 0` và trông hệt như "đã bị chặn", kể cả
+   khi trigger đã mất sạch sau restore. Đã đổi sang truy vấn thẳng `pg_trigger`.
+
+2. **Lệnh chạy service ghi trong README/plan không chạy được.**
+   `./mvnw -pl <module> -am spring-boot:run` → `-am` kéo parent pom vào reactor và plugin chạy trên
+   parent trước → `Unable to find a suitable main class`. Chỉ lộ ra khi thực sự chạy.
 
 ---
 
