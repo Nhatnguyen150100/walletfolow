@@ -11,6 +11,7 @@ import com.walletflow.common.exception.ConflictException;
 import com.walletflow.common.exception.UnauthorizedException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,15 +32,27 @@ public class AuthService {
   private final LoginAttemptService loginAttemptService;
   private final AuditService auditService;
 
+  /**
+   * Tenant mà endpoint đăng ký/đăng nhập công khai phục vụ.
+   *
+   * <p><b>Lấy từ cấu hình, KHÔNG từ request.</b> Đăng ký và đăng nhập là path công khai — chưa có
+   * token nào để tin. Nhận tenant từ header hay body nghĩa là ai cũng tự xưng được là khách của
+   * tenant bất kỳ và tạo tài khoản trong đó. Phase 5 thay bằng tenant suy ra từ API key của doanh
+   * nghiệp (thứ đã được xác thực), không bao giờ bằng một giá trị client tự khai.
+   */
+  @Value("${auth.tenant-id}")
+  private UUID tenantId;
+
   @Transactional
   public AuthResponse register(RegisterRequest req, String ip, String userAgent) {
     String email = normalize(req.email());
 
-    if (userRepository.existsByEmail(email)) {
+    if (userRepository.existsByTenantIdAndEmail(tenantId, email)) {
       throw new ConflictException("EMAIL_TAKEN", "Email đã được đăng ký");
     }
 
     User user = userRepository.save(User.builder()
+        .tenantId(tenantId)
         .email(email)
         .password(passwordEncoder.encode(req.password()))
         .fullName(req.fullName())
@@ -64,7 +77,7 @@ public class AuthService {
   public AuthResponse login(LoginRequest req, String ip, String userAgent) {
     String email = normalize(req.email());
 
-    User user = userRepository.findByEmail(email)
+    User user = userRepository.findByTenantIdAndEmail(tenantId, email)
         .orElseThrow(() -> {
           auditService.record("LOGIN_FAILED_UNKNOWN_EMAIL", null, email, ip, null);
           return invalidCredentials();

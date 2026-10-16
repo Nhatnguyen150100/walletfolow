@@ -30,7 +30,8 @@ import java.util.UUID;
  *   <li><b>Gỡ bỏ mọi header định danh do client gửi vào — trên MỌI đường dẫn.</b></li>
  *   <li>Route công khai (đăng nhập, swagger, actuator) → cho qua.</li>
  *   <li>Route cần bảo vệ → verify chữ ký RS256 bằng public key lấy từ JWKS của auth-service.</li>
- *   <li>Hợp lệ → gắn {@code X-User-*} rồi chuyển xuống service nội bộ.</li>
+ *   <li>Hợp lệ → gắn {@code X-User-*} và {@code X-Tenant-Id} (từ claim {@code tid}) rồi chuyển
+ *       xuống service nội bộ. Token thiếu {@code tid} → 401.</li>
  *   <li>Sai → 401 ngay, request không bao giờ chạm tới service.</li>
  * </ol>
  *
@@ -55,13 +56,22 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
   private final AntPathMatcher antPathMatcher = new AntPathMatcher();
 
   /** Phải KHỚP với AuthHeaders trong common-lib (inline để gateway reactive không kéo JPA). */
-  private static final String HDR_USER_ID = "X-User-Id";
-  private static final String HDR_USER_EMAIL = "X-User-Email";
-  private static final String HDR_USER_ROLE = "X-User-Role";
+  static final String HDR_USER_ID = "X-User-Id";
+  static final String HDR_USER_EMAIL = "X-User-Email";
+  static final String HDR_USER_ROLE = "X-User-Role";
+  static final String HDR_TENANT_ID = "X-Tenant-Id";
   private static final String HDR_REQUEST_ID = "X-Request-Id";
 
+  /** Phải KHỚP với {@code JwtService.TENANT_CLAIM} ở auth-service. */
+  static final String CLAIM_TENANT = "tid";
+
+  /**
+   * Tenant nằm cùng danh sách với userId, và vì cùng một lý do: service nội bộ tin tuyệt đối
+   * header này để chọn sổ của khách hàng nào. Một {@code X-Tenant-Id} do client tự gửi lọt xuống
+   * downstream là đọc/ghi được sổ của tenant khác chỉ bằng một dòng curl.
+   */
   private static final List<String> IDENTITY_HEADERS =
-      List.of(HDR_USER_ID, HDR_USER_EMAIL, HDR_USER_ROLE);
+      List.of(HDR_USER_ID, HDR_USER_EMAIL, HDR_USER_ROLE, HDR_TENANT_ID);
 
   /** Các tiền tố đường dẫn KHÔNG cần đăng nhập. */
   private static final List<String> PUBLIC_PREFIXES = List.of(
@@ -106,10 +116,20 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
           .parseSignedClaims(token)
           .getPayload();
 
+      // Token hợp lệ nhưng thiếu tenant -> TỪ CHỐI, không gắn tenant mặc định. Gặp ở hai trường
+      // hợp: token phát trước khi có claim (hết hạn sau tối đa 15 phút, client chỉ cần refresh), và
+      // một bên phát hành token sai — cả hai đều không được phép đoán ra một tenant.
+      UUID tenantId = tenantOf(claims);
+      if (tenantId == null) {
+        log.warn("JWT hợp lệ nhưng thiếu/sai claim '{}' cho {} — từ chối", CLAIM_TENANT, path);
+        return unauthorized(exchange, "Token không mang tenant hợp lệ, vui lòng đăng nhập lại");
+      }
+
       ServerHttpRequest authenticated = sanitized.mutate()
           .header(HDR_USER_ID, claims.getSubject())
           .header(HDR_USER_EMAIL, String.valueOf(claims.get("email")))
           .header(HDR_USER_ROLE, String.valueOf(claims.get("role")))
+          .header(HDR_TENANT_ID, tenantId.toString())
           .build();
 
       return chain.filter(exchange.mutate().request(authenticated).build());
@@ -128,6 +148,18 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
       return jwksKeyLocator.find(jwsHeader.getKeyId());
     }
     return null;
+  }
+
+  private static UUID tenantOf(Claims claims) {
+    Object raw = claims.get(CLAIM_TENANT);
+    if (raw == null) {
+      return null;
+    }
+    try {
+      return UUID.fromString(raw.toString());
+    } catch (IllegalArgumentException malformed) {
+      return null;
+    }
   }
 
   private static String requestId(ServerHttpRequest request) {

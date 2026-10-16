@@ -56,6 +56,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AuthFlowIT {
 
     private static final String PASSWORD = "mat-khau-du-dai-12";
+    private static final String DEFAULT_TENANT = "00000000-0000-0000-0000-000000000001";
+    private static final String OTHER_TENANT = "0000000b-0000-0000-0000-00000000000b";
 
     @SuppressWarnings("resource")
     @Container
@@ -113,6 +115,9 @@ class AuthFlowIT {
                 .isEqualTo(auth.get("userId").asText());
         assertThat(claims.get("email")).isEqualTo("a@b.com");
         assertThat(claims.get("role")).isEqualTo("USER");
+        assertThat(claims.get("tid"))
+                .as("tenant đi trong token — gateway từ chối token thiếu claim này")
+                .isEqualTo(DEFAULT_TENANT);
         assertThat(auth.get("expiresInSeconds").asLong())
                 .as("access token sống ngắn vì nó không thu hồi được")
                 .isEqualTo(900);
@@ -220,6 +225,29 @@ class AuthFlowIT {
         assertThat(duplicate.getStatusCode())
                 .as("cho đăng ký cả hai sẽ tạo hai tài khoản cùng danh tính nhưng khác ví")
                 .isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    @DisplayName("Email unique THEO TENANT: cùng email ở tenant khác không chặn đăng ký, không lẫn khi đăng nhập")
+    void email_unique_theo_tenant() {
+        // Người này đã là khách của một tenant khác (chèn thẳng: endpoint công khai chỉ phục vụ
+        // tenant trong cấu hình, đúng như thiết kế).
+        jdbcTemplate.update("""
+                INSERT INTO users (id, tenant_id, email, password, role, status)
+                VALUES (gen_random_uuid(), ?::uuid, 'a@b.com', 'khong-phai-bcrypt', 'USER', 'ACTIVE')
+                """, OTHER_TENANT);
+
+        ResponseEntity<JsonNode> registered = register("a@b.com");
+        assertThat(registered.getStatusCode())
+                .as("unique toàn cục sẽ chặn đăng ký VÀ tiết lộ người này là khách của tenant khác")
+                .isEqualTo(HttpStatus.CREATED);
+
+        ResponseEntity<JsonNode> login = post("/api/auth/login",
+                Map.of("email", "a@b.com", "password", PASSWORD));
+        assertThat(login.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(login.getBody().get("data").get("userId").asText())
+                .as("đăng nhập phải ra đúng người của tenant này, không phải người trùng email ở tenant kia")
+                .isEqualTo(registered.getBody().get("data").get("userId").asText());
     }
 
     @Test

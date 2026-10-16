@@ -27,6 +27,9 @@ import java.util.Date;
 @RequiredArgsConstructor
 public class JwtService {
 
+  /** Phải KHỚP với {@code JwtAuthenticationFilter.CLAIM_TENANT} ở gateway. */
+  public static final String TENANT_CLAIM = "tid";
+
   private final JwtKeyProvider keyProvider;
 
   @Value("${jwt.access-ttl-seconds}")
@@ -46,6 +49,8 @@ public class JwtService {
         .subject(user.getId().toString())
         .claim("email", user.getEmail())
         .claim("role", user.getRole().name())
+        // tid = tenant. Gateway TỪ CHỐI token thiếu claim này thay vì đoán tenant mặc định.
+        .claim(TENANT_CLAIM, user.getTenantId().toString())
         .issuer(issuer)
         .issuedAt(Date.from(now))
         .expiration(Date.from(expiry))

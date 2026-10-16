@@ -15,6 +15,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.util.UUID;
 
 @Entity
 @Table(name = "users")
@@ -24,6 +25,14 @@ import java.time.Instant;
 @NoArgsConstructor
 @AllArgsConstructor
 public class User extends BaseEntity {
+
+  /**
+   * Tenant sở hữu người dùng — đi vào JWT dưới dạng claim {@code tid}, từ đó thành header
+   * {@code X-Tenant-Id} ở gateway và {@code TenantContext} ở service nội bộ. Không đổi được sau khi
+   * tạo: chuyển người dùng sang tenant khác nghĩa là ví và sổ sách của họ đổi chủ.
+   */
+  @Column(name = "tenant_id", nullable = false, updatable = false)
+  private UUID tenantId;
 
   /**
    * Luôn lưu dạng CHỮ THƯỜNG. Unique index là {@code lower(email)}, nên nếu tầng ứng dụng lưu

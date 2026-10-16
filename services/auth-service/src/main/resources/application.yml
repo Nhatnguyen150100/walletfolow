@@ -36,6 +36,12 @@ jwt:
   access-ttl-seconds: ${JWT_ACCESS_TTL_SECONDS:900}
   refresh-ttl-days: ${JWT_REFRESH_TTL_DAYS:30}
 
+auth:
+  # Tenant mà endpoint đăng ký/đăng nhập công khai phục vụ (roadmap 1.0b). Đây là ĐỊNH DANH, không
+  # phải bí mật, nên có giá trị mặc định = tenant mặc định của giai đoạn một khách hàng. Không bao
+  # giờ lấy từ request — xem AuthService.tenantId.
+  tenant-id: ${AUTH_TENANT_ID:00000000-0000-0000-0000-000000000001}
+
 eureka:
   client:
     service-url:
