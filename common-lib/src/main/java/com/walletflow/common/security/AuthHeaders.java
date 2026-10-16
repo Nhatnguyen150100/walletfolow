@@ -13,4 +13,11 @@ public final class AuthHeaders {
   public static final String USER_ID = "X-User-Id";
   public static final String USER_EMAIL = "X-User-Email";
   public static final String USER_ROLE = "X-User-Role";
+
+  /**
+   * Tenant của người dùng, lấy từ claim {@code tid} của JWT. Cùng mức tin cậy với
+   * {@link #USER_ID}: chỉ được SINH RA tại gateway — gateway xoá mọi giá trị client tự gửi vào trên
+   * mọi path trước khi gắn giá trị của nó. Đọc ở {@code TenantFilter}.
+   */
+  public static final String TENANT_ID = "X-Tenant-Id";
 }

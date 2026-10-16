@@ -1,6 +1,8 @@
 package com.walletflow.ledger.services;
 
+import com.walletflow.common.exception.AccountNotActiveException;
 import com.walletflow.common.exception.BadRequestException;
+import com.walletflow.common.exception.ConflictException;
 import com.walletflow.common.exception.InsufficientFundsException;
 import com.walletflow.common.exception.ResourceNotFoundException;
 import com.walletflow.common.money.Money;
@@ -92,6 +94,16 @@ public class LedgerService {
             return postedWhileWaiting.get();
         }
 
+        if (command.type() == EJournalType.REVERSAL) {
+            // Bù trừ PHẢI luôn chạy được (roadmap 2.4), kể cả khi ví đã bị đóng băng/đóng sau giao
+            // dịch gốc — nên không qua kiểm tra trạng thái. Đổi lại nó chỉ được phép HOÀN TÁC đúng
+            // bút toán gốc: không có ràng buộc này, miễn kiểm tra trạng thái là một cửa hậu để rút
+            // tiền khỏi ví đóng băng bằng một "REVERSAL" mang vế tuỳ ý.
+            validateMirrorsOriginal(tenantId, command.referenceId(), resolvedLegs);
+            validateNotAlreadyReversed(tenantId, command.referenceId());
+        } else {
+            validateAccountStatus(resolvedLegs);
+        }
         validateSufficientFunds(tenantId, resolvedLegs, command);
 
         JournalEntry entry = journalEntryRepository.saveAndFlush(
@@ -248,6 +260,89 @@ public class LedgerService {
         }
 
         return resolvedLegs;
+    }
+
+    /**
+     * REVERSAL phải là ảnh đối xứng CHÍNH XÁC của bút toán gốc: cùng tập tài khoản, mỗi tài khoản
+     * đúng số tiền ngược dấu (so theo tổng mỗi tài khoản, không theo thứ tự vế).
+     *
+     * <p>So theo {@code accountId} chứ không theo ref: tài khoản đã gắn với currency, nên khớp
+     * {@code accountId} cũng là khớp loại tiền.
+     */
+    private void validateMirrorsOriginal(UUID tenantId, UUID originalEntryId,
+                                         List<ResolvedLeg> resolvedLegs) {
+        Map<UUID, Long> expected = new HashMap<>();
+        for (Posting original : postingRepository.findByTenantIdAndEntryId(tenantId, originalEntryId)) {
+            expected.merge(original.getAccountId(), Math.negateExact(original.getAmountMinor()),
+                    Math::addExact);
+        }
+
+        Map<UUID, Long> actual = new HashMap<>();
+        for (ResolvedLeg leg : resolvedLegs) {
+            actual.merge(leg.account().getId(), leg.leg().amountMinor(), Math::addExact);
+        }
+
+        if (!expected.equals(actual)) {
+            throw new BadRequestException("REVERSAL_MISMATCH",
+                    "REVERSAL phải hoàn tác đúng các vế của bút toán gốc " + originalEntryId);
+        }
+    }
+
+    /**
+     * Mỗi bút toán chỉ được hoàn tác MỘT lần.
+     *
+     * <p>Khoá idempotency {@code (tenant, transactionId, type)} không đủ để chặn: hai REVERSAL mang
+     * hai {@code transactionId} khác nhau cho cùng một bút toán gốc đều "mới" trong mắt nó. Hoàn tiền
+     * một lệnh rút hai lần là tiền tự sinh — ví được cộng gấp đôi, nostro bị trừ gấp đôi, và
+     * {@code SUM = 0} vẫn đúng nên không phép kiểm bất biến nào bắt được.
+     *
+     * <p>Kiểm tra SAU khi khoá: REVERSAL đối xứng với bút toán gốc nên chạm ĐÚNG các tài khoản đó, vì
+     * vậy hai REVERSAL đua nhau của cùng một bút toán bị tuần tự hoá bởi chính khoá này — cái đến sau
+     * nhìn thấy cái đến trước. Unique index {@code uk_journal_one_reversal} (V5) là chốt chặn cuối.
+     * Lệnh REVERSAL bị GỬI LẠI (cùng transactionId) đã được {@code findExisting} trả về từ trước,
+     * không tới được đây.
+     */
+    private void validateNotAlreadyReversed(UUID tenantId, UUID originalEntryId) {
+        if (journalEntryRepository.existsByTenantIdAndReferenceIdAndType(
+                tenantId, originalEntryId, EJournalType.REVERSAL)) {
+            throw new ConflictException("ALREADY_REVERSED",
+                    "Bút toán " + originalEntryId + " đã được hoàn tác");
+        }
+    }
+
+    /**
+     * Cưỡng chế trạng thái tài khoản (V5). KHÔNG áp cho {@code REVERSAL} — xem
+     * {@link #validateMirrorsOriginal}.
+     *
+     * <p>Kiểm tra SAU khi đã khoá hàng: trạng thái đọc được lúc này là trạng thái đúng cho tới khi
+     * transaction kết thúc. Kiểm tra trước khi khoá thì một lệnh đóng băng ví có thể commit chen vào
+     * giữa lúc kiểm tra và lúc ghi, và tiền vẫn ra khỏi ví vừa bị đóng băng.
+     *
+     * <p>Áp cho MỌI loại tài khoản, không riêng {@code USER}: vận hành cần đóng băng được cả tài khoản
+     * hệ thống khi điều tra sự cố.
+     */
+    private void validateAccountStatus(List<ResolvedLeg> resolvedLegs) {
+        for (ResolvedLeg resolvedLeg : resolvedLegs) {
+            Account account = resolvedLeg.account();
+            boolean isDebit = resolvedLeg.leg().amountMinor() < 0;
+
+            switch (account.getStatus()) {
+                case ACTIVE -> {
+                }
+                case CLOSED -> throw new AccountNotActiveException("ACCOUNT_CLOSED",
+                        "Tài khoản đã đóng: " + account.getExternalRef());
+                case FROZEN -> {
+                    // Chỉ chặn GHI NỢ: đóng băng là để tiền KHÔNG RỜI ví trong lúc điều tra. Chặn
+                    // cả chiều nhận thì mọi khoản chuyển tới ví này bị bật lại ở người gửi, và việc
+                    // ví đang bị điều tra lộ ra cho bên thứ ba.
+                    if (isDebit) {
+                        throw new AccountNotActiveException("ACCOUNT_FROZEN",
+                                "Tài khoản đang bị đóng băng, không thể ghi nợ: "
+                                        + account.getExternalRef());
+                    }
+                }
+            }
+        }
     }
 
     /**

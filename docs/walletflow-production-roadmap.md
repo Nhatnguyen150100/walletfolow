@@ -4,7 +4,7 @@
 > Master plan trả lời *"xây cái gì để học được bài toán khó"*.
 > Tài liệu này trả lời *"còn thiếu gì để tiền thật chạy qua được, và làm theo thứ tự nào"*.
 >
-> **Ngày:** 2026-10-16 · **Trạng thái code:** M0 + M1 hoàn tất (~3.300 dòng Java)
+> **Ngày:** 2026-10-16 · **Trạng thái code:** Phase 0 đóng · Phase 1 đang làm (1.0 xong, 1.0b đang làm)
 
 ---
 
@@ -410,43 +410,134 @@ Ghi lại vì cả hai đều thuộc loại **cho kết quả dương tính gi�
 >
 > Tương ứng M2 + M3 của master plan, nhưng nâng chuẩn lên mức production.
 
-## 1.0 — Multi-tenancy từ đầu (🔀 bắt buộc nếu chọn con đường B) · 1,5 ngày
+### Trạng thái Phase 1 (cập nhật 2026-10-16)
+
+| Mục | Trạng thái | PR |
+|---|---|---|
+| 1.0 Multi-tenancy — phía Kafka/ledger | ✅ | #17 |
+| **1.0b Tenant ở biên HTTP + vòng đời tài khoản sổ cái** | 🟡 đang làm | `feat/phase-1-tenant-http-boundary` |
+| 1.1 wallet-service (gộp 1.3 contract test) | ⬜ | |
+| 1.2a transaction-service — nhận lệnh + idempotency | ⬜ | |
+| 1.2b transaction-service — saga + quét saga treo | ⬜ | |
+| 1.4 notification-service | ⬜ cắt được nếu thiếu thời gian | |
+| 1.5 E2E + load test | ⬜ | |
+
+Đường găng: **1.0b → 1.1 → 1.2a → 1.2b**. Mỗi dòng là một PR riêng — PR nhỏ review được, PR
+20 ngày công thì không.
+
+## 1.0 — Multi-tenancy từ đầu (🔀 bắt buộc nếu chọn con đường B) · 1,5 ngày · ✅ PR #17
 
 - Thêm `tenant_id UUID NOT NULL` vào **mọi** bảng nghiệp vụ, kể cả bảng ledger đã có → migration
-  `V3__add_tenant.sql` (hiện ledger còn ít dữ liệu, làm bây giờ gần như miễn phí).
+  `V4__multi_tenant.sql` (`ADD COLUMN … DEFAULT` rồi `DROP DEFAULT` — không backfill bằng `UPDATE`
+  vì trigger append-only sẽ chặn).
 - Sửa unique key: `(tenant_id, transaction_id, type)` thay vì `(transaction_id, type)`;
   `(tenant_id, external_ref, currency)` cho `accounts`.
-- `tenant_id` vào `EventEnvelope` và làm **một phần của partition key**.
-- Hibernate `@Filter` hoặc Postgres RLS để chống rò rỉ chéo tenant; **mặc định phải là từ chối**.
-- Giải phóng: tài khoản hệ thống (`EXTERNAL_BANK`, `FEE_INCOME`, `SETTLEMENT`) là **per-tenant**,
-  không dùng chung.
+- `tenant_id` vào `EventEnvelope`; `EnvelopeReader` đẩy message thiếu tenant vào DLT.
+- ~~Hibernate `@Filter` hoặc Postgres RLS~~ → **đã chọn:** repository không có phương thức nào thiếu
+  `tenantId` + `TenantContext.require()` ném lỗi khi chưa có tenant. RLS để Phase 4 như lớp phòng
+  thủ thứ hai.
+- ~~`tenant_id` làm một phần của partition key~~ → **bỏ:** ref của ví là UUID (xem 1.0b), nên hai
+  tenant không bao giờ chung key; thứ tự theo ví đã đủ.
+- Tài khoản hệ thống (`EXTERNAL_BANK`, `FEE_INCOME`, `SETTLEMENT`) là **per-tenant** — cơ chế cấp
+  phát nằm ở 1.0b.
 
 **Test chứng minh:** `TenantIsolationIT` — truy vấn của tenant A **không bao giờ** thấy dữ liệu
 tenant B, kể cả khi truyền thẳng ID của B; `SUM(postings) = 0` đúng **theo từng tenant**.
 
-## 1.1 — wallet-service (:8082) · 5 ngày
+## 1.0b — Tenant ở biên HTTP + vòng đời tài khoản sổ cái · 2,5 ngày 🔴 chặn 1.1 và 1.2
+
+> Phát hiện khi đọc lại code sau PR #17. Không có mục này thì wallet-service và
+> transaction-service bị chặn giữa chừng.
+
+**Vấn đề 1 — tenant mới chỉ đi qua Kafka.** `users` không có `tenant_id`, JWT không có claim
+tenant, gateway không truyền tenant, không có filter nào đặt `TenantContext` cho request HTTP.
+`POST /transactions/transfer` sẽ nổ ở `TenantContext.require()`.
+
+- auth `V2`: `users.tenant_id`; email unique **theo tenant** (`(tenant_id, lower(email))`) — cùng
+  một người có thể dùng ví của hai khách hàng khác nhau.
+- Tenant khi đăng ký/đăng nhập lấy từ cấu hình (`auth.tenant-id`), **không** từ header do client
+  gửi. Phase 5 thay bằng tenant suy ra từ API key.
+- JWT thêm claim `tid`. Gateway **xoá `X-Tenant-Id` trên mọi path** rồi gắn lại từ `tid`; token
+  thiếu `tid` → 401 (không đoán).
+- `common-lib`: `TenantFilter` (servlet) đọc `X-Tenant-Id` → `TenantContext.set` + `clear` trong
+  `finally`.
+
+**Vấn đề 2 — không có cách nào tạo tài khoản sổ cái.** `resolveAccounts()` ném lỗi khi tài khoản
+không tồn tại, ledger không có API/command mở tài khoản, tài khoản hệ thống của tenant mới không
+được cấp, `accounts` không có `status` để chặn ví `FROZEN`.
+
+- ⚠️ **Không** tự tạo tài khoản khi gặp lần đầu: chuyển tới một ví gõ sai mã sẽ "thành công" vào
+  tài khoản ma — tiền mất không ai biết.
+- Ledger `V5`: `accounts.status` (`ACTIVE | FROZEN | CLOSED`). `FROZEN` chặn ghi nợ (vẫn nhận
+  tiền — đóng băng là để tiền không rời ví); `CLOSED` chặn cả hai chiều. `status_version` do
+  **trigger** tăng mỗi lần trạng thái đổi.
+- **`REVERSAL` không qua kiểm tra trạng thái** (bù trừ phải luôn thành công, kể cả khi ví đã bị
+  đóng sau giao dịch gốc) — **nhưng phải là ảnh đối xứng chính xác của bút toán gốc**, và **mỗi
+  bút toán chỉ hoàn tác được một lần**. Thiếu các ràng buộc này thì miễn trừ là cửa hậu rút tiền
+  khỏi ví đóng băng, và hoàn tiền hai lần là tiền tự sinh (lỗ hổng có từ M1, đóng ở đây).
+- Command `wallet.command.open-account.v1` → event `ledger.event.account-opened.v1`. Ref **phải là
+  UUID** (wallet id — không bao giờ va với tên tài khoản hệ thống, không chứa PII). Chỉ mở được tài
+  khoản `USER`.
+- Mở tài khoản là thao tác **idempotent tự nhiên** (`INSERT … ON CONFLICT DO NOTHING`) với
+  `eventId` tất định theo `(accountId, statusVersion)` → **không qua bảng dedup**, nên gửi lại
+  luôn phát lại event. Đây là cách né bẫy "dedup nuốt lệnh retry" mô tả ở 1.2b. (Không dùng
+  `(accountId, status)`: vỡ ở chuỗi ACTIVE → FROZEN → ACTIVE.)
+- `SystemAccountProvisioner`: cấp tài khoản hệ thống cho từng tenant, idempotent, một transaction
+  mỗi tenant; chạy lúc khởi động **trước khi Kafka listener start** cho các tenant trong cấu hình.
+  Phase 5 gọi lại đúng service này từ API onboarding.
+
+**Test chứng minh:**
+- `AccountLifecycleIT` — mở tài khoản idempotent; ref không phải UUID / trùng tài khoản hệ thống bị
+  từ chối; `FROZEN` chặn ghi nợ nhưng nhận được tiền; `CLOSED` chặn cả hai; chuyển tới ref không tồn
+  tại bị từ chối chứ không tạo tài khoản ma; cấp tài khoản hệ thống idempotent theo tenant.
+- `LedgerCommandFlowIT` — gửi `OpenAccount` hai lần cùng `eventId` → event `AccountOpened` đi ra
+  **cả hai lần** với cùng `eventId`.
+- `JwtAuthenticationFilterTest` — `X-Tenant-Id` do client gửi bị xoá trên mọi path; tenant lấy từ
+  token; token thiếu `tid` → 401.
+- `TenantFilterTest`, `AuthFlowIT` (claim `tid`, email unique theo tenant).
+
+**ADR-010** (lan truyền tenant end-to-end), **ADR-011** (vòng đời tài khoản sổ cái).
+
+## 1.1 — wallet-service (:8082) · 5,5 ngày (gộp 1.3)
 
 **Vai trò:** read model, không phải nguồn sự thật.
 
-- Schema `V1__init_wallet.sql`: `wallets(id, tenant_id, user_id, currency, balance_minor, held_minor,
-  version, status, last_applied_event_id, created_at, updated_at)` + `processed_event`.
-- Consume `ledger.event.posted.v1` → cập nhật `balance_minor` trong **cùng transaction** với
-  `EventDeduplicator.markProcessed()` (đã có sẵn trong `common-lib`).
-- `@Version` optimistic lock + Spring Retry cho `OptimisticLockException`.
-- Cập nhật bằng **conditional UPDATE**, không read-modify-write:
-  `UPDATE wallets SET balance_minor = balance_minor + :delta, version = version + 1 WHERE id = :id`.
+- Schema `V1__init_wallet.sql`: `wallets(id, tenant_id, user_id, currency, balance_minor, status,
+  created_at, updated_at)` + `processed_event`.
+  - ~~`held_minor`~~ — **bỏ**: mâu thuẫn với 2.1, nơi tiền bị giữ nằm ở tài khoản `HOLD_*` trong
+    sổ cái. Một cột `held` là nguồn sự thật thứ hai, thứ §5.1 cấm.
+  - ~~`version` + Spring Retry~~ — **bỏ**: `UPDATE … SET balance_minor = balance_minor + :delta` đã
+    atomic ở DB, không có read-modify-write nào để khoá lạc quan bảo vệ.
+  - ~~`last_applied_event_id`~~ — **bỏ**: xem "projection phải giao hoán" bên dưới.
+- **Mở ví:** tạo hàng `wallets` với `status = PENDING` + gửi `wallet.command.open-account.v1` qua
+  outbox **trong cùng transaction** → nhận `ledger.event.account-opened.v1` → `ACTIVE`. `wallet_id`
+  chính là `accountRef` trong sổ cái (UUID, không PII — xem 5.4).
+- Consume `ledger.event.posted.v1` → với mỗi vế có `accountRef` là ví của mình, cộng `delta` trong
+  **cùng transaction** với `EventDeduplicator.markProcessed()`. Bỏ qua vế của tài khoản hệ thống.
+- ⚠️ **Projection phải giao hoán** (cộng delta + dedup), **không** được gán `balance = X`.
+  `LedgerPosted` được partition theo **ví bị ghi nợ**, nên với một lệnh chuyển A→B, vế của B đi trên
+  partition của A — không có thứ tự nào so với các event khác của B. Cộng delta thì thứ tự không
+  quan trọng; gán giá trị thì có.
 - API: `GET /api/v1/wallets/me`, `GET /api/v1/wallets/me/transactions?cursor=&limit=`
   (**cursor-based**, không offset — offset pagination sẽ bỏ sót/lặp bản ghi khi có ghi đồng thời,
   và chậm dần với sổ giao dịch lớn).
-- **`POST /admin/wallets/{id}/rebuild`** — dựng lại số dư từ ledger. Đây là chứng minh sống động
-  rằng read model thực sự *suy ra được*, và là công cụ khôi phục khi projection hỏng.
-- Trạng thái ví: `ACTIVE | FROZEN | CLOSED`; ví `FROZEN` bị ledger từ chối ghi nợ.
+- **`POST /admin/wallets/{id}/rebuild`** — dựng lại số dư từ ledger.
+  - Cần thêm API nội bộ ở ledger `GET /internal/accounts/{ref}/postings` (ledger chưa có HTTP API
+    nào; đọc thẳng `ledgerdb` là vi phạm ADR-001).
+  - ⚠️ Trong **một** transaction, khoá hàng ví: đặt `balance = SUM` **và** ghi `processed_event`
+    cho mọi `entryId` đã tính. Bỏ bước sau thì event đang bay sẽ bị cộng lần hai sau khi rebuild.
+- Trạng thái ví `ACTIVE | FROZEN | CLOSED` được **ledger** cưỡng chế (1.0b); wallet-service chỉ phản
+  chiếu.
+- **Contract test (gộp 1.3):** JSON Schema cho `LedgerPostedEvent` và `AccountOpenedEvent` — đây là
+  lúc có consumer ngoài ledger đầu tiên, tức lúc hợp đồng bắt đầu có giá trị.
 
 **Test chứng minh:**
 - `WalletProjectionIT` — 100 event (có cả event lặp, có cả event tới sai thứ tự) → số dư cuối khớp
   chính xác `SUM(postings)` trong ledger.
-- `WalletRebuildIT` — cố ý làm sai `balance_minor` → rebuild cho kết quả khớp ledger.
+- `WalletRebuildIT` — cố ý làm sai `balance_minor` → rebuild cho kết quả khớp ledger; **một event
+  tới ngay sau rebuild không bị cộng hai lần**.
 - `WalletConcurrencyIT` — 100 luồng cập nhật song song → không mất update nào.
+- Producer/consumer validate với JSON Schema.
 
 ## 1.2 — transaction-service (:8084) · 8 ngày ⭐ phần khó nhất của Phase
 
@@ -495,10 +586,28 @@ CREATE TABLE saga_state (
 | Key thuộc user khác | `404` (không tiết lộ sự tồn tại) |
 | Key quá `expires_at` | Coi như key mới |
 
+**Đơn giản hoá nhờ mô hình 202 (1.2a):** transfer trả `202` rồi chạy bất đồng bộ, nên toàn bộ phần
+"nhận lệnh" — `idempotency_keys` + `transactions` + `saga_state` + outbox — là **một transaction
+cục bộ**. Lưu luôn `status = COMPLETED` kèm body 202 ngay trong transaction đó. Hai request trùng
+chạy song song: Postgres bắt request thứ hai **chờ** ở unique index của khoá chính tới khi request
+đầu commit, rồi nó nhận unique violation → đọc lại → trả response đã lưu. Trạng thái
+`IN_PROGRESS` + `409` gần như không bao giờ xảy ra — bớt được một nguồn bug.
+
+⚠️ **transaction-service không được tự quyết "đủ tiền" bằng read model.** Wallet-service có thể trễ
+so với ledger; chỉ ledger (dưới `FOR UPDATE`) được quyết. Kiểm tra trước ở transaction-service chỉ
+là gợi ý UX.
+
 - **Saga orchestrator**: state machine tường minh (`PENDING → POSTING → COMPLETED / FAILED`), lưu
   bền vững sau **mỗi** bước → crash giữa chừng vẫn resume được.
 - **Scheduler quét saga treo**: `deadline_at < now() AND status NOT IN (COMPLETED, FAILED)` →
   retry hoặc đẩy sang `MANUAL_REVIEW` + alert.
+  - ⚠️ **Bẫy: retry phải dùng `eventId` MỚI, giữ nguyên `transactionId`.** `LedgerCommandHandler`
+    bỏ qua message có `eventId` đã xử lý và **không phát lại** `LedgerPosted`. Nếu event gốc đã mất
+    mà saga gửi lại đúng `eventId` cũ, ledger nuốt lệnh và saga treo vĩnh viễn. Với `eventId` mới,
+    ledger trả lại bút toán cũ (idempotent theo `transactionId`) và phát lại event với
+    `eventId = entryId` cố định — consumer vẫn dedup được.
+  - Scheduler chạy **xuyên tenant**: mỗi saga phải được xử lý trong
+    `TenantContext.runWith(saga.tenantId, …)`.
 - Phát `PostJournalCommand` **qua outbox** (không gọi `kafkaTemplate` trực tiếp — nguyên tắc §5.3).
 - Consume `ledger.event.posted.v1` / `rejected.v1` → chuyển trạng thái transaction.
 - API: `POST /transactions/transfer` (202 + `transactionId`), `GET /transactions/{id}`.
@@ -508,12 +617,12 @@ CREATE TABLE saga_state (
 **Test chứng minh (4 test đắt giá nhất của cả dự án):**
 1. `IdempotencyIT` — gửi cùng key 2 lần (và 2 lần **song song**) → đúng **một** bút toán được ghi.
 2. `SagaResumeIT` — giết service giữa saga (restart context) → saga tự hoàn tất sau khi sống lại,
-   không tạo bút toán thừa.
+   không tạo bút toán thừa. **Có ca:** event `LedgerPosted` bị mất → scheduler retry → saga hoàn tất.
 3. `TransferConcurrencyIT` — 100 lệnh chuyển song song từ một ví có đủ tiền cho 10 lệnh → đúng 10
    thành công, số dư **không bao giờ** âm, `SUM(postings) = 0`.
 4. `StuckSagaIT` — saga quá `deadline_at` → bị phát hiện và chuyển `MANUAL_REVIEW`, có alert.
 
-## 1.3 — Contract test giữa event (GAP-C4) · 2 ngày
+## 1.3 — Contract test giữa event (GAP-C4) · ~~2 ngày~~ → gộp vào 1.1
 
 - Chốt schema event bằng **JSON Schema** commit trong `common-lib/src/main/resources/schemas/`.
 - Test producer: event phát ra **phải** validate được với schema.

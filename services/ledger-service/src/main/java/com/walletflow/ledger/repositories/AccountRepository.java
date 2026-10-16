@@ -5,8 +5,10 @@ import com.walletflow.common.money.ECurrency;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -41,4 +43,33 @@ public interface AccountRepository extends JpaRepository<Account, UUID> {
                                     @Param("currency") ECurrency currency);
 
     List<Account> findByTenantId(UUID tenantId);
+
+    /**
+     * Tạo tài khoản nếu chưa có, KHÔNG làm gì nếu đã có — trong MỘT câu lệnh.
+     *
+     * <p>Vì sao không "tìm, chưa có thì save": hai lệnh mở cùng một ví chạy song song đều thấy "chưa
+     * có", đều INSERT, và lệnh thứ hai vỡ ở unique key. Lỗi đó là lỗi kỹ thuật nên sẽ được retry và
+     * cuối cùng vẫn đúng, nhưng phải trả giá bằng một lần rollback + backoff cho một thao tác vốn dĩ
+     * idempotent. {@code ON CONFLICT DO NOTHING} để chính Postgres phân xử: đúng một hàng thắng, lệnh
+     * còn lại thấy 0 hàng bị ảnh hưởng và đọc lại hàng đã có.
+     *
+     * <p>Không đụng tới hàng đã có — đặc biệt là {@code status}: mở lại một ví đã bị đóng băng
+     * KHÔNG được làm nó sống lại.
+     *
+     * @return 1 nếu vừa tạo, 0 nếu đã tồn tại
+     */
+    // @Transactional ở đây chứ không chỉ ở service: method query khai trong interface thừa hưởng
+    // readOnly=true của SimpleJpaRepository, và INSERT trong transaction read-only bị Postgres từ
+    // chối. Đứng một mình thì nó tự mở transaction; được gọi bên trong transaction thì nhập vào đó.
+    @Transactional
+    @Modifying
+    @Query(value = """
+            INSERT INTO accounts (id, tenant_id, external_ref, type, currency, status, created_at, updated_at)
+            VALUES (gen_random_uuid(), :tenantId, :ref, :type, :currency, 'ACTIVE', now(), now())
+            ON CONFLICT ON CONSTRAINT uk_accounts_tenant_ref_currency DO NOTHING
+            """, nativeQuery = true)
+    int insertIfAbsent(@Param("tenantId") UUID tenantId,
+                       @Param("ref") String ref,
+                       @Param("type") String type,
+                       @Param("currency") String currency);
 }

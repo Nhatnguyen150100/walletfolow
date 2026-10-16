@@ -36,6 +36,9 @@ public interface JournalEntryRepository extends Repository<JournalEntry, UUID> {
 
     boolean existsByTenantIdAndId(UUID tenantId, UUID id);
 
+    /** Bút toán gốc đã có REVERSAL chưa — mỗi bút toán chỉ được hoàn tác MỘT lần. */
+    boolean existsByTenantIdAndReferenceIdAndType(UUID tenantId, UUID referenceId, EJournalType type);
+
     long countByTenantId(UUID tenantId);
 
     long count();

@@ -1,3 +1,4 @@
 com.walletflow.autoconfigure.OutboxAutoConfiguration
 com.walletflow.autoconfigure.KafkaErrorHandlingAutoConfiguration
 com.walletflow.autoconfigure.KafkaTopicsAutoConfiguration
+com.walletflow.autoconfigure.TenantWebAutoConfiguration
