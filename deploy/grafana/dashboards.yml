@@ -1,0 +1,16 @@
+apiVersion: 1
+
+# Nạp dashboard từ file commit trong repo thay vì tạo bằng tay trên UI:
+# dashboard tạo tay sống trong volume của Grafana, mất khi dựng lại môi trường,
+# và không ai review được khi nó thay đổi.
+providers:
+  - name: walletflow
+    orgId: 1
+    folder: WalletFlow
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

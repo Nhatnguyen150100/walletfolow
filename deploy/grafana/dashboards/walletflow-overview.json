@@ -1,0 +1,191 @@
+{
+  "uid": "walletflow-overview",
+  "title": "WalletFlow — Tổng quan",
+  "description": "Sức khoẻ luồng tiền: outbox, DLT, độ trễ, lỗi. Các panel hàng đầu là chỉ số an toàn tiền, không phải chỉ số hạ tầng.",
+  "tags": ["walletflow"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "An toàn tiền",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "DLT — message chưa xử lý (5 phút)",
+      "description": "Mỗi message ở DLT là một lệnh tiền CHƯA được thực thi. Khác 0 là phải có người xem.",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "walletflow-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(increase(walletflow_dlt_messages_total[5m]))",
+          "legendFormat": "DLT"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox — tuổi event chờ lâu nhất",
+      "description": "Chỉ số phát hiện relay chết. Số lượng hàng chờ KHÔNG phát hiện được: khi tải thấp, relay chết vẫn để lại con số nhỏ trông bình thường. Tuổi thì tăng tuyến tính.",
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "walletflow-prometheus" },
+      "targets": [
+        {
+          "expr": "walletflow_outbox_oldest_age_seconds",
+          "legendFormat": "{{job}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 60 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Outbox — event chờ gửi / đã gửi",
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "walletflow-prometheus" },
+      "targets": [
+        { "expr": "walletflow_outbox_pending", "legendFormat": "chờ gửi — {{job}}" },
+        { "expr": "rate(walletflow_outbox_published_total[1m]) * 60", "legendFormat": "đã gửi/phút — {{job}}" },
+        { "expr": "rate(walletflow_outbox_publish_failures_total[1m]) * 60", "legendFormat": "lỗi/phút — {{job}}" }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Lưu lượng & độ trễ",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Độ trễ HTTP (p50 / p95 / p99)",
+      "description": "SLO: transfer nội bộ p95 < 300ms (plan §18).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "walletflow-prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (job, le) (rate(http_server_requests_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{job}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (job, le) (rate(http_server_requests_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{job}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (job, le) (rate(http_server_requests_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{job}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tỉ lệ lỗi theo mã trạng thái",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "walletflow-prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(http_server_requests_seconds_count[5m])) * 60",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqpm", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Hệ thống",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "type": "stat",
+      "title": "Service đang sống",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "walletflow-prometheus" },
+      "targets": [{ "expr": "up", "legendFormat": "{{job}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Heap JVM",
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "walletflow-prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (job) (jvm_memory_used_bytes{area=\"heap\"})",
+          "legendFormat": "{{job}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "fillOpacity": 10 } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Đăng nhập thất bại (dấu hiệu dò mật khẩu)",
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "walletflow-prometheus" },
+      "targets": [
+        {
+          "expr": "rate(http_server_requests_seconds_count{uri=\"/api/auth/login\",status=\"401\"}[5m]) * 60",
+          "legendFormat": "401/phút"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 20 } },
+        "overrides": []
+      }
+    }
+  ]
+}

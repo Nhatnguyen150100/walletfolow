@@ -2,6 +2,7 @@ package com.walletflow.common.event;
 
 import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.walletflow.common.kafka.PoisonMessageException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -24,8 +25,11 @@ public class EnvelopeReader {
   /**
    * @param json        thân message thô trên Kafka
    * @param payloadType kiểu payload mà consumer này muốn đọc
-   * @throws IllegalArgumentException nếu JSON không đọc được — đây là poison message, người gọi nên
-   *                                  để nó đi vào DLT chứ đừng retry (plan §12, bài toán P9)
+   * @throws PoisonMessageException nếu JSON không đọc được. Đây là lỗi KHÔNG BAO GIỜ tự khỏi khi
+   *                                thử lại, nên {@code KafkaErrorHandlingAutoConfiguration} khai nó
+   *                                là non-retryable → message đi thẳng DLT thay vì chặn cả partition
+   *                                (plan §12, bài toán P9). Kiểu này kế thừa
+   *                                {@code IllegalArgumentException} nên hợp đồng cũ vẫn giữ nguyên.
    */
   public <T> EventEnvelope<T> read(String json, Class<T> payloadType) {
     JavaType type = objectMapper.getTypeFactory()
@@ -33,7 +37,7 @@ public class EnvelopeReader {
     try {
       return objectMapper.readValue(json, type);
     } catch (Exception e) {
-      throw new IllegalArgumentException(
+      throw new PoisonMessageException(
           "Message không đọc được thành EventEnvelope<" + payloadType.getSimpleName() + ">", e);
     }
   }

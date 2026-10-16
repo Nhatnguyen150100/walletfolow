@@ -1,13 +1,19 @@
 apiVersion: 1
 
 # Tự động khai báo nguồn dữ liệu cho Grafana khi khởi động.
+#
+# uid được ĐẶT TƯỜNG MINH: dashboard JSON trong repo tham chiếu datasource theo uid.
+# Nếu để Grafana tự sinh, uid sẽ khác nhau giữa các lần dựng môi trường và mọi panel
+# sẽ báo "Datasource not found" — lỗi trông như dashboard hỏng chứ không như lỗi cấu hình.
 datasources:
   - name: Prometheus
+    uid: walletflow-prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
   - name: Jaeger
+    uid: walletflow-jaeger
     type: jaeger
     access: proxy
     url: http://jaeger:16686

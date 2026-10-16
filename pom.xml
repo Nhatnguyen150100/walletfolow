@@ -24,6 +24,7 @@
     <jjwt.version>0.12.6</jjwt.version>
     <springdoc.version>2.8.8</springdoc.version>
     <testcontainers.version>1.20.4</testcontainers.version>
+    <jacoco.version>0.8.15</jacoco.version>
     <!-- docker-java (lõi của Testcontainers) mặc định chào Docker API 1.32, trong khi
          Docker Engine >= 25 chỉ chấp nhận >= 1.40 -> "client version 1.32 is too old".
          Nâng Testcontainers KHÔNG khắc phục được; phải chỉ định api.version tường minh.
@@ -69,8 +70,49 @@
           <groupId>org.springframework.boot</groupId>
           <artifactId>spring-boot-maven-plugin</artifactId>
         </plugin>
+        <!-- spring-boot-starter-parent KHÔNG quản version của jacoco, nên phải pin ở đây.
+             Để Maven tự chọn phiên bản mới nhất là nguồn của những lần build khác nhau
+             giữa máy dev và CI mà không ai đổi gì. -->
+        <plugin>
+          <groupId>org.jacoco</groupId>
+          <artifactId>jacoco-maven-plugin</artifactId>
+          <version>${jacoco.version}</version>
+        </plugin>
       </plugins>
     </pluginManagement>
+
+    <plugins>
+      <!-- Đo độ phủ cho CẢ unit test lẫn integration test.
+           prepare-agent-integration + report-integration là phần hay bị quên: phần lớn
+           giá trị kiểm chứng của dự án này nằm ở các test *IT (Testcontainers), nên một
+           báo cáo chỉ tính surefire sẽ cho con số thấp giả và nói sai về chất lượng. -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>prepare-agent</id>
+            <goals>
+              <goal>prepare-agent</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>prepare-agent-integration</id>
+            <goals>
+              <goal>prepare-agent-integration</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>report</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>report</goal>
+              <goal>report-integration</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
   </build>
 
 </project>

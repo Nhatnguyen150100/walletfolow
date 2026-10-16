@@ -3,7 +3,6 @@ package com.walletflow.common.outbox;
 import com.walletflow.common.entity.BaseEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -24,10 +23,11 @@ import java.util.UUID;
  * <p>Đánh đổi: giao hàng at-least-once (relay có thể gửi lặp khi crash) → consumer BẮT BUỘC
  * idempotent (dùng {@link com.walletflow.common.dedup.EventDeduplicator}).
  */
+// Index KHÔNG khai ở đây: schema do Flyway sở hữu (ddl-auto=validate, mà validate không kiểm tra
+// index). Index thật là PARTIAL INDEX `WHERE published = false` — thứ không biểu diễn được bằng
+// @Index — xem V3__outbox_partial_index.sql. Một @Index ở đây sẽ chỉ là tài liệu sai.
 @Entity
-@Table(name = "outbox_event", indexes = {
-    @Index(name = "idx_outbox_unpublished", columnList = "published, createdAt")
-})
+@Table(name = "outbox_event")
 @Getter
 @Setter
 @Builder

@@ -1,0 +1,128 @@
+# =====================================================================
+# Alert rules — WalletFlow
+#
+# Nguyên tắc: MỖI alert phải hành động được và có runbook tương ứng trong
+# docs/runbooks/. Alert không hành động được thì phải xoá — alert fatigue giết
+# độ tin cậy nhanh hơn là không có alert.
+# =====================================================================
+groups:
+
+  - name: walletflow-money-safety
+    interval: 30s
+    rules:
+
+      # -------------------------------------------------------------
+      # 🔴 DLT có message = có lệnh tiền CHƯA được xử lý
+      # -------------------------------------------------------------
+      # Đây là alert quan trọng nhất của hệ thống. Một message vào DLT nghĩa là
+      # ledger đã từ chối xử lý nó sau khi thử lại, và không có cơ chế tự động nào
+      # xử lý tiếp — giao dịch tương ứng sẽ treo vĩnh viễn nếu không có người can thiệp.
+      - alert: DltNotEmpty
+        expr: increase(walletflow_dlt_messages_total[5m]) > 0
+        for: 0m          # không chờ: một message cũng là một giao dịch treo
+        labels:
+          severity: page
+        annotations:
+          summary: "Có message vào dead-letter topic {{ $labels.topic }}"
+          description: >-
+            {{ $value }} message vào DLT trong 5 phút qua ({{ $labels.exception }}).
+            Mỗi message là một lệnh tiền chưa được thực thi.
+          runbook: docs/runbooks/dlt-not-empty.md
+
+      # -------------------------------------------------------------
+      # 🔴 Outbox tồn đọng = relay chết hoặc Kafka không nhận
+      # -------------------------------------------------------------
+      # Dùng TUỔI của hàng cũ nhất chứ không dùng SỐ LƯỢNG: khi tải thấp, một relay
+      # đã chết hẳn vẫn để lại số lượng hàng chờ nhỏ và trông hoàn toàn bình thường.
+      # Tuổi thì tăng tuyến tính và không nói dối.
+      - alert: OutboxStalled
+        expr: walletflow_outbox_oldest_age_seconds > 60
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Outbox của {{ $labels.job }} tồn đọng {{ $value }}s"
+          description: >-
+            Event cũ nhất trong outbox đã chờ hơn 60 giây. Relay có thể đã chết,
+            hoặc Kafka không nhận được message. Giao dịch đã ghi sổ nhưng event
+            chưa đi ra -> các service downstream đang lệch trạng thái.
+          runbook: docs/runbooks/outbox-stalled.md
+
+      # Cảnh báo sớm hơn, mức ticket: tồn đọng lớn nhưng vẫn đang chảy
+      - alert: OutboxBacklogHigh
+        expr: walletflow_outbox_pending > 500
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Outbox của {{ $labels.job }} có {{ $value }} event chờ gửi"
+          runbook: docs/runbooks/outbox-stalled.md
+
+      # -------------------------------------------------------------
+      # 🟠 Relay publish liên tục thất bại
+      # -------------------------------------------------------------
+      # OutboxRelay cố tình bắt mọi exception để thử lại, nên hỏng hoàn toàn trông
+      # giống hệt đang rảnh. Counter này là cách duy nhất thấy được điều đó.
+      - alert: OutboxPublishFailing
+        expr: rate(walletflow_outbox_publish_failures_total[5m]) > 0
+        for: 3m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Outbox relay của {{ $labels.job }} đang publish lỗi liên tục"
+          runbook: docs/runbooks/outbox-stalled.md
+
+  - name: walletflow-availability
+    interval: 30s
+    rules:
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.job }} không scrape được"
+          description: "Prometheus không lấy được metric của {{ $labels.instance }}."
+          runbook: docs/runbooks/service-down.md
+
+      - alert: HighErrorRate
+        expr: |
+          sum by (job) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+            /
+          sum by (job) (rate(http_server_requests_seconds_count[5m]))
+            > 0.05
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.job }} có tỉ lệ lỗi 5xx > 5%"
+          runbook: docs/runbooks/service-down.md
+
+      # SLO: transfer nội bộ p95 < 300ms (plan §18)
+      - alert: LatencyP95High
+        expr: |
+          histogram_quantile(0.95,
+            sum by (job, le) (rate(http_server_requests_seconds_bucket[5m]))
+          ) > 0.3
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $labels.job }} p95 latency {{ $value }}s vượt SLO 300ms"
+
+  - name: walletflow-auth-security
+    interval: 60s
+    rules:
+
+      # Bùng nổ khoá tài khoản = có người đang dò mật khẩu hàng loạt
+      - alert: AuthLockoutSpike
+        expr: increase(http_server_requests_seconds_count{uri="/api/auth/login",status="401"}[10m]) > 50
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Nhiều lần đăng nhập thất bại bất thường ({{ $value }} trong 10 phút)"
+          description: >-
+            Có thể là tấn công dò mật khẩu. Kiểm tra bảng audit_events
+            (action = LOGIN_FAILED / ACCOUNT_LOCKED) để xem tập trung vào IP hay email nào.

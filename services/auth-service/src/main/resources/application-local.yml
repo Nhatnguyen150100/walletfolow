@@ -1,0 +1,16 @@
+# =====================================================================
+# Profile `local` cho auth-service — xem ghi chú ở ledger-service/application-local.yml
+#   ./mvnw -pl services/auth-service -am spring-boot:run -Dspring-boot.run.profiles=local
+# =====================================================================
+spring:
+  cloud:
+    config:
+      enabled: false
+
+eureka:
+  client:
+    enabled: false
+
+logging:
+  level:
+    com.walletflow: DEBUG

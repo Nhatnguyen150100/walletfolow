@@ -56,7 +56,10 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
       KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Topic chỉ được sinh ra từ KafkaTopicsAutoConfiguration (common-lib). Bật auto-create lại
+      # thì một lỗi gõ sai tên topic ở producer sẽ KHÔNG báo lỗi: broker tạo topic mới, nhận
+      # message, không consumer nào đăng ký — lệnh tiền lặng lẽ không bao giờ được thực thi.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       # Cụm 1 node: hạ replication factor của các topic nội bộ về 1.
       # Bitnami tự đặt sẵn, image Apache thì không — để mặc định 3 sẽ lỗi khi tạo
       # __consumer_offsets, tức consumer group không hoạt động được.
@@ -84,6 +87,7 @@ services:
     container_name: wf-prometheus
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml
     ports:
       - "9090:9090"
 
@@ -95,6 +99,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
       - ./deploy/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./deploy/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards
     ports:
       - "3000:3000"
     depends_on:
@@ -143,7 +149,13 @@ services:
       KAFKA_BROKERS: kafka:9092
       REDIS_HOST: redis
       OTLP_ENDPOINT: http://jaeger:4318/v1/traces
-      JWT_SECRET: V2FsbGV0Rmxvd1N1cGVyU2VjcmV0S2V5Rm9ySldUSFMyNTZBbGdvcml0aG0xMjM0NTY3ODkw
+      # Khoá RS256 lấy từ .env — KHÔNG có giá trị mặc định. Cú pháp `:?` làm
+      # `docker compose up` dừng ngay với thông báo nếu biến chưa có, thay vì khởi
+      # động được bằng một khoá dev mà rồi sẽ theo lên production.
+      #   cp .env.example .env && ./scripts/gen-keys.sh
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?Thiếu JWT_PRIVATE_KEY — chạy ./scripts/gen-keys.sh}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?Thiếu JWT_PUBLIC_KEY — chạy ./scripts/gen-keys.sh}
+      JWKS_URI: http://auth-service:8081/.well-known/jwks.json
     depends_on:
       postgres:
         condition: service_healthy
@@ -151,15 +163,18 @@ services:
         condition: service_healthy
 
   # ledger-service: nguồn sự thật về tiền. Không nằm sau Gateway (không có API công khai
-  # ở M1) — nó được điều khiển qua Kafka. Vẫn map cổng 8083 để soi actuator/swagger từ host.
+  # ở M1) — nó được điều khiển qua Kafka.
+  #
+  # CỐ TÌNH KHÔNG map cổng ra host: service nội bộ tin tuyệt đối header X-User-*, nên bất kỳ
+  # đường nào chạm tới nó mà không qua gateway đều là đường vòng qua xác thực. Cần soi
+  # actuator/swagger khi debug thì dùng:
+  #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
   ledger-service:
     build:
       context: .
       dockerfile: services/ledger-service/Dockerfile
     container_name: wf-ledger
     environment: *common-env
-    ports:
-      - "8083:8083"
     depends_on:
       postgres:
         condition: service_healthy
