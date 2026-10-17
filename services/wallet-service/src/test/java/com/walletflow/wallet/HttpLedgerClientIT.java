@@ -100,7 +100,9 @@ class HttpLedgerClientIT {
         int deadPort = server.getAddress().getPort();
         server.stop(0);
         assertThatThrownBy(() -> call(clientFor(deadPort)))
-                .isInstanceOf(LedgerUnavailableException.class);
+                .isInstanceOf(LedgerUnavailableException.class)
+                .as("message thành `detail` của câu trả lời HTTP: không được lộ địa chỉ nội bộ")
+                .hasMessageNotContaining("localhost");
     }
 
     private static HttpLedgerClient clientFor(int port) {

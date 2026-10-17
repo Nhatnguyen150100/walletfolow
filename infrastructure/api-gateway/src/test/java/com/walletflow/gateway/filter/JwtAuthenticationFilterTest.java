@@ -145,6 +145,38 @@ class JwtAuthenticationFilterTest {
     assertThat(forwarded.get()).isNull();
   }
 
+  @org.junit.jupiter.params.ParameterizedTest(name = "{0}")
+  @org.junit.jupiter.params.provider.ValueSource(strings = {
+      "/api/v1/wallets/../../internal/wallets/abc",   // khớp route wallet nhưng tới API nội bộ
+      "/api/auth/../v1/transactions/transfer",         // khớp path CÔNG KHAI -> bỏ qua JWT
+      "/api/v1/wallets/..;/internal/wallets/abc",      // Tomcat bỏ ;... rồi mới chuẩn hoá
+      "/api/v1/wallets/%2e%2e/internal/wallets/abc",   // .. mã hoá
+      "/api/v1/wallets/%2E%2E%2Finternal",             // chữ hoa + / mã hoá
+      "/api/v1/wallets/./me"
+  })
+  @DisplayName("Path đi vòng bị chặn 400 TRƯỚC mọi so khớp — kể cả khi có token hợp lệ")
+  void chan_path_di_vong(String rawPath) {
+    String token = token(UUID.randomUUID().toString())
+        .claim(JwtAuthenticationFilter.CLAIM_TENANT, REAL_TENANT.toString()).compact();
+    MockServerWebExchange exchange = MockServerWebExchange.from(
+        MockServerHttpRequest.method(org.springframework.http.HttpMethod.GET, java.net.URI.create(rawPath))
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token));
+
+    filter.filter(exchange, chain).block();
+
+    assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    assertThat(forwarded.get()).as("không được chạm tới service phía sau").isNull();
+  }
+
+  @Test
+  @DisplayName("Path bình thường không bị nhận nhầm là đi vòng")
+  void path_binh_thuong_khong_bi_chan() {
+    assertThat(JwtAuthenticationFilter.isTraversal("/api/v1/wallets/me/transactions")).isFalse();
+    assertThat(JwtAuthenticationFilter.isTraversal("/api/v1/transactions/3f1c2a3b-4d5e-4f60-8a71-b2c3d4e5f601"))
+        .isFalse();
+    assertThat(JwtAuthenticationFilter.isTraversal("/api/v1/wallets/file.v2")).isFalse();
+  }
+
   private static JwtBuilder token(String userId) {
     Instant now = Instant.now();
     return Jwts.builder()

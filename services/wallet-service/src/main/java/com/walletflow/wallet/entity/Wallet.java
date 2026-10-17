@@ -1,7 +1,7 @@
 package com.walletflow.wallet.entity;
 
 import com.walletflow.common.money.ECurrency;
-import com.walletflow.wallet.enums.EWalletStatus;
+import com.walletflow.common.wallet.EWalletStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;

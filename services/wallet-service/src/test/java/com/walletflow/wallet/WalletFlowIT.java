@@ -11,7 +11,7 @@ import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.money.ECurrency;
 import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.wallet.entity.Wallet;
-import com.walletflow.wallet.enums.EWalletStatus;
+import com.walletflow.common.wallet.EWalletStatus;
 import com.walletflow.wallet.repositories.WalletEntryRepository;
 import com.walletflow.wallet.repositories.WalletRepository;
 import com.walletflow.wallet.services.WalletService;

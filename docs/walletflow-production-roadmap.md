@@ -4,7 +4,7 @@
 > Master plan trả lời *"xây cái gì để học được bài toán khó"*.
 > Tài liệu này trả lời *"còn thiếu gì để tiền thật chạy qua được, và làm theo thứ tự nào"*.
 >
-> **Ngày:** 2026-10-16 · **Trạng thái code:** Phase 0 đóng · Phase 1 đang làm (1.0, 1.0b xong; 1.1 review)
+> **Ngày:** 2026-10-16 · **Trạng thái code:** Phase 0 đóng · Phase 1 đang làm (1.0, 1.0b, 1.1 xong; 1.2a review)
 
 ---
 
@@ -416,8 +416,8 @@ Ghi lại vì cả hai đều thuộc loại **cho kết quả dương tính gi�
 |---|---|---|
 | 1.0 Multi-tenancy — phía Kafka/ledger | ✅ | #17 |
 | 1.0b Tenant ở biên HTTP + vòng đời tài khoản sổ cái | ✅ | #18 |
-| **1.1 wallet-service (gộp 1.3 contract test)** | 🟡 review | `feat/phase-1-wallet-service` |
-| 1.2a transaction-service — nhận lệnh + idempotency | ⬜ | |
+| 1.1 wallet-service (gộp 1.3 contract test) | ✅ | #20 |
+| **1.2a transaction-service — nhận lệnh + idempotency** | 🟡 review | `feat/phase-1-transaction-accept` |
 | 1.2b transaction-service — saga + quét saga treo | ⬜ | |
 | 1.4 notification-service | ⬜ cắt được nếu thiếu thời gian | |
 | 1.5 E2E + load test | ⬜ | |
@@ -553,7 +553,15 @@ không tồn tại, ledger không có API/command mở tài khoản, tài khoả
 
 ## 1.2 — transaction-service (:8084) · 8 ngày ⭐ phần khó nhất của Phase
 
-**Schema** `V1__init_txn.sql`:
+> **1.2a đã triển khai — thiết kế thật ở [ADR-013](adr/ADR-013-idempotent-transfer-accept.md).**
+> Schema và bảng luật dưới đây là bản ĐỀ XUẤT ban đầu, giữ lại để thấy vì sao đã đổi:
+> - Khoá `(tenant_id, user_id, idem_key)` thay vì `(tenant_id, key)` — hai người trùng chuỗi key không
+>   đụng nhau, và không có câu trả lời nào tiết lộ key đã có người dùng (bỏ luật "key của người khác → 404").
+> - **Không có `IN_PROGRESS` / `409`** — xem đoạn "Đơn giản hoá nhờ mô hình 202" bên dưới.
+> - Request trùng đến lúc request đầu đang kiểm tra ví: nếu kiểm tra của nó lỗi mà key đã có câu trả lời
+>   thì trả câu trả lời đó, không trả lỗi.
+
+**Schema đề xuất ban đầu** (bản triển khai: `services/transaction-service/.../V1__init_txn.sql`):
 
 ```sql
 CREATE TABLE idempotency_keys (

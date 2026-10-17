@@ -4,6 +4,7 @@ import com.walletflow.common.ledger.AccountStatement;
 import com.walletflow.common.money.ECurrency;
 import com.walletflow.common.security.AuthHeaders;
 import com.walletflow.common.tenant.TenantContext;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -24,6 +25,7 @@ import java.util.Optional;
  * <p>Tenant đi theo header {@code X-Tenant-Id}, lấy từ {@code TenantContext} — không bao giờ nhận
  * qua tham số, để không có chỗ nào truyền nhầm tenant của request khác.
  */
+@Slf4j
 @Component
 public class HttpLedgerClient implements LedgerClient {
 
@@ -52,14 +54,16 @@ public class HttpLedgerClient implements LedgerClient {
                             return Optional.empty();
                         }
                         if (!response.getStatusCode().is2xxSuccessful()) {
-                            throw new LedgerUnavailableException("Ledger trả "
-                                    + response.getStatusCode() + " cho sao kê " + accountRef);
+                            log.warn("Ledger trả {} cho sao kê {}", response.getStatusCode(), accountRef);
+                            throw new LedgerUnavailableException();
                         }
                         return Optional.ofNullable(response.bodyTo(AccountStatement.class));
                     });
         } catch (ResourceAccessException unreachable) {
-            throw new LedgerUnavailableException(
-                    "Không kết nối được ledger: " + unreachable.getMessage());
+            // Chi tiết (URL nội bộ, lý do kết nối hỏng) chỉ vào log — message của exception thành
+            // `detail` của câu trả lời HTTP.
+            log.warn("Không kết nối được ledger khi lấy sao kê {}", accountRef, unreachable);
+            throw new LedgerUnavailableException();
         }
     }
 }

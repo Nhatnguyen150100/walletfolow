@@ -22,5 +22,9 @@ scrape_configs:
     metrics_path: /actuator/prometheus
     static_configs:
       - targets: ['wallet-service:8082']
+  - job_name: 'transaction-service'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['transaction-service:8084']
   # Các service sau sẽ được thêm target khi ra đời (milestone sau):
-  # transaction-service:8084, bank-adapter:8085, notification-service:8086
+  # bank-adapter:8085, notification-service:8086

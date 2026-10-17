@@ -86,6 +86,12 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     ServerHttpRequest request = exchange.getRequest();
     String path = request.getURI().getPath();
 
+    // --- Bước 0: path đi vòng bị chặn trước MỌI so khớp ---
+    if (isTraversal(request.getURI().getRawPath())) {
+      log.warn("Từ chối path có dấu hiệu đi vòng: {}", request.getURI().getRawPath());
+      return reject(exchange, HttpStatus.BAD_REQUEST, "INVALID_PATH", "Đường dẫn không hợp lệ");
+    }
+
     // --- Bước 1: luôn luôn, không ngoại lệ ---
     ServerHttpRequest sanitized = request.mutate()
         .headers(headers -> IDENTITY_HEADERS.forEach(headers::remove))
@@ -171,11 +177,43 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
     return PUBLIC_PREFIXES.stream().anyMatch(pattern -> antPathMatcher.match(pattern, path));
   }
 
+  /**
+   * Path có thể bị chuẩn hoá thành một path KHÁC ở phía sau gateway.
+   *
+   * <p>Gateway so khớp route và danh sách path công khai trên chuỗi path như nó nhận được; Tomcat ở
+   * service phía sau lại chuẩn hoá {@code ..}, bỏ tham số {@code ;...}, giải mã {@code %2e}. Hai bên
+   * hiểu khác nhau là đủ để đi vòng:
+   * <ul>
+   *   <li>{@code /api/v1/wallets/../../internal/wallets/{id}} khớp route wallet-service nhưng tới
+   *       {@code /internal/**} — API nội bộ không có route nào ở gateway;</li>
+   *   <li>{@code /api/auth/../v1/...} khớp path CÔNG KHAI {@code /api/auth/**} nên bỏ qua kiểm JWT.</li>
+   * </ul>
+   * Client hợp lệ không bao giờ cần những ký tự này, nên chặn thẳng thay vì cố chuẩn hoá cho đúng.
+   */
+  static boolean isTraversal(String rawPath) {
+    if (rawPath == null) {
+      return false;
+    }
+    String path = rawPath.toLowerCase(java.util.Locale.ROOT);
+    return path.contains("/../") || path.endsWith("/..")
+        || path.contains("/./") || path.endsWith("/.")
+        || path.contains(";")
+        || path.contains("\\")
+        || path.contains("%2e") || path.contains("%2f") || path.contains("%5c") || path.contains("%3b");
+  }
+
   private Mono<Void> unauthorized(ServerWebExchange exchange, String message) {
-    exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-    exchange.getResponse().getHeaders().add("Content-Type", "application/json; charset=UTF-8");
-    String body = "{\"success\":false,\"status\":401,\"errorCode\":\"UNAUTHORIZED\",\"message\":\""
-        + message + "\"}";
+    return reject(exchange, HttpStatus.UNAUTHORIZED, "UNAUTHORIZED", message);
+  }
+
+  private Mono<Void> reject(ServerWebExchange exchange, HttpStatus status, String errorCode, String message) {
+    exchange.getResponse().setStatusCode(status);
+    // RFC 7807, cùng định dạng với GlobalExceptionHandler ở các service — client chỉ cần một bộ
+    // xử lý lỗi cho cả gateway lẫn downstream.
+    exchange.getResponse().getHeaders().add("Content-Type", "application/problem+json; charset=UTF-8");
+    String body = "{\"type\":\"https://walletflow.dev/problems/" + errorCode.toLowerCase().replace('_', '-')
+        + "\",\"title\":\"" + status.getReasonPhrase() + "\",\"status\":" + status.value()
+        + ",\"errorCode\":\"" + errorCode + "\",\"detail\":\"" + message + "\"}";
     var buffer = exchange.getResponse().bufferFactory()
         .wrap(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     return exchange.getResponse().writeWith(Mono.just(buffer));

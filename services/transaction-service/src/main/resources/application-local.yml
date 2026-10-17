@@ -1,0 +1,21 @@
+# =====================================================================
+# Profile `local` — chạy service bằng JVM trên host, hạ tầng trong Docker.
+#   ./mvnw -pl services/transaction-service spring-boot:run -Dspring-boot.run.profiles=local
+# =====================================================================
+spring:
+  cloud:
+    config:
+      enabled: false
+
+eureka:
+  client:
+    enabled: false
+
+outbox:
+  relay:
+    delay-ms: 1000
+
+logging:
+  level:
+    com.walletflow: DEBUG
+    org.hibernate.SQL: DEBUG

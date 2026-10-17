@@ -217,6 +217,38 @@ class WalletApiIT {
     }
 
     // ------------------------------------------------------------------
+    // API nội bộ cho transaction-service
+    // ------------------------------------------------------------------
+    @Test
+    @DisplayName("GET /internal/wallets/{id}: chủ ví + trạng thái, KHÔNG có số dư; tenant khác 404")
+    void api_noi_bo_thong_tin_vi() {
+        UUID user = UUID.randomUUID();
+        UUID wallet = activeWallet(user);
+
+        HttpHeaders tenantOnly = new HttpHeaders();
+        tenantOnly.set(AuthHeaders.TENANT_ID, TENANT.toString());
+        ResponseEntity<JsonNode> info = http.exchange("/internal/wallets/" + wallet, HttpMethod.GET,
+                new HttpEntity<>(tenantOnly), JsonNode.class);
+
+        assertThat(info.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(info.getBody().get("userId").asText()).isEqualTo(user.toString());
+        assertThat(info.getBody().get("status").asText()).isEqualTo("ACTIVE");
+        assertThat(info.getBody().has("balanceMinor"))
+                .as("số dư read model không được dùng để quyết 'đủ tiền' — nên không có trong hợp đồng")
+                .isFalse();
+
+        HttpHeaders otherTenant = new HttpHeaders();
+        otherTenant.set(AuthHeaders.TENANT_ID, UUID.randomUUID().toString());
+        ResponseEntity<JsonNode> hidden = http.exchange("/internal/wallets/" + wallet, HttpMethod.GET,
+                new HttpEntity<>(otherTenant), JsonNode.class);
+        assertThat(hidden.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(hidden.getHeaders().getContentType().toString())
+                .as("lỗi theo RFC 7807")
+                .startsWith("application/problem+json");
+        assertThat(hidden.getBody().get("errorCode").asText()).isEqualTo("NOT_FOUND");
+    }
+
+    // ------------------------------------------------------------------
     // Quản trị
     // ------------------------------------------------------------------
     @Test

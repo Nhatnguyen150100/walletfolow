@@ -59,11 +59,13 @@ public class TenantFilter extends OncePerRequestFilter {
     }
   }
 
+  /** Cùng định dạng RFC 7807 với {@code GlobalExceptionHandler} — filter chạy ngoài MVC nên tự ghi. */
   private static void reject(HttpServletResponse response) throws IOException {
     response.setStatus(HttpStatus.BAD_REQUEST.value());
-    response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+    response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
     response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-    response.getWriter().write("{\"success\":false,\"status\":400,\"errorCode\":\"INVALID_TENANT\","
-        + "\"message\":\"Header " + AuthHeaders.TENANT_ID + " không phải UUID hợp lệ\"}");
+    response.getWriter().write("{\"type\":\"https://walletflow.dev/problems/invalid-tenant\","
+        + "\"title\":\"Bad Request\",\"status\":400,\"errorCode\":\"INVALID_TENANT\","
+        + "\"detail\":\"Header " + AuthHeaders.TENANT_ID + " không phải UUID hợp lệ\"}");
   }
 }

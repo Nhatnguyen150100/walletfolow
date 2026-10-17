@@ -15,8 +15,11 @@ Vấn đề này không giải được ở phía client. Nó phải được gi
 Mọi lệnh ghi tiền phải idempotent theo một khoá **tường minh**, ở hai tầng:
 
 **Tầng API** (`transaction-service`, Phase 1): client gửi header `Idempotency-Key`, giữ nguyên khi
-retry. Bảng `idempotency_keys` với `PRIMARY KEY (tenant_id, key)` và lưu `request_hash` + response
-đã trả.
+retry. Bảng `idempotency_keys` lưu `request_hash` + response đã trả.
+
+> **Cập nhật 2026-10-17 — thay thế một phần bởi [ADR-013](ADR-013-idempotent-transfer-accept.md):**
+> khoá là `(tenant_id, user_id, key)` chứ không phải `(tenant_id, key)`, và không có trạng thái
+> `IN_PROGRESS` — toàn bộ phần nhận lệnh là một transaction cục bộ.
 
 **Tầng ledger** (đã có): idempotent theo `(transaction_id, type)` — ràng buộc UNIQUE ở DB.
 
