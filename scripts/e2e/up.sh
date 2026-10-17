@@ -14,20 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/e2e/lib.sh
 
-if [[ -z "${JWT_PRIVATE_KEY:-}" || -z "${JWT_PUBLIC_KEY:-}" ]]; then
-  log "Sinh cặp khoá JWT tạm thời cho lần chạy này"
-  # PKCS#8 — định dạng JwtKeyProvider đọc được (giống scripts/gen-keys.sh). Đi hoàn toàn qua pipe:
-  # private key không chạm đĩa lần nào.
-  PRIVATE_PEM=$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null) \
-    || die "openssl genpkey thất bại"
-  JWT_PRIVATE_KEY=$(grep -v -- '-----' <<<"$PRIVATE_PEM" | tr -d '\r\n')
-  JWT_PUBLIC_KEY=$(openssl rsa -pubout 2>/dev/null <<<"$PRIVATE_PEM" | grep -v -- '-----' | tr -d '\r\n')
-  unset PRIVATE_PEM
-  [[ -n "$JWT_PRIVATE_KEY" && -n "$JWT_PUBLIC_KEY" ]] || die "Không sinh được khoá JWT (cần openssl)"
-  # Khoá dùng một lần, nhưng vẫn không để nó lọt vào log CI nếu Spring in giá trị property khi bind lỗi
-  [[ -n "${GITHUB_ACTIONS:-}" ]] && echo "::add-mask::$JWT_PRIVATE_KEY"
-  export JWT_PRIVATE_KEY JWT_PUBLIC_KEY
-fi
+ensure_jwt_keys
 
 log "Build + khởi động stack (lần đầu mất vài phút: mỗi image build Maven từ source)"
 # Chỉ những service E2E cần — bỏ prometheus/grafana/jaeger cho nhẹ runner CI (7 JVM + Kafka + PG).

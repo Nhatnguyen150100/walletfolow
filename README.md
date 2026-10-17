@@ -129,6 +129,15 @@ Tắt stack dev trước khi chạy (tên container `wf-*` trùng nhau). Không 
 `jq` qua Docker — chậm hơn; cài `jq` cho nhanh. Công cụ dev đi kèm: `scripts/e2e/seed-topup.sh`
 (nạp tiền qua lệnh Kafka — Phase 1 chưa có API top-up), `scripts/e2e/make-admin.sh`.
 
+### Load test — số liệu cơ sở ([docs/benchmarks/phase1.md](docs/benchmarks/phase1.md))
+
+```bash
+./scripts/load/up.sh         # stack cấu hình PRODUCTION + prometheus (dùng lại image của wf-e2e)
+./scripts/load/seed.sh       # 40 người gửi + 1 ví merchant, nạp tiền (k6/.data, gitignore)
+./scripts/load/run.sh cold   # k6 qua gateway, 5→80 TPS; in độ trễ, throughput, lag + kiểm bất biến tiền
+./scripts/load/run.sh hot    # như trên, mọi lệnh chuyển vào MỘT ví (tranh khoá tài khoản nhận)
+```
+
 ---
 
 ## 🛡️ Những gì Phase 0 đã siết
