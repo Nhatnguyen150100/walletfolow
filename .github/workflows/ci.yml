@@ -231,6 +231,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Tên repository của image PHẢI viết thường, còn github.repository giữ nguyên chữ hoa
+      # của owner (Nhatnguyen150100/...) -> buildx từ chối với "repository name must be
+      # lowercase". Lỗi này chỉ lộ ra trên master, vì job này không chạy ở PR.
+      - name: Compute lowercase image repository
+        run: echo "IMAGE_REPO=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
       - name: Build & push ${{ matrix.service.name }}
         uses: docker/build-push-action@v6
         with:
@@ -240,7 +246,7 @@ jobs:
           # Tag bằng SHA chứ không chỉ `latest`: phải truy được image đang chạy
           # tương ứng với commit nào — điều kiện cần để rollback và để điều tra sự cố.
           tags: |
-            ghcr.io/${{ github.repository }}/${{ matrix.service.name }}:${{ github.sha }}
-            ghcr.io/${{ github.repository }}/${{ matrix.service.name }}:latest
+            ${{ env.IMAGE_REPO }}/${{ matrix.service.name }}:${{ github.sha }}
+            ${{ env.IMAGE_REPO }}/${{ matrix.service.name }}:latest
           cache-from: type=gha,scope=${{ matrix.service.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service.name }}
