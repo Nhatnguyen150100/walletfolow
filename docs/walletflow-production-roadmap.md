@@ -410,20 +410,21 @@ Ghi lại vì cả hai đều thuộc loại **cho kết quả dương tính gi�
 >
 > Tương ứng M2 + M3 của master plan, nhưng nâng chuẩn lên mức production.
 
-### Trạng thái Phase 1 (cập nhật 2026-10-16)
+### Trạng thái Phase 1 (cập nhật 2026-10-17)
 
 | Mục | Trạng thái | PR |
 |---|---|---|
 | 1.0 Multi-tenancy — phía Kafka/ledger | ✅ | #17 |
 | 1.0b Tenant ở biên HTTP + vòng đời tài khoản sổ cái | ✅ | #18 |
 | 1.1 wallet-service (gộp 1.3 contract test) | ✅ | #20 |
-| 1.2a transaction-service — nhận lệnh + idempotency | 🟡 review | #23 |
-| **1.2b transaction-service — saga + quét saga treo** | 🟡 review | `feat/phase-1-saga` |
+| 1.2a transaction-service — nhận lệnh + idempotency | ✅ | #23 |
+| 1.2b transaction-service — saga + quét saga treo | ✅ | #24 |
+| **1.5a E2E qua gateway — kiểm DoD trên stack thật** | 🟡 review | `feat/phase-1-e2e` |
+| 1.5b Load test k6 + số liệu cơ sở | ⬜ | |
 | 1.4 notification-service | ⬜ cắt được nếu thiếu thời gian | |
-| 1.5 E2E + load test | ⬜ | |
 
-Đường găng: **1.0b → 1.1 → 1.2a → 1.2b**. Mỗi dòng là một PR riêng — PR nhỏ review được, PR
-20 ngày công thì không.
+Đường găng: **1.0b → 1.1 → 1.2a → 1.2b → 1.5a → 1.5b**. Mỗi dòng là một PR riêng — PR nhỏ review
+được, PR 20 ngày công thì không.
 
 ## 1.0 — Multi-tenancy từ đầu (🔀 bắt buộc nếu chọn con đường B) · 1,5 ngày · ✅ PR #17
 
@@ -670,8 +671,43 @@ là gợi ý UX.
 - Có dedup (dùng lại `EventDeduplicator`) — **thông báo trùng là lỗi nhìn thấy được với người dùng**.
 - Bảng `notifications` lưu lịch sử để tra cứu.
 
-## 1.5 — Load test lần đầu · 1,5 ngày
+## 1.5a — E2E qua gateway: kiểm DoD trên stack thật · ~2 ngày
 
+> Tách khỏi 1.5 khi bắt tay làm: chưa chứng minh stack chạy đúng end-to-end thì số liệu load test
+> không có nghĩa. IT của từng service dùng fake cho service bên cạnh (`FakeWalletDirectory`,
+> `FakeLedger`) — chưa có chỗ nào chứng minh các mảnh ghép THẬT nói chuyện được với nhau.
+
+- `scripts/e2e/up.sh` dựng cả stack (`docker compose -p wf-e2e` + `docker-compose.e2e.yml` chỉ rút
+  ngắn deadline saga), sinh khoá JWT tạm trong bộ nhớ; `scripts/e2e/phase1-dod.sh` kiểm từng ô DoD
+  bằng curl qua gateway, đối chiếu với sổ cái bằng psql. Job CI `e2e` chạy cả hai trên mọi PR.
+- **Nạp tiền:** Phase 1 chưa có API top-up (2.4) → `scripts/e2e/seed-topup.sh` gửi lệnh
+  `PostJournal TOPUP` lên Kafka — đi đúng đường của mọi lệnh ghi sổ, không thêm cửa sau nào vào code.
+- **ADMIN để rebuild:** chưa có API cấp quyền (2.5) → `scripts/e2e/make-admin.sh` sửa `authdb`, chỉ
+  cho stack dev/E2E.
+- ⚠️ **Lỗi E2E bắt được ngay lần chạy đầu:** api-gateway CHƯA TỪNG khởi động được trong compose — hai
+  bean `KeyResolver` không có `@Primary`, `RequestRateLimiterGatewayFilterFactory` không tạo được.
+  Có từ commit đầu; không lộ vì gateway chỉ có unit test và CI chỉ build image. Sửa bằng `@Primary`
+  cho `ipKeyResolver` + `ApiGatewayApplicationTest` (load context thật, fail trước khi sửa).
+- **Rate limit giữ nguyên mức production**: 100 lệnh song song của một user gặp 429 và được gửi lại
+  với CÙNG `Idempotency-Key` — thêm một phép thử idempotency dưới tải.
+- **Không làm:** E2E hai tenant thật — auth chỉ phục vụ một tenant lấy từ cấu hình (`auth.tenant-id`)
+  tới Phase 5. Cách ly tenant đã chứng minh ở `TenantIsolationIT`, `WalletApiIT`; E2E chứng minh
+  phần còn lại: tenant/danh tính CHỈ lấy từ token, header giả bị gateway xoá.
+
+**Ánh xạ DoD → `phase1-dod.sh`:** (1) chuyển + số dư 2 ví khớp sổ cái và read model · (2) gửi lại
+cùng key, kể cả 10 lần song song → body khớp từng byte; 10 request ĐẦU TIÊN song song cùng một key
+mới → một giao dịch; bằng chứng là số dư + số giao dịch (unique của ledger khiến "số bút toán theo
+transactionId" không bao giờ > 1) · (3) `docker kill` ledger, job quét gửi lại lệnh, `docker kill`
+transaction-service, ledger ghi sổ khi transaction-service chết, khởi động lại → `COMPLETED`, số dư
+đúng · (4) làm hỏng số dư + xoá lịch sử → rebuild (ADMIN) khớp sổ
+cái · (5) không token 401, header `X-Tenant-Id`/`X-User-*` giả vô hiệu, dữ liệu người khác trả cùng
+lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 10 → đúng 10 `COMPLETED`, ví về 0;
+`SUM(postings) = 0` theo tenant; không message nào vào DLT.
+
+## 1.5b — Load test lần đầu · 1,5 ngày
+
+- Rate limit của gateway (5 rps/IP ở `/api/auth`, 10 rps/user ở `/api/v1/transactions`) sẽ làm méo
+  số đo: cần nhiều user + token phát trước, hoặc ngưỡng cấu hình được cho môi trường load test.
 - Script k6: `k6/transfer.js` — 50 → 500 VU, trộn ví nóng (cùng ví) và ví nguội (ví khác nhau).
 - Ghi lại đường cơ sở: TPS, p50/p95/p99, tỉ lệ lỗi, outbox lag, consumer lag, số lần retry
   optimistic lock.
@@ -680,12 +716,16 @@ là gợi ý UX.
 
 ### ✅ Definition of Done — Phase 1
 
-- [ ] `curl POST /api/v1/transactions/transfer` qua gateway → tiền chuyển, số dư 2 ví đúng
-- [ ] Gửi lại cùng `Idempotency-Key` → không trừ tiền lần hai
-- [ ] Giết service giữa saga → giao dịch vẫn kết thúc đúng
-- [ ] Rebuild projection cho kết quả khớp ledger 100%
-- [ ] Tenant A không thấy được gì của tenant B
-- [ ] Có số liệu load test cơ sở
+> Bằng chứng 5 ô đầu: `scripts/e2e/phase1-dod.sh` (job CI `e2e`) — 52/52 kiểm tra PASS trên stack
+> thật ngày 2026-10-17 (1.5a).
+
+- [x] `curl POST /api/v1/transactions/transfer` qua gateway → tiền chuyển, số dư 2 ví đúng
+- [x] Gửi lại cùng `Idempotency-Key` → không trừ tiền lần hai
+- [x] Giết service giữa saga → giao dịch vẫn kết thúc đúng
+- [x] Rebuild projection cho kết quả khớp ledger 100%
+- [x] Tenant A không thấy được gì của tenant B — cách ly dữ liệu ở `TenantIsolationIT`/`WalletApiIT`;
+  E2E chứng minh tenant/danh tính chỉ lấy từ token (hai tenant thật qua gateway: Phase 5)
+- [ ] Có số liệu load test cơ sở (1.5b)
 
 ---
 
