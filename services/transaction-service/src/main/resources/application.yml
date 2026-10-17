@@ -36,8 +36,13 @@ walletflow:
     # Câu trả lời của một Idempotency-Key được giữ chừng này. Client gửi lại trong khoảng đó nhận
     # đúng câu trả lời cũ; quá hạn thì key được coi như mới.
     idempotency-ttl: PT24H
-    # Saga quá hạn này mà ledger chưa trả lời = treo -> job quét (1.2b) xử lý
+    # Saga quá hạn này mà ledger chưa trả lời = treo -> job quét gửi lại (hạn chót giãn dần)
     saga-deadline: PT2M
+    saga-scan:
+      interval-ms: 15000
+      # Hết số lần gửi mà vẫn không có câu trả lời -> MANUAL_REVIEW + alert SagaManualReview
+      max-attempts: 3
+      batch-size: 50
 
 eureka:
   client:
