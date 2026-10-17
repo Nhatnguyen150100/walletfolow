@@ -45,6 +45,7 @@
     <module>services/auth-service</module>
     <module>services/ledger-service</module>
     <module>services/wallet-service</module>
+    <module>services/transaction-service</module>
   </modules>
 
   <dependencyManagement>

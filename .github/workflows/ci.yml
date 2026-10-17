@@ -218,6 +218,7 @@ jobs:
           - { name: auth-service,     path: services/auth-service }
           - { name: ledger-service,   path: services/ledger-service }
           - { name: wallet-service,   path: services/wallet-service }
+          - { name: transaction-service, path: services/transaction-service }
     steps:
       - uses: actions/checkout@v4
 
