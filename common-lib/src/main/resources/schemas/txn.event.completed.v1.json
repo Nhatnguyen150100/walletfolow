@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/txn.event.completed.v1.json",
+  "title": "TransactionCompleted v1 — giao dịch đã hoàn tất",
+  "description": "Topic txn.event.completed.v1. Producer: transaction-service. Consumer: notification-service. Phát đúng một lần cho mỗi lần chuyển sang COMPLETED; eventId tất định theo transactionId. Luật tiến hoá: chỉ THÊM field optional.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid" },
+    "eventType": { "const": "TransactionCompleted" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["transactionId", "type", "initiatedBy", "fromWalletId", "toWalletId", "amountMinor", "currency"],
+      "properties": {
+        "transactionId": { "$ref": "#/$defs/uuid" },
+        "type": { "enum": ["TRANSFER", "TOPUP", "WITHDRAW", "REVERSAL"] },
+        "initiatedBy": { "$ref": "#/$defs/uuid" },
+        "fromWalletId": { "$ref": "#/$defs/uuid" },
+        "toWalletId": { "$ref": "#/$defs/uuid" },
+        "amountMinor": { "type": "integer", "exclusiveMinimum": 0 },
+        "currency": { "enum": ["VND", "USD"] },
+        "entryId": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}

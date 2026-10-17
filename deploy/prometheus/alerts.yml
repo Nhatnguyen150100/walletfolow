@@ -72,6 +72,57 @@ groups:
           summary: "Outbox relay của {{ $labels.job }} đang publish lỗi liên tục"
           runbook: docs/runbooks/outbox-stalled.md
 
+      # -------------------------------------------------------------
+      # 🔴 Giao dịch chuyển MANUAL_REVIEW = ledger không trả lời sau mọi lần gửi lại
+      # -------------------------------------------------------------
+      # Không có cơ chế tự động nào đi tiếp từ đây. Tiền có thể ĐÃ đi (bút toán ghi xong, event
+      # mất) hoặc CHƯA — người dùng đang thấy giao dịch treo và chỉ người đối chiếu sổ cái mới biết.
+      - alert: SagaManualReview
+        expr: increase(walletflow_saga_manual_review_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $value }} giao dịch chuyển MANUAL_REVIEW ở {{ $labels.job }}"
+          description: >-
+            Ledger không trả lời sau đủ số lần gửi lại. Đối chiếu từng giao dịch với sổ cái
+            trước khi làm bất cứ điều gì — KHÔNG gửi lại lệnh bằng tay với transactionId mới.
+          runbook: docs/runbooks/saga-stuck.md
+
+      # Gửi lại nhiều = ledger chậm hoặc message đang mất ở đâu đó — báo trước khi thành MANUAL_REVIEW
+      - alert: SagaRetriesHigh
+        expr: increase(walletflow_saga_retries_total[15m]) > 10
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lần gửi lại lệnh ghi sổ trong 15 phút ở {{ $labels.job }}"
+          runbook: docs/runbooks/saga-stuck.md
+
+      # Job quét lỗi khi xử lý một saga — saga đó bị đẩy lùi nên không chặn các saga khác, nhưng
+      # sẽ lỗi lại mãi cho tới khi có người sửa dữ liệu
+      - alert: SagaScanFailing
+        expr: increase(walletflow_saga_scan_failures_total[30m]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Job quét saga treo gặp lỗi ở {{ $labels.job }}"
+          runbook: docs/runbooks/saga-stuck.md
+
+      # Ledger ghi sổ một giao dịch đã báo FAILED cho người dùng — xem SagaService
+      - alert: SagaStatusConflict
+        expr: increase(walletflow_saga_status_conflict_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Giao dịch đã báo thất bại nhưng ledger ghi sổ ({{ $labels.job }})"
+          description: >-
+            Người dùng nhận thông báo thất bại rồi sau đó thông báo thành công. Tiền đúng theo sổ
+            cái; cần liên hệ người dùng nếu họ đã thao tác dựa trên thông báo thất bại.
+          runbook: docs/runbooks/saga-stuck.md
+
   - name: walletflow-availability
     interval: 30s
     rules:

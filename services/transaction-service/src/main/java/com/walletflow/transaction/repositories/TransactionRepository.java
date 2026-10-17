@@ -1,6 +1,8 @@
 package com.walletflow.transaction.repositories;
 
 import com.walletflow.transaction.entity.Transaction;
+import jakarta.persistence.LockModeType;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
@@ -17,6 +19,37 @@ public interface TransactionRepository extends Repository<Transaction, UUID> {
 
     /** Chỉ người tạo lệnh xem được lệnh — người khác (kể cả cùng tenant) nhận 404 như không tồn tại. */
     Optional<Transaction> findByTenantIdAndIdAndInitiatedBy(UUID tenantId, UUID id, UUID initiatedBy);
+
+    Optional<Transaction> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    /**
+     * Khoá hàng giao dịch trước khi saga quyết định chuyển trạng thái. Hai event của cùng một giao
+     * dịch (posted và rejected đến từ hai topic, không có thứ tự) bị tuần tự hoá ở đây: bên đến sau
+     * nhìn thấy trạng thái bên đến trước đã ghi.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT t FROM Transaction t WHERE t.tenantId = :tenantId AND t.id = :id")
+    Optional<Transaction> lockForSaga(@Param("tenantId") UUID tenantId, @Param("id") UUID id);
+
+    /**
+     * Chuyển trạng thái. Người gọi đã khoá hàng và đã quyết định theo máy trạng thái của
+     * {@code SagaService} — câu này chỉ ghi kết quả.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE transactions
+               SET status = :status,
+                   -- CAST: hai tham số này thường null, và null không rõ kiểu có thể bị bind thành bytea
+                   failure_code = CAST(:failureCode AS VARCHAR),
+                   failure_reason = CAST(:failureReason AS TEXT),
+                   updated_at = now()
+             WHERE tenant_id = :tenantId AND id = :id
+            """, nativeQuery = true)
+    int transition(@Param("tenantId") UUID tenantId,
+                   @Param("id") UUID id,
+                   @Param("status") String status,
+                   @Param("failureCode") String failureCode,
+                   @Param("failureReason") String failureReason);
 
     @Modifying
     @Query(value = """
