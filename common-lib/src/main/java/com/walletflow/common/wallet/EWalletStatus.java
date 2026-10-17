@@ -1,4 +1,4 @@
-package com.walletflow.wallet.enums;
+package com.walletflow.common.wallet;
 
 import com.walletflow.common.event.EAccountStatus;
 

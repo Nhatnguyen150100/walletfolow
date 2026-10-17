@@ -2,7 +2,7 @@ package com.walletflow.wallet.dto;
 
 import com.walletflow.common.money.ECurrency;
 import com.walletflow.wallet.entity.Wallet;
-import com.walletflow.wallet.enums.EWalletStatus;
+import com.walletflow.common.wallet.EWalletStatus;
 
 import java.time.Instant;
 import java.util.UUID;

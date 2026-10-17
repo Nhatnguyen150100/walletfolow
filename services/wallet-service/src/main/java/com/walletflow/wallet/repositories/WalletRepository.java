@@ -108,7 +108,7 @@ public interface WalletRepository extends Repository<Wallet, UUID> {
      */
     @Query("""
             SELECT w FROM Wallet w
-             WHERE w.status = com.walletflow.wallet.enums.EWalletStatus.PENDING
+             WHERE w.status = com.walletflow.common.wallet.EWalletStatus.PENDING
                AND w.createdAt < :before
              ORDER BY w.createdAt
             """)

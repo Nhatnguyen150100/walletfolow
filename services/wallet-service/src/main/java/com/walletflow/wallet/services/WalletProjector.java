@@ -5,7 +5,7 @@ import com.walletflow.common.event.LedgerPostedEvent;
 import com.walletflow.common.event.Leg;
 import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.wallet.entity.Wallet;
-import com.walletflow.wallet.enums.EWalletStatus;
+import com.walletflow.common.wallet.EWalletStatus;
 import com.walletflow.wallet.repositories.WalletEntryRepository;
 import com.walletflow.wallet.repositories.WalletRepository;
 import lombok.RequiredArgsConstructor;
