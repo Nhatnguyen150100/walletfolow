@@ -117,6 +117,18 @@ curl http://localhost:8080/.well-known/jwks.json
 
 Độ phủ (integration): ledger-service **94,7%**, auth-service **79,8%** — có gate trong CI.
 
+### E2E — cả stack thật, qua gateway (Definition of Done Phase 1)
+
+```bash
+./scripts/e2e/up.sh          # dựng stack (project compose riêng wf-e2e, khoá JWT tạm trong bộ nhớ)
+./scripts/e2e/phase1-dod.sh  # chuyển tiền, gửi lại cùng key, giết service giữa saga, rebuild, tenant
+./scripts/e2e/down.sh        # dọn sạch (chỉ project wf-e2e)
+```
+
+Tắt stack dev trước khi chạy (tên container `wf-*` trùng nhau). Không có `jq` thì script tự chạy
+`jq` qua Docker — chậm hơn; cài `jq` cho nhanh. Công cụ dev đi kèm: `scripts/e2e/seed-topup.sh`
+(nạp tiền qua lệnh Kafka — Phase 1 chưa có API top-up), `scripts/e2e/make-admin.sh`.
+
 ---
 
 ## 🛡️ Những gì Phase 0 đã siết

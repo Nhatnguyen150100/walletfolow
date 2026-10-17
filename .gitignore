@@ -27,3 +27,8 @@ secrets/
 
 # Bản sao lưu DB — dữ liệu, không phải mã nguồn
 backups/
+
+# Claude Code: commit .claude/ (settings, hooks, commands, agents, skills), bỏ qua các file cá nhân/tạm
+.claude/.state/
+.claude/settings.local.json
+CLAUDE.local.md
