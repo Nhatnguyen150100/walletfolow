@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/txn.event.failed.v1.json",
+  "title": "TransactionFailed v1 — giao dịch thất bại",
+  "description": "Topic txn.event.failed.v1. Producer: transaction-service. Consumer: notification-service. Chỉ mang failureCode ổn định, không mang câu chữ lý do của ledger. Luật tiến hoá: chỉ THÊM field optional; failureCode mới phải được consumer xử lý như 'lỗi không biết'.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid" },
+    "eventType": { "const": "TransactionFailed" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["transactionId", "type", "initiatedBy", "fromWalletId", "toWalletId", "amountMinor", "currency", "failureCode"],
+      "properties": {
+        "transactionId": { "$ref": "#/$defs/uuid" },
+        "type": { "enum": ["TRANSFER", "TOPUP", "WITHDRAW", "REVERSAL"] },
+        "initiatedBy": { "$ref": "#/$defs/uuid" },
+        "fromWalletId": { "$ref": "#/$defs/uuid" },
+        "toWalletId": { "$ref": "#/$defs/uuid" },
+        "amountMinor": { "type": "integer", "exclusiveMinimum": 0 },
+        "currency": { "enum": ["VND", "USD"] },
+        "failureCode": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}
