@@ -3,6 +3,7 @@ package com.walletflow.gateway.config;
 import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import reactor.core.publisher.Mono;
 
 /**
@@ -13,7 +14,15 @@ import reactor.core.publisher.Mono;
 @Configuration
 public class RateLimitConfig {
 
+  /**
+   * {@code @Primary}: {@code RequestRateLimiterGatewayFilterFactory} cần MỘT resolver mặc định —
+   * thiếu nó, hai bean cùng kiểu làm gateway chết ngay lúc khởi động (lỗi có từ commit đầu, lộ ra ở
+   * E2E roadmap 1.5a). Chọn theo IP vì nó luôn có giá trị: route nào có filter
+   * {@code RequestRateLimiter} mà quên khai {@code key-resolver} vẫn bị đếm theo từng IP, thay vì gom
+   * mọi request chưa đăng nhập vào chung một khoá "anonymous".
+   */
   @Bean
+  @Primary
   public KeyResolver ipKeyResolver() {
     return exchange -> {
       String ip = exchange.getRequest().getRemoteAddress() != null
