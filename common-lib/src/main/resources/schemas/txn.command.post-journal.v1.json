@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/txn.command.post-journal.v1.json",
+  "title": "PostJournal v1 — lệnh ghi bút toán",
+  "description": "Topic txn.command.post-journal.v1. Producer: transaction-service (saga). Consumer: ledger-service. Idempotent theo (tenant, transactionId, type). referenceId bắt buộc với REVERSAL, phải null với loại khác. Luật tiến hoá: chỉ THÊM field optional.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid" },
+    "eventType": { "const": "PostJournal" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["transactionId", "type", "currency", "legs"],
+      "properties": {
+        "transactionId": { "$ref": "#/$defs/uuid" },
+        "type": { "enum": ["TRANSFER", "TOPUP", "WITHDRAW", "REVERSAL"] },
+        "referenceId": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+        "currency": { "enum": ["VND", "USD"] },
+        "legs": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["accountRef", "amountMinor"],
+            "properties": {
+              "accountRef": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "amountMinor": { "type": "integer", "not": { "const": 0 } }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}

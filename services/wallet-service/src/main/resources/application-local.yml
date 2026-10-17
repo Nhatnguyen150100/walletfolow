@@ -1,0 +1,31 @@
+# =====================================================================
+# Profile `local` — chạy service bằng JVM trên host, hạ tầng trong Docker.
+#   ./mvnw -pl services/wallet-service spring-boot:run -Dspring-boot.run.profiles=local
+#
+# Không cần discovery-server/config-server: chạy một instance thì danh bạ và
+# cấu hình tập trung chỉ làm chậm khởi động và làm bẩn log.
+# =====================================================================
+spring:
+  cloud:
+    config:
+      enabled: false
+
+eureka:
+  client:
+    enabled: false
+
+outbox:
+  relay:
+    delay-ms: 1000
+
+walletflow:
+  wallet:
+    pending-resend:
+      # Ngắn hơn hẳn mặc định để thấy cơ chế gửi lại khi tắt ledger lúc debug
+      after: PT20S
+      interval-ms: 10000
+
+logging:
+  level:
+    com.walletflow: DEBUG
+    org.hibernate.SQL: DEBUG

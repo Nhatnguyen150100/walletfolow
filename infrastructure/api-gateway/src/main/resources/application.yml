@@ -39,6 +39,13 @@ spring:
           predicates:
             - Path=/.well-known/**
 
+        # Công cụ quản trị read model của ví (rebuild). Vẫn qua JWT như mọi path /api/v1/**;
+        # wallet-service tự kiểm X-User-Role = ADMIN.
+        - id: wallet-admin
+          uri: lb://WALLET-SERVICE
+          predicates:
+            - Path=/api/v1/admin/wallets/**
+
         # ----- Các route sau sẽ hoạt động khi service tương ứng ra đời (milestone sau) -----
         # Lệnh ghi tiền: rate limit theo user đã xác thực (chống spam giao dịch)
         - id: transaction-service

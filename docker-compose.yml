@@ -1,11 +1,11 @@
 # =====================================================================
-# WalletFlow — Milestone 1: hạ tầng + discovery/config/gateway + auth + ledger
+# WalletFlow — Phase 1: hạ tầng + discovery/config/gateway + auth + ledger + wallet
 #   docker compose up -d --build
 #
 # Thứ tự khởi động (qua depends_on + healthcheck):
-#   hạ tầng (postgres/kafka/redis/jaeger) -> discovery -> config -> auth/ledger -> gateway
-# Các service còn lại (wallet/transaction/bank-adapter/notification)
-# sẽ được thêm vào ở milestone sau.
+#   hạ tầng (postgres/kafka/redis/jaeger) -> discovery -> config -> auth/ledger -> wallet -> gateway
+# Các service còn lại (transaction/bank-adapter/notification)
+# sẽ được thêm vào ở các bước sau của roadmap.
 # =====================================================================
 services:
 
@@ -184,6 +184,32 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health | grep UP || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # Read model của ví — suy ra từ ledger qua Kafka. Không map cổng ra host, như ledger:
+  # chỉ đi vào qua gateway (header danh tính chỉ được sinh ở gateway).
+  wallet-service:
+    build:
+      context: .
+      dockerfile: services/wallet-service/Dockerfile
+    container_name: wf-wallet
+    environment:
+      <<: *common-env
+      # API nội bộ của ledger, chỉ dùng khi dựng lại ví
+      LEDGER_URL: http://ledger-service:8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      ledger-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/actuator/health | grep UP || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10

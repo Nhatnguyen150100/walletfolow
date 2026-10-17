@@ -4,7 +4,7 @@
 > Master plan trả lời *"xây cái gì để học được bài toán khó"*.
 > Tài liệu này trả lời *"còn thiếu gì để tiền thật chạy qua được, và làm theo thứ tự nào"*.
 >
-> **Ngày:** 2026-10-16 · **Trạng thái code:** Phase 0 đóng · Phase 1 đang làm (1.0 xong, 1.0b đang làm)
+> **Ngày:** 2026-10-16 · **Trạng thái code:** Phase 0 đóng · Phase 1 đang làm (1.0, 1.0b xong; 1.1 review)
 
 ---
 
@@ -415,8 +415,8 @@ Ghi lại vì cả hai đều thuộc loại **cho kết quả dương tính gi�
 | Mục | Trạng thái | PR |
 |---|---|---|
 | 1.0 Multi-tenancy — phía Kafka/ledger | ✅ | #17 |
-| **1.0b Tenant ở biên HTTP + vòng đời tài khoản sổ cái** | 🟡 đang làm | `feat/phase-1-tenant-http-boundary` |
-| 1.1 wallet-service (gộp 1.3 contract test) | ⬜ | |
+| 1.0b Tenant ở biên HTTP + vòng đời tài khoản sổ cái | ✅ | #18 |
+| **1.1 wallet-service (gộp 1.3 contract test)** | 🟡 review | `feat/phase-1-wallet-service` |
 | 1.2a transaction-service — nhận lệnh + idempotency | ⬜ | |
 | 1.2b transaction-service — saga + quét saga treo | ⬜ | |
 | 1.4 notification-service | ⬜ cắt được nếu thiếu thời gian | |
@@ -498,12 +498,17 @@ không tồn tại, ledger không có API/command mở tài khoản, tài khoả
 
 **ADR-010** (lan truyền tenant end-to-end), **ADR-011** (vòng đời tài khoản sổ cái).
 
-## 1.1 — wallet-service (:8082) · 5,5 ngày (gộp 1.3)
+## 1.1 — wallet-service (:8082) · 5,5 ngày (gộp 1.3) · [ADR-012](adr/ADR-012-wallet-read-model.md)
 
 **Vai trò:** read model, không phải nguồn sự thật.
 
+> **Đã sửa khi triển khai:** khử trùng theo **event** (`processed_event`) như bản đầu của mục này
+> **vỡ** khi một event chạm hai ví — rebuild ví A sẽ chặn luôn event đó áp cho ví B. Thay bằng bảng
+> lịch sử `wallet_entries` khoá `(wallet_id, entry_id)`, vừa là lịch sử vừa là khoá khử trùng. Xem
+> ADR-012.
+
 - Schema `V1__init_wallet.sql`: `wallets(id, tenant_id, user_id, currency, balance_minor, status,
-  created_at, updated_at)` + `processed_event`.
+  status_version, created_at, updated_at)` + `wallet_entries` (lịch sử = khoá khử trùng) + outbox.
   - ~~`held_minor`~~ — **bỏ**: mâu thuẫn với 2.1, nơi tiền bị giữ nằm ở tài khoản `HOLD_*` trong
     sổ cái. Một cột `held` là nguồn sự thật thứ hai, thứ §5.1 cấm.
   - ~~`version` + Spring Retry~~ — **bỏ**: `UPDATE … SET balance_minor = balance_minor + :delta` đã
@@ -512,8 +517,10 @@ không tồn tại, ledger không có API/command mở tài khoản, tài khoả
 - **Mở ví:** tạo hàng `wallets` với `status = PENDING` + gửi `wallet.command.open-account.v1` qua
   outbox **trong cùng transaction** → nhận `ledger.event.account-opened.v1` → `ACTIVE`. `wallet_id`
   chính là `accountRef` trong sổ cái (UUID, không PII — xem 5.4).
-- Consume `ledger.event.posted.v1` → với mỗi vế có `accountRef` là ví của mình, cộng `delta` trong
-  **cùng transaction** với `EventDeduplicator.markProcessed()`. Bỏ qua vế của tài khoản hệ thống.
+- Consume `ledger.event.posted.v1` → khoá các ví của event (theo thứ tự id) → với mỗi ví,
+  `INSERT wallet_entries … ON CONFLICT DO NOTHING`; chỉ khi chèn được mới cộng `delta`. Bỏ qua vế của
+  tài khoản hệ thống.
+- Ví kẹt `PENDING` quá 2 phút được job nền gửi lại lệnh mở tài khoản (ledger trả lời idempotent).
 - ⚠️ **Projection phải giao hoán** (cộng delta + dedup), **không** được gán `balance = X`.
   `LedgerPosted` được partition theo **ví bị ghi nợ**, nên với một lệnh chuyển A→B, vế của B đi trên
   partition của A — không có thứ tự nào so với các event khác của B. Cộng delta thì thứ tự không
@@ -521,23 +528,28 @@ không tồn tại, ledger không có API/command mở tài khoản, tài khoả
 - API: `GET /api/v1/wallets/me`, `GET /api/v1/wallets/me/transactions?cursor=&limit=`
   (**cursor-based**, không offset — offset pagination sẽ bỏ sót/lặp bản ghi khi có ghi đồng thời,
   và chậm dần với sổ giao dịch lớn).
-- **`POST /admin/wallets/{id}/rebuild`** — dựng lại số dư từ ledger.
-  - Cần thêm API nội bộ ở ledger `GET /internal/accounts/{ref}/postings` (ledger chưa có HTTP API
-    nào; đọc thẳng `ledgerdb` là vi phạm ADR-001).
-  - ⚠️ Trong **một** transaction, khoá hàng ví: đặt `balance = SUM` **và** ghi `processed_event`
-    cho mọi `entryId` đã tính. Bỏ bước sau thì event đang bay sẽ bị cộng lần hai sau khi rebuild.
+- **`POST /api/v1/admin/wallets/{id}/rebuild`** (ADMIN) — dựng lại số dư + lịch sử từ ledger.
+  - API nội bộ chỉ đọc ở ledger: `GET /internal/accounts/{ref}?currency=` → `AccountStatement`
+    (đọc thẳng `ledgerdb` là vi phạm ADR-001).
+  - ⚠️ **Khoá ví TRƯỚC, đọc sao kê SAU**, trong một transaction: gỡ dòng thừa/sai, chèn dòng thiếu,
+    `balance = tổng sao kê`. Đảo thứ tự thì một bút toán ghi sổ sau lần đọc bị ghi đè mất.
 - Trạng thái ví `ACTIVE | FROZEN | CLOSED` được **ledger** cưỡng chế (1.0b); wallet-service chỉ phản
   chiếu.
-- **Contract test (gộp 1.3):** JSON Schema cho `LedgerPostedEvent` và `AccountOpenedEvent` — đây là
-  lúc có consumer ngoài ledger đầu tiên, tức lúc hợp đồng bắt đầu có giá trị.
+- **Contract test (gộp 1.3):** JSON Schema cho **cả 5** message đang đi trên dây, ở
+  `common-lib/src/main/resources/schemas/`. Helper `EventSchemas` trong test-jar của common-lib, để
+  mỗi service kiểm message **thật** nó phát ra.
 
 **Test chứng minh:**
-- `WalletProjectionIT` — 100 event (có cả event lặp, có cả event tới sai thứ tự) → số dư cuối khớp
-  chính xác `SUM(postings)` trong ledger.
-- `WalletRebuildIT` — cố ý làm sai `balance_minor` → rebuild cho kết quả khớp ledger; **một event
-  tới ngay sau rebuild không bị cộng hai lần**.
-- `WalletConcurrencyIT` — 100 luồng cập nhật song song → không mất update nào.
-- Producer/consumer validate với JSON Schema.
+- `WalletProjectionIT` — 100 event lặp 1–3 lần, xáo thứ tự → số dư khớp chính xác; chuyển A→B cập
+  nhật cả hai; không áp chéo tenant; trạng thái theo `statusVersion`; 100 event từ 16 luồng song song
+  không mất update; cùng một event giao 10 lần song song chỉ cộng một lần.
+- `WalletRebuildIT` — hỏng đủ kiểu → rebuild khớp ledger; **event đang bay không bị cộng hai lần**;
+  **rebuild ví A không làm ví B mất tiền** dù chung một event.
+- `WalletApiIT` — mở ví idempotent, kể cả 10 request song song; cursor không xô lệch khi có giao dịch
+  chen vào; rebuild chỉ ADMIN; ví kẹt `PENDING` được gửi lại lệnh.
+- `WalletFlowIT` — vòng đầy đủ qua Kafka thật; message thiếu tenant vào DLT.
+- `EventContractTest` — producer đúng schema · consumer đọc được fixture v1 kể cả có field lạ ·
+  schema từ chối message sai.
 
 ## 1.2 — transaction-service (:8084) · 8 ngày ⭐ phần khó nhất của Phase
 

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/ledger.event.account-opened.v1.json",
+  "title": "AccountOpened v1 — ledger xác nhận tài khoản của ví đã tồn tại",
+  "description": "Topic ledger.event.account-opened.v1. Producer: ledger-service. Consumer: wallet-service. Phát lại MỖI lần nhận OpenAccount (ADR-011). Consumer chỉ áp trạng thái khi statusVersion lớn hơn bản đang có. Luật tiến hoá: chỉ THÊM field optional.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid", "description": "Tất định theo (accountId, statusVersion)" },
+    "eventType": { "const": "AccountOpened" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["accountId", "accountRef", "currency", "status", "statusVersion"],
+      "properties": {
+        "accountId": { "$ref": "#/$defs/uuid" },
+        "accountRef": { "$ref": "#/$defs/uuid", "description": "= wallet id" },
+        "currency": { "enum": ["VND", "USD"] },
+        "status": { "enum": ["ACTIVE", "FROZEN", "CLOSED"] },
+        "statusVersion": { "type": "integer", "minimum": 0 }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}

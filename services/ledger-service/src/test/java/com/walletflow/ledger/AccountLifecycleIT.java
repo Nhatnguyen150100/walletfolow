@@ -10,6 +10,9 @@ import com.walletflow.common.exception.AppException;
 import com.walletflow.common.exception.ResourceNotFoundException;
 import com.walletflow.common.money.ECurrency;
 import com.walletflow.common.tenant.TenantContext;
+import com.walletflow.common.ledger.AccountStatement;
+import com.walletflow.common.ledger.StatementLine;
+import com.walletflow.common.security.AuthHeaders;
 import com.walletflow.ledger.entity.Account;
 import com.walletflow.ledger.entity.JournalEntry;
 import com.walletflow.ledger.enums.ETypeAccount;
@@ -23,6 +26,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.web.client.RestClient;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -55,15 +60,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li><b>Tài khoản hệ thống được cấp theo tenant</b>, idempotent.</li>
  * </ol>
  */
-@SpringBootTest(properties = {
-        "eureka.client.enabled=false",
-        "spring.cloud.config.enabled=false",
-        "outbox.relay.delay-ms=3600000",
-        "spring.kafka.listener.auto-startup=false",
-        "management.tracing.enabled=false"
-})
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {
+                "eureka.client.enabled=false",
+                "spring.cloud.config.enabled=false",
+                "outbox.relay.delay-ms=3600000",
+                "spring.kafka.listener.auto-startup=false",
+                "walletflow.kafka.declare-topics=false",
+                "management.tracing.enabled=false"
+        })
 @Testcontainers
 class AccountLifecycleIT {
+
+    @LocalServerPort
+    int port;
 
     private static final UUID TENANT = TenantContext.DEFAULT_TENANT;
     private static final String BANK = "EXTERNAL_BANK";
@@ -322,6 +333,45 @@ class AccountLifecycleIT {
         assertThat(open(wallet).getStatusVersion())
                 .as("version chỉ đi lên; kéo lùi nó là làm consumer áp lại trạng thái cũ")
                 .isEqualTo(2);
+    }
+
+    // ------------------------------------------------------------------
+    // 4 — Sao kê qua API nội bộ: nguồn để wallet-service dựng lại read model
+    // ------------------------------------------------------------------
+    @Test
+    @DisplayName("GET /internal/accounts/{ref}: đủ dòng, số dư = tổng dòng, tenant lấy từ header")
+    void sao_ke_qua_api_noi_bo() {
+        String wallet = newWalletRef();
+        String other = newWalletRef();
+        open(wallet);
+        open(other);
+        JournalEntry topUp = postEntry(topUpCommand(wallet, 100_000));
+        JournalEntry out = postEntry(transfer(wallet, other, 30_000));
+
+        RestClient client = RestClient.create("http://localhost:" + port);
+        AccountStatement statement = client.get()
+                .uri("/internal/accounts/{ref}?currency=VND", wallet)
+                .header(AuthHeaders.TENANT_ID, TENANT.toString())
+                .retrieve()
+                .body(AccountStatement.class);
+
+        assertThat(statement).isNotNull();
+        assertThat(statement.lines()).extracting(StatementLine::entryId)
+                .as("theo thứ tự ghi sổ")
+                .containsExactly(topUp.getId(), out.getId());
+        assertThat(statement.lines()).extracting(StatementLine::amountMinor)
+                .containsExactly(100_000L, -30_000L);
+        assertThat(statement.balanceMinor()).isEqualTo(70_000).isEqualTo(balanceOf(wallet));
+        assertThat(statement.status()).isEqualTo(EAccountStatus.ACTIVE);
+
+        // Tenant khác hỏi đúng ref đó: không thấy gì
+        Integer otherTenantStatus = client.get()
+                .uri("/internal/accounts/{ref}?currency=VND", wallet)
+                .header(AuthHeaders.TENANT_ID, UUID.randomUUID().toString())
+                .exchange((request, response) -> response.getStatusCode().value());
+        assertThat(otherTenantStatus)
+                .as("biết ref của tenant khác không đủ để đọc sổ của họ")
+                .isEqualTo(404);
     }
 
     // ------------------------------------------------------------------

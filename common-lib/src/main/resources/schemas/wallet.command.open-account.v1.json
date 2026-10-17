@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/wallet.command.open-account.v1.json",
+  "title": "OpenAccount v1 — mở tài khoản sổ cái cho một ví",
+  "description": "Topic wallet.command.open-account.v1. Producer: wallet-service. Consumer: ledger-service. accountRef PHẢI là UUID chữ thường dạng chuẩn — ledger đẩy mọi ref khác vào DLT (ADR-011). Luật tiến hoá: chỉ THÊM field optional.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid" },
+    "eventType": { "const": "OpenAccount" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["accountRef", "currency"],
+      "properties": {
+        "accountRef": { "$ref": "#/$defs/uuid" },
+        "currency": { "enum": ["VND", "USD"] }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}

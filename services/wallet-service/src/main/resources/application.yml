@@ -1,0 +1,58 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: wallet-service
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/walletdb
+    username: ${DB_USER:walletflow}
+    password: ${DB_PASS:walletflow}
+  jpa:
+    hibernate:
+      ddl-auto: validate      # Flyway quản schema; Hibernate chỉ validate
+    open-in-view: false
+    properties:
+      hibernate.format_sql: true
+  flyway:
+    enabled: true
+    # walletdb chưa từng được dùng trước service này — không có schema cũ nào cần baseline.
+    baseline-on-migrate: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    consumer:
+      group-id: wallet-service   # group riêng: nhận ĐỦ event của ledger, độc lập với consumer khác
+      auto-offset-reset: earliest
+
+walletflow:
+  ledger:
+    # API nội bộ của ledger, chỉ dùng khi DỰNG LẠI ví. Không đi qua gateway.
+    base-url: ${LEDGER_URL:http://localhost:8083}
+    connect-timeout: 2s
+    read-timeout: 5s
+  wallet:
+    pending-resend:
+      # Ví PENDING quá lâu thì gửi lại lệnh mở tài khoản (ledger trả lời idempotent — ADR-011)
+      after: PT2M
+      interval-ms: 60000
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}

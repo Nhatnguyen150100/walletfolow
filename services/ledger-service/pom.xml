@@ -110,6 +110,18 @@
             <artifactId>kafka</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Contract test: kiểm message thật mà service phát ra với JSON Schema chung -->
+        <dependency>
+            <groupId>com.walletflow</groupId>
+            <artifactId>common-lib</artifactId>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.networknt</groupId>
+            <artifactId>json-schema-validator</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>junit-jupiter</artifactId>

@@ -217,6 +217,7 @@ jobs:
           - { name: api-gateway,      path: infrastructure/api-gateway }
           - { name: auth-service,     path: services/auth-service }
           - { name: ledger-service,   path: services/ledger-service }
+          - { name: wallet-service,   path: services/wallet-service }
     steps:
       - uses: actions/checkout@v4
 

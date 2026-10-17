@@ -50,6 +50,12 @@
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- Contract test: message phải validate với JSON Schema trong resources/schemas -->
+    <dependency>
+      <groupId>com.networknt</groupId>
+      <artifactId>json-schema-validator</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <!-- common-lib là thư viện (jar thường), KHÔNG đóng gói thành app chạy được -->
@@ -61,6 +67,19 @@
         <configuration>
           <skip>true</skip>
         </configuration>
+      </plugin>
+      <!-- Xuất test-jar: EventSchemas (helper contract test) được ledger/wallet dùng lại, để mọi
+           service kiểm message của MÌNH với CÙNG một bộ schema và cùng một cách kiểm. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

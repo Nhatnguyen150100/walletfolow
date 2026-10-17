@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/ledger.event.rejected.v1.json",
+  "title": "LedgerRejected v1 — ledger TỪ CHỐI một bút toán vì lý do nghiệp vụ",
+  "description": "Topic ledger.event.rejected.v1. Producer: ledger-service. Consumer: transaction-service (saga). reasonCode là mã ổn định để xử lý theo mã, không parse reason. Luật tiến hoá: chỉ THÊM field optional; reasonCode mới phải được consumer xử lý như 'lỗi không biết' chứ không nổ.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid" },
+    "eventType": { "const": "LedgerRejected" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["transactionId", "type", "reasonCode"],
+      "properties": {
+        "transactionId": { "$ref": "#/$defs/uuid" },
+        "type": { "enum": ["TRANSFER", "TOPUP", "WITHDRAW", "REVERSAL"] },
+        "reasonCode": { "type": "string", "minLength": 1 },
+        "reason": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}

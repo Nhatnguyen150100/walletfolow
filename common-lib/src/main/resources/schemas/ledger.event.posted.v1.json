@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/ledger.event.posted.v1.json",
+  "title": "LedgerPosted v1 — ledger đã ghi một bút toán",
+  "description": "Topic ledger.event.posted.v1. Producer: ledger-service. Consumer: wallet-service, transaction-service. Luật tiến hoá: chỉ THÊM field optional; consumer phải bỏ qua field lạ. Đổi phá vỡ => topic .v2 + chạy song song.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid", "description": "= payload.entryId — tất định để consumer dedup được bản phát lại" },
+    "eventType": { "const": "LedgerPosted" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["transactionId", "entryId", "type", "currency", "legs"],
+      "properties": {
+        "transactionId": { "$ref": "#/$defs/uuid" },
+        "entryId": { "$ref": "#/$defs/uuid" },
+        "type": { "enum": ["TRANSFER", "TOPUP", "WITHDRAW", "REVERSAL"] },
+        "currency": { "enum": ["VND", "USD"] },
+        "legs": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["accountRef", "amountMinor"],
+            "properties": {
+              "accountRef": { "type": "string", "minLength": 1, "maxLength": 64 },
+              "amountMinor": { "type": "integer", "not": { "const": 0 } }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}
