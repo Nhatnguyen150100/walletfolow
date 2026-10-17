@@ -4,7 +4,7 @@
 > Master plan trả lời *"xây cái gì để học được bài toán khó"*.
 > Tài liệu này trả lời *"còn thiếu gì để tiền thật chạy qua được, và làm theo thứ tự nào"*.
 >
-> **Ngày:** 2026-10-16 · **Trạng thái code:** Phase 0 đóng · Phase 1 đang làm (1.0, 1.0b, 1.1 xong; 1.2a review)
+> **Ngày:** 2026-10-16 · **Trạng thái code:** Phase 0 đóng · Phase 1 đang làm (1.0, 1.0b, 1.1 xong; 1.2a, 1.2b review)
 
 ---
 
@@ -417,8 +417,8 @@ Ghi lại vì cả hai đều thuộc loại **cho kết quả dương tính gi�
 | 1.0 Multi-tenancy — phía Kafka/ledger | ✅ | #17 |
 | 1.0b Tenant ở biên HTTP + vòng đời tài khoản sổ cái | ✅ | #18 |
 | 1.1 wallet-service (gộp 1.3 contract test) | ✅ | #20 |
-| **1.2a transaction-service — nhận lệnh + idempotency** | 🟡 review | `feat/phase-1-transaction-accept` |
-| 1.2b transaction-service — saga + quét saga treo | ⬜ | |
+| 1.2a transaction-service — nhận lệnh + idempotency | 🟡 review | #23 |
+| **1.2b transaction-service — saga + quét saga treo** | 🟡 review | `feat/phase-1-saga` |
 | 1.4 notification-service | ⬜ cắt được nếu thiếu thời gian | |
 | 1.5 E2E + load test | ⬜ | |
 
@@ -633,6 +633,19 @@ là gợi ý UX.
 - API: `POST /transactions/transfer` (202 + `transactionId`), `GET /transactions/{id}`.
 - **Error model RFC 7807** (`application/problem+json`) thống nhất toàn hệ thống — sửa
   `GlobalExceptionHandler` trong `common-lib`.
+
+> **1.2b đã triển khai — [ADR-014](adr/ADR-014-transfer-saga.md).** Những điểm bổ sung so với đề xuất:
+> - Thêm trạng thái `MANUAL_REVIEW`; **ledger thắng**: `LedgerPosted` chuyển giao dịch sang `COMPLETED`
+>   từ mọi trạng thái, kể cả `FAILED` (ca xung đột — ledger không ghi lời từ chối, nên lần gửi lại có
+>   thể được ghi sổ sau khi lệnh gốc bị từ chối) — có metric + alert `SagaStatusConflict`.
+> - Khoá `saga_state` TRƯỚC `transactions` ở mọi đường đi, để job quét (`SKIP LOCKED`) không deadlock
+>   với đường nhận câu trả lời và bỏ qua saga đang được trả lời.
+> - Phát `txn.event.completed/failed.v1` đúng một lần mỗi lần chuyển trạng thái (cho 1.4).
+> - Alert `SagaManualReview` (page), `SagaRetriesHigh`, `SagaStatusConflict` + runbook `saga-stuck.md`.
+>
+> Ánh xạ test: (1) `IdempotencyIT` · (2) `SagaFlowIT` ca "câu trả lời bị mất" + `SagaStateMachineIT` ·
+> (3) đã có ở ledger: `LedgerServiceIT` "100 luồng cùng rút một ví: đúng 10 lần thành công" — bản toàn
+> hệ thống qua gateway thuộc 1.5 · (4) `StuckSagaIT`.
 
 **Test chứng minh (4 test đắt giá nhất của cả dự án):**
 1. `IdempotencyIT` — gửi cùng key 2 lần (và 2 lần **song song**) → đúng **một** bút toán được ghi.

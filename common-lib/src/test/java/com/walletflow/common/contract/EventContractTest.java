@@ -14,6 +14,8 @@ import com.walletflow.common.event.LedgerRejectedEvent;
 import com.walletflow.common.event.Leg;
 import com.walletflow.common.event.OpenAccountCommand;
 import com.walletflow.common.event.PostJournalCommand;
+import com.walletflow.common.event.TransactionCompletedEvent;
+import com.walletflow.common.event.TransactionFailedEvent;
 import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.money.ECurrency;
 import org.junit.jupiter.api.DisplayName;
@@ -79,7 +81,15 @@ class EventContractTest {
                         new OpenAccountCommand(wallet.toString(), ECurrency.VND)),
                 Arguments.of(WalletTopics.CMD_POST_JOURNAL, "PostJournal",
                         new PostJournalCommand(UUID.randomUUID(), EJournalType.TRANSFER, null,
-                                ECurrency.VND, legs)));
+                                ECurrency.VND, legs)),
+                Arguments.of(WalletTopics.EVT_TXN_COMPLETED, "TransactionCompleted",
+                        new TransactionCompletedEvent(UUID.randomUUID(), EJournalType.TRANSFER,
+                                UUID.randomUUID(), wallet, UUID.randomUUID(), 1_000, ECurrency.VND,
+                                UUID.randomUUID())),
+                Arguments.of(WalletTopics.EVT_TXN_FAILED, "TransactionFailed",
+                        new TransactionFailedEvent(UUID.randomUUID(), EJournalType.TRANSFER,
+                                UUID.randomUUID(), wallet, UUID.randomUUID(), 1_000, ECurrency.VND,
+                                "INSUFFICIENT_FUNDS")));
     }
 
     @ParameterizedTest(name = "{0}")

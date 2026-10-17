@@ -2,14 +2,9 @@ package com.walletflow.transaction.services;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.walletflow.common.event.EJournalType;
-import com.walletflow.common.event.Leg;
-import com.walletflow.common.event.PostJournalCommand;
-import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.exception.AppException;
 import com.walletflow.common.exception.BadRequestException;
 import com.walletflow.common.exception.ResourceNotFoundException;
-import com.walletflow.common.outbox.OutboxPublisher;
 import com.walletflow.common.response.BaseResponse;
 import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.common.wallet.EWalletStatus;
@@ -36,7 +31,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
-import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -58,7 +52,8 @@ import java.util.regex.Pattern;
  * </ol>
  *
  * <p>KHÔNG kiểm tra số dư: read model có thể trễ so với sổ cái, chỉ ledger (dưới {@code FOR UPDATE})
- * được quyết "đủ tiền" (roadmap 1.2). Thiếu tiền thì ledger từ chối và giao dịch thành FAILED (1.2b).
+ * được quyết "đủ tiền" (roadmap 1.2). Thiếu tiền thì ledger từ chối và saga chuyển giao dịch sang
+ * FAILED — xem {@link SagaService}.
  */
 @Slf4j
 @Service
@@ -70,7 +65,7 @@ public class TransferService {
     private final IdempotencyRepository idempotencyRepository;
     private final TransactionRepository transactionRepository;
     private final WalletDirectory walletDirectory;
-    private final OutboxPublisher outboxPublisher;
+    private final LedgerCommandSender commandSender;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final Duration keyTtl;
@@ -80,7 +75,7 @@ public class TransferService {
             IdempotencyRepository idempotencyRepository,
             TransactionRepository transactionRepository,
             WalletDirectory walletDirectory,
-            OutboxPublisher outboxPublisher,
+            LedgerCommandSender commandSender,
             ObjectMapper objectMapper,
             PlatformTransactionManager transactionManager,
             @Value("${walletflow.transaction.idempotency-ttl:PT24H}") Duration keyTtl,
@@ -88,7 +83,7 @@ public class TransferService {
         this.idempotencyRepository = idempotencyRepository;
         this.transactionRepository = transactionRepository;
         this.walletDirectory = walletDirectory;
-        this.outboxPublisher = outboxPublisher;
+        this.commandSender = commandSender;
         this.objectMapper = objectMapper;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.keyTtl = keyTtl;
@@ -159,16 +154,8 @@ public class TransferService {
 
         UUID commandEventId = UUID.randomUUID();
         transactionRepository.insertSagaStart(transactionId, tenantId, commandEventId, sagaDeadline.toSeconds());
-
-        // Key = ví bị ghi nợ: mọi lệnh của một ví đi cùng partition, đúng thứ tự (WalletTopics)
-        outboxPublisher.publish(
-                WalletTopics.CMD_POST_JOURNAL,
-                request.fromWalletId().toString(),
-                commandEventId,
-                "PostJournal",
-                new PostJournalCommand(transactionId, EJournalType.TRANSFER, null, request.currency(),
-                        List.of(new Leg(request.fromWalletId().toString(), -request.amountMinor()),
-                                new Leg(request.toWalletId().toString(), request.amountMinor()))));
+        commandSender.sendTransfer(transactionId, request.fromWalletId(), request.toWalletId(),
+                request.amountMinor(), request.currency(), commandEventId);
 
         log.info("Transaction: nhận lệnh chuyển {} {} từ ví {} sang ví {} (giao dịch {})",
                 request.amountMinor(), request.currency(), request.fromWalletId(),
