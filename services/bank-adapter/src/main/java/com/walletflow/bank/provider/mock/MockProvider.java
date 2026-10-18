@@ -71,6 +71,11 @@ public class MockProvider implements PaymentProvider {
     }
 
     @Override
+    public String account() {
+        return NAME;
+    }
+
+    @Override
     public ChargeResult charge(ChargeRequest request) {
         chargeCalls.incrementAndGet();
         simulateNetwork("charge");
@@ -82,8 +87,9 @@ public class MockProvider implements PaymentProvider {
         }
 
         Session session = sessionsByKey.computeIfAbsent(request.idempotencyKey(), key -> {
+            Instant now = clock.instant();
             Session created = new Session("MOCK-" + UUID.randomUUID(), request.amountMinor(),
-                    request.currency(), clock.instant());
+                    request.currency(), now, now.plus(request.sessionTtl()));
             sessionsByRef.put(created.providerRef, created);
             return created;
         });
@@ -92,12 +98,15 @@ public class MockProvider implements PaymentProvider {
             // Phiên ĐÃ tạo ở "phía provider", nhưng câu trả lời không về tới — đúng ca timeout mơ hồ
             throw new ProviderUnavailableException("Mock: mất câu trả lời sau khi đã tạo phiên");
         }
+        // Gọi lại cùng khoá: đúng phiên cũ, kể cả mốc tạo và hạn phiên cũ — như provider thật
         return new ChargeResult.Created(session.providerRef, paymentBaseUrl + "/" + session.providerRef,
-                "{\"result\":\"CREATED\",\"ref\":\"" + session.providerRef + "\"}");
+                "{\"result\":\"CREATED\",\"ref\":\"" + session.providerRef + "\"}", session.createdAt,
+                session.expiresAt);
     }
 
+    /** Mock tra phiên theo mã của chính nó; {@code sessionCreatedAt} chỉ cần cho provider như VNPay. */
     @Override
-    public ProviderStatus getStatus(String providerRef) {
+    public ProviderStatus getStatus(String providerRef, Instant sessionCreatedAt) {
         simulateNetwork("getStatus");
         Session session = sessionsByRef.get(providerRef);
         if (session == null) {
@@ -143,7 +152,10 @@ public class MockProvider implements PaymentProvider {
     // Điều khiển cho test / chaos cục bộ
     // ------------------------------------------------------------------
 
-    /** Người dùng "trả tiền" (hoặc trả hỏng) ở trang của provider. Chỉ đổi phiên còn đang chờ. */
+    /**
+     * Người dùng "trả tiền" (hoặc trả hỏng) ở trang của provider. Chỉ đổi phiên chưa có kết quả cuối.
+     * {@code UNRESOLVED} giả lập ca provider báo trạng thái lơ lửng (đảo giao dịch, nghi gian lận).
+     */
     public void settle(String providerRef, EProviderState outcome) {
         Session session = sessionsByRef.get(providerRef);
         if (session == null) {
@@ -244,20 +256,23 @@ public class MockProvider implements PaymentProvider {
         private final String providerRef;
         private final ECurrency currency;
         private final Instant createdAt;
+        private final Instant expiresAt;
         private volatile EProviderState state = EProviderState.PENDING;
         // Số provider thực thu — mặc định bằng số yêu cầu, settleWithCapturedAmount đổi được
         private volatile long capturedMinor;
         private long refundedMinor;
 
-        private Session(String providerRef, long amountMinor, ECurrency currency, Instant createdAt) {
+        private Session(String providerRef, long amountMinor, ECurrency currency, Instant createdAt,
+                        Instant expiresAt) {
             this.providerRef = providerRef;
             this.capturedMinor = amountMinor;
             this.currency = currency;
             this.createdAt = createdAt;
+            this.expiresAt = expiresAt;
         }
 
         private synchronized void settle(EProviderState outcome) {
-            if (state == EProviderState.PENDING) {
+            if (state == EProviderState.PENDING || state == EProviderState.UNRESOLVED) {
                 state = outcome;
             }
         }

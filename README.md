@@ -24,7 +24,7 @@ Hệ thống ví điện tử phân tán xây bằng **Java 21 · Spring Boot 3.
 | ledger-service | 8083 | Sổ cái double-entry (nguồn sự thật) | ✅ |
 | wallet-service | 8082 | Read model số dư (CQRS), dựng lại được từ sổ cái | ✅ |
 | transaction-service | 8084 | Nhận lệnh chuyển idempotent + Saga orchestration | ✅ |
-| bank-adapter | 8085 | Cổng thanh toán: thu tiền nạp ví idempotent, Resilience4j — [ADR-016](docs/adr/ADR-016-bank-adapter-charge-model.md) | 🟡 Phase 2 (2.2a: provider giả; VNPay ở 2.2b) |
+| bank-adapter | 8085 | Cổng thanh toán: thu tiền nạp ví idempotent, Resilience4j, VNPay sandbox — [ADR-016](docs/adr/ADR-016-bank-adapter-charge-model.md), [ADR-017](docs/adr/ADR-017-vnpay-session-expiry-log-masking.md) | 🟡 Phase 2 (2.2a mock ✅; 2.2b VNPay + hạn phiên + masking log) |
 | notification-service | 8086 | Thông báo kết quả | ✂️ gộp vào webhook khách hàng (Phase 5.1) — [ADR-015](docs/adr/ADR-015-product-positioning.md) |
 
 **Hạ tầng:** PostgreSQL (DB-per-service), Redis, Apache Kafka, Jaeger, Prometheus + Grafana.

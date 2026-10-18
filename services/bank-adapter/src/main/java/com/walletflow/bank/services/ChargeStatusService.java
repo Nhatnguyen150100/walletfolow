@@ -10,12 +10,15 @@ import com.walletflow.common.tenant.TenantContext;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import java.time.Duration;
+
 /**
- * Hỏi lại provider và chốt kết quả của một lần thu đang chờ (ADR-016).
+ * Hỏi lại provider và chốt kết quả của một lần thu đang chờ (ADR-016, ADR-017).
  *
  * <p>Đây là NƠI DUY NHẤT một lần thu được kết luận thành công/thất bại sau khi phiên đã tạo. Job đối chiếu
  * gọi nó định kỳ; webhook (2.3) sẽ gọi nó khi provider báo tin — "webhook là gợi ý, không phải sự thật",
@@ -29,12 +32,18 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li><b>Đúng số tiền:</b> event thành công mang số tiền mà ledger sẽ cộng, nên số đó phải là số provider
  *       THỰC THU. Lệch số/loại tiền thì không kết luận gì — giữ PENDING, kêu to, chờ người (2.5).</li>
  * </ul>
+ *
+ * <p><b>Hết hạn (ADR-017):</b> lần thu kết thúc {@code FAILED(EXPIRED)} chỉ khi CẢ HAI cùng đúng — đã quá
+ * hạn phiên + grace (đồng hồ DB), VÀ provider vừa khẳng định chưa thu ({@link EProviderState#PENDING}).
+ * Provider không trả lời được, hay trả lời lơ lửng ({@link EProviderState#UNRESOLVED}), thì quá hạn bao lâu
+ * cũng không kết luận: "không biết" không bao giờ được biến thành "thất bại" (roadmap §5.7).
  */
 @Slf4j
 @Service
 public class ChargeStatusService {
 
     private static final String DEFAULT_FAILURE_CODE = "PAYMENT_FAILED";
+    static final String EXPIRED_CODE = "EXPIRED";
 
     private final ProviderTransactionRepository repository;
     private final PaymentProvider provider;
@@ -42,20 +51,32 @@ public class ChargeStatusService {
     private final ProviderResponses responses;
     private final TransactionTemplate transactionTemplate;
     private final Counter amountMismatches;
+    private final Counter expiredNeedsReview;
+    private final long expiryGraceSeconds;
+    private final long expiredConfirmAfterSeconds;
 
     public ChargeStatusService(ProviderTransactionRepository repository,
                                PaymentProvider provider,
                                BankEventPublisher events,
                                ProviderResponses responses,
                                PlatformTransactionManager transactionManager,
-                               MeterRegistry meterRegistry) {
+                               MeterRegistry meterRegistry,
+                               @Value("${walletflow.bank.session.expiry-grace}") Duration expiryGrace,
+                               @Value("${walletflow.bank.session.expired-confirm-after}") Duration expiredConfirmAfter) {
+        if (expiryGrace.isNegative() || expiredConfirmAfter.isNegative()) {
+            throw new IllegalStateException("walletflow.bank.session.expiry-grace (" + expiryGrace
+                    + ") và expired-confirm-after (" + expiredConfirmAfter + ") không được âm");
+        }
         this.repository = repository;
         this.provider = provider;
         this.events = events;
         this.responses = responses;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
-        // Đăng ký lúc khởi động để series tồn tại ở 0 — alert ProviderAmountMismatch dựa vào increase()
+        // Đăng ký lúc khởi động để series tồn tại ở 0 — alert dựa vào increase()
         this.amountMismatches = meterRegistry.counter("walletflow.bank.amount_mismatch");
+        this.expiredNeedsReview = meterRegistry.counter("walletflow.bank.expired_needs_review");
+        this.expiryGraceSeconds = expiryGrace.toSeconds();
+        this.expiredConfirmAfterSeconds = expiredConfirmAfter.toSeconds();
     }
 
     /**
@@ -72,12 +93,9 @@ public class ChargeStatusService {
         if (txn.getStatus() != EProviderTxnStatus.PENDING) {
             return txn.getStatus();
         }
-        if (!txn.getProvider().equals(provider.name())) {
-            throw new IllegalStateException("Lần thu " + txn.getId() + " thuộc provider " + txn.getProvider()
-                    + ", không hỏi " + provider.name() + " về nó");
-        }
+        requireSameOrigin(txn);
         // Gọi provider NGOÀI transaction DB
-        ProviderStatus status = provider.getStatus(txn.getProviderRef());
+        ProviderStatus status = provider.getStatus(txn.getProviderRef(), txn.getProviderCreatedAt());
         if (status.state() == EProviderState.SUCCEEDED && !capturedAsRequested(txn, status)) {
             amountMismatches.increment();
             log.error("Bank: provider báo đã thu {} {} cho lần thu {} (giao dịch {}) nhưng yêu cầu là {} {} — "
@@ -89,6 +107,47 @@ public class ChargeStatusService {
         return transactionTemplate.execute(tx -> apply(txn, status));
     }
 
+    /**
+     * Hỏi XÁC NHẬN một lần thu đã FAILED(EXPIRED): tiền có về muộn không (ADR-017). Chỉ phát hiện — trạng thái
+     * không bao giờ bị đổi tự động: event {@code failed} đã phát, saga đã kết thúc; sửa là việc của người (2.5)
+     * với bằng chứng trong {@code raw_response} của provider.
+     *
+     * <p>Provider báo đã thu ({@code SUCCEEDED}) hoặc trạng thái lơ lửng ({@code UNRESOLVED}) → metric
+     * {@code walletflow.bank.expired_needs_review} + log lỗi (alert page). Provider không trả lời → nổ ra, lần sau
+     * hỏi lại (hàng đã được lùi hạn khi lấy lô).
+     */
+    public void confirmExpired(ProviderTransaction txn) {
+        if (!txn.getTenantId().equals(TenantContext.require())) {
+            throw new IllegalStateException("Lần thu " + txn.getId() + " không thuộc tenant hiện tại");
+        }
+        if (txn.getStatus() != EProviderTxnStatus.FAILED || !EXPIRED_CODE.equals(txn.getFailureCode())) {
+            return;
+        }
+        requireSameOrigin(txn);
+        ProviderStatus status = provider.getStatus(txn.getProviderRef(), txn.getProviderCreatedAt());
+        if (status.state() == EProviderState.SUCCEEDED || status.state() == EProviderState.UNRESOLVED) {
+            expiredNeedsReview.increment();
+            log.error("Bank: lần thu {} (giao dịch {}) đã báo EXPIRED nhưng provider nay báo {} (đã thu {} {}) — "
+                            + "người dùng có thể đã mất tiền mà ví không được cộng, cần người đối chiếu",
+                    txn.getId(), txn.getTransactionId(), status.state(), status.capturedAmountMinor(),
+                    status.capturedCurrency());
+        }
+        transactionTemplate.executeWithoutResult(tx -> repository.finishExpiredConfirmation(txn.getTenantId(),
+                txn.getId()));
+    }
+
+    /**
+     * Chỉ hỏi đúng nơi đã tạo phiên — provider khác hay tài khoản merchant khác đều có thể trả "không tìm thấy"
+     * cho một phiên đã trả tiền (ADR-016 §6b, ADR-017).
+     */
+    private void requireSameOrigin(ProviderTransaction txn) {
+        if (!txn.getProvider().equals(provider.name()) || !txn.belongsToAccount(provider.account())) {
+            throw new IllegalStateException("Lần thu " + txn.getId() + " thuộc provider " + txn.getProvider()
+                    + " / tài khoản " + txn.getProviderAccount() + ", không hỏi " + provider.name() + " / tài khoản "
+                    + provider.account() + " về nó");
+        }
+    }
+
     private static boolean capturedAsRequested(ProviderTransaction txn, ProviderStatus status) {
         return status.capturedAmountMinor() == txn.getAmountMinor()
                 && status.capturedCurrency() == txn.getCurrency();
@@ -96,7 +155,14 @@ public class ChargeStatusService {
 
     private EProviderTxnStatus apply(ProviderTransaction txn, ProviderStatus status) {
         int changed = switch (status.state()) {
-            case PENDING -> 0;
+            // Provider khẳng định chưa thu: kết thúc nếu (và chỉ nếu) đã quá hạn + grace — câu SQL tự kiểm mốc
+            case PENDING -> repository.markExpired(txn.getTenantId(), txn.getId(), expiryGraceSeconds,
+                    expiredConfirmAfterSeconds, EXPIRED_CODE, responses.json(status.rawResponse()));
+            case UNRESOLVED -> {
+                log.warn("Bank: provider báo trạng thái lơ lửng cho lần thu {} (giao dịch {}) — giữ PENDING, "
+                        + "không tự hết hạn, cần người xem", txn.getId(), txn.getTransactionId());
+                yield 0;
+            }
             case SUCCEEDED -> repository.markSucceeded(txn.getTenantId(), txn.getId(),
                     responses.json(status.rawResponse()));
             case FAILED -> repository.markFailed(txn.getTenantId(), txn.getId(),
@@ -106,9 +172,16 @@ public class ChargeStatusService {
         };
         ProviderTransaction current = repository.findByTenantIdAndId(txn.getTenantId(), txn.getId())
                 .orElseThrow();
+        if (status.state() == EProviderState.SUCCEEDED && current.getStatus() == EProviderTxnStatus.FAILED) {
+            // Luồng khác vừa kết luận thất bại (hết hạn) đúng lúc provider báo đã thu: không lật lại, nhưng kêu
+            expiredNeedsReview.increment();
+            log.error("Bank: provider báo đã thu cho lần thu {} (giao dịch {}) nhưng hàng đã FAILED({}) — "
+                    + "cần người đối chiếu", current.getId(), current.getTransactionId(), current.getFailureCode());
+        }
         // Chỉ luồng thực sự chuyển trạng thái mới phát event; luồng thua (UPDATE trả 0) im lặng
         if (changed == 1) {
-            log.info("Bank: lần thu của giao dịch {} -> {}", current.getTransactionId(), current.getStatus());
+            log.info("Bank: lần thu của giao dịch {} -> {} {}", current.getTransactionId(), current.getStatus(),
+                    current.getFailureCode() == null ? "" : current.getFailureCode());
             events.publishOutcome(current);
         }
         return current.getStatus();

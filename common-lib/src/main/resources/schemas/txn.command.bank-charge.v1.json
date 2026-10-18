@@ -19,7 +19,13 @@
         "transactionId": { "$ref": "#/$defs/uuid" },
         "walletId": { "$ref": "#/$defs/uuid" },
         "amountMinor": { "type": "integer", "exclusiveMinimum": 0 },
-        "currency": { "enum": ["VND", "USD"] }
+        "currency": { "enum": ["VND", "USD"] },
+        "clientIp": {
+          "description": "Thêm ở 2.2b (ADR-017), optional. IP người dùng lúc tạo lệnh nạp — cổng thanh toán dùng để chống gian lận. Độ dài tối đa của IPv6 dạng chữ. Provider có khuôn chặt hơn (VNPay: 7–45 ký tự) thì giá trị không vừa khuôn được thay bằng IP máy chủ, không làm hỏng lệnh.",
+          "type": ["string", "null"],
+          "minLength": 3,
+          "maxLength": 45
+        }
       }
     }
   },

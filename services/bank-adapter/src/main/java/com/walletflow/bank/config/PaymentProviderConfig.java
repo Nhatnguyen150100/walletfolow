@@ -4,6 +4,8 @@ import com.walletflow.bank.enums.EProviderState;
 import com.walletflow.bank.provider.PaymentProvider;
 import com.walletflow.bank.provider.ResilientPaymentProvider;
 import com.walletflow.bank.provider.mock.MockProvider;
+import com.walletflow.bank.provider.vnpay.VnPayProvider;
+import com.walletflow.bank.provider.vnpay.VnPaySettings;
 import io.github.resilience4j.bulkhead.ThreadPoolBulkhead;
 import io.github.resilience4j.bulkhead.ThreadPoolBulkheadConfig;
 import io.github.resilience4j.bulkhead.ThreadPoolBulkheadRegistry;
@@ -23,7 +25,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.web.client.RestClient;
 
+import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.concurrent.Executors;
@@ -67,11 +72,73 @@ public class PaymentProviderConfig {
                 autoSettleAfter, settleOutcome);
     }
 
+    /**
+     * VNPay (ADR-017). Mã merchant, hash secret, URL đều BẮT BUỘC từ biến môi trường, không có mặc định:
+     * thiếu thì placeholder không giải được, rỗng thì từ chối ở đây — nêu TÊN biến, không bao giờ giá trị.
+     *
+     * <p>Dưới profile {@code prod} từ chối URL sandbox: tiền "trả" ở sandbox là tiền giả, nhưng saga vẫn cộng
+     * tiền thật vào ví — cùng một kiểu tạo tiền từ không khí như mock (ADR-016 §6).
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "walletflow.bank", name = "provider", havingValue = VnPayProvider.NAME)
+    public VnPayProvider vnPayProvider(
+            Environment environment,
+            @Value("${walletflow.bank.vnpay.tmn-code}") String tmnCode,
+            @Value("${walletflow.bank.vnpay.hash-secret}") String hashSecret,
+            @Value("${walletflow.bank.vnpay.pay-url}") String payUrl,
+            @Value("${walletflow.bank.vnpay.api-url}") String apiUrl,
+            @Value("${walletflow.bank.vnpay.return-url}") String returnUrl,
+            @Value("${walletflow.bank.vnpay.server-ip}") String serverIp,
+            @Value("${walletflow.bank.vnpay.locale}") String locale,
+            @Value("${walletflow.bank.vnpay.order-type}") String orderType,
+            @Value("${walletflow.bank.vnpay.connect-timeout}") Duration connectTimeout,
+            @Value("${walletflow.bank.vnpay.read-timeout}") Duration readTimeout,
+            @Value("${walletflow.bank.resilience.timeout}") Duration resilienceTimeout) {
+        requireNonBlank("VNPAY_TMN_CODE", tmnCode);
+        requireNonBlank("VNPAY_HASH_SECRET", hashSecret);
+        requireNonBlank("VNPAY_PAY_URL", payUrl);
+        requireNonBlank("VNPAY_API_URL", apiUrl);
+        requireNonBlank("VNPAY_RETURN_URL", returnUrl);
+        requireNonBlank("VNPAY_SERVER_IP", serverIp);
+        if (environment.acceptsProfiles(Profiles.of("prod"))) {
+            if (containsIgnoreCase(payUrl, "sandbox") || containsIgnoreCase(apiUrl, "sandbox")) {
+                throw new IllegalStateException("VNPay đang trỏ tới SANDBOX dưới profile 'prod': tiền trả ở sandbox "
+                        + "là tiền giả nhưng saga vẫn cộng tiền thật vào ví. Từ chối khởi động.");
+            }
+            // Chữ ký không chống được phát lại một câu trả lời "chưa thu" CŨ nhưng thật của cùng giao dịch — chỉ
+            // TLS ngăn kẻ đứng giữa ép một lần thu đã trả thành EXPIRED
+            if (!startsWithIgnoreCase(payUrl, "https://") || !startsWithIgnoreCase(apiUrl, "https://")) {
+                throw new IllegalStateException("VNPAY_PAY_URL và VNPAY_API_URL phải là https:// dưới profile 'prod'. "
+                        + "Từ chối khởi động.");
+            }
+        }
+        // Timeout của chính HTTP client phải ngắn hơn timeout của Resilience4j — không thì lời gọi treo giữ chết
+        // thread của bulkhead sau khi người gọi đã được thả ra (xem PaymentProvider)
+        if (connectTimeout.compareTo(resilienceTimeout) >= 0 || readTimeout.compareTo(resilienceTimeout) >= 0) {
+            throw new IllegalStateException("walletflow.bank.vnpay.connect-timeout (" + connectTimeout + ") và "
+                    + "read-timeout (" + readTimeout + ") phải NGẮN hơn walletflow.bank.resilience.timeout ("
+                    + resilienceTimeout + ")");
+        }
+
+        HttpClient client = HttpClient.newBuilder()
+                .connectTimeout(connectTimeout)
+                // VNPay là HTTP/1.1; không thử nâng cấp h2c trên kết nối thường
+                .version(HttpClient.Version.HTTP_1_1)
+                .build();
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(client);
+        requestFactory.setReadTimeout(readTimeout);
+        RestClient http = RestClient.builder().requestFactory(requestFactory).build();
+
+        return new VnPayProvider(new VnPaySettings(tmnCode, hashSecret, payUrl, apiUrl, returnUrl, serverIp,
+                locale, orderType), http, Clock.systemUTC());
+    }
+
     @Bean
     @Primary
     public ResilientPaymentProvider paymentProvider(
             @Value("${walletflow.bank.provider}") String selected,
             ObjectProvider<MockProvider> mockProvider,
+            ObjectProvider<VnPayProvider> vnPayProvider,
             MeterRegistry meterRegistry,
             @Value("${walletflow.bank.resilience.timeout}") Duration timeout,
             @Value("${walletflow.bank.resilience.max-threads}") int maxThreads,
@@ -83,8 +150,9 @@ public class PaymentProviderConfig {
 
         PaymentProvider raw = switch (selected) {
             case MockProvider.NAME -> mockProvider.getObject();
+            case VnPayProvider.NAME -> vnPayProvider.getObject();
             default -> throw new IllegalStateException("walletflow.bank.provider='" + selected
-                    + "' không được hỗ trợ. Giá trị hợp lệ: " + MockProvider.NAME);
+                    + "' không được hỗ trợ. Giá trị hợp lệ: " + MockProvider.NAME + ", " + VnPayProvider.NAME);
         };
 
         CircuitBreakerRegistry breakers = CircuitBreakerRegistry.of(CircuitBreakerConfig.custom()
@@ -124,5 +192,20 @@ public class PaymentProviderConfig {
                 Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform().name("provider-timeout").factory());
 
         return new ResilientPaymentProvider(raw, breaker, bulkhead, timeLimiter, timeoutScheduler);
+    }
+
+    private static boolean containsIgnoreCase(String value, String part) {
+        return value.toLowerCase(java.util.Locale.ROOT).contains(part);
+    }
+
+    private static boolean startsWithIgnoreCase(String value, String prefix) {
+        return value.regionMatches(true, 0, prefix, 0, prefix.length());
+    }
+
+    private static void requireNonBlank(String envName, String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("Thiếu " + envName + " cho walletflow.bank.provider=vnpay — "
+                    + "không có giá trị mặc định (bất biến §5.6). Từ chối khởi động.");
+        }
     }
 }

@@ -177,7 +177,7 @@ class ChargeIdempotencyIT {
         // Mock chỉ biết phiên duy nhất đó: hỏi bằng provider_ref trong DB mà không nổ nghĩa là hàng trỏ đúng phiên
         String providerRef = db.providerRef(tenant, command.transactionId());
         assertThat(providerRef).isEqualTo(retried.getProviderRef()).isNotBlank();
-        assertThat(mock.getStatus(providerRef).state()).isEqualTo(EProviderState.PENDING);
+        assertThat(mock.getStatus(providerRef, null).state()).isEqualTo(EProviderState.PENDING);
         assertThat(db.outboxEventIds(command.transactionId(), WalletTopics.EVT_BANK_CHARGE_PENDING)).hasSize(1);
     }
 
@@ -221,7 +221,7 @@ class ChargeIdempotencyIT {
         assertThat(retried.getStatus()).isEqualTo(EProviderTxnStatus.PENDING);
         assertThat(mock.sessionCount()).as("thử lại sau timeout không tạo phiên thứ hai").isEqualTo(1);
         assertThat(db.rowCount(tenant, command.transactionId())).isEqualTo(1);
-        assertThat(mock.getStatus(retried.getProviderRef()).state()).isEqualTo(EProviderState.PENDING);
+        assertThat(mock.getStatus(retried.getProviderRef(), null).state()).isEqualTo(EProviderState.PENDING);
     }
 
     // ------------------------------------------------------------------

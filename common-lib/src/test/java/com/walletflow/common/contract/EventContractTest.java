@@ -97,6 +97,10 @@ class EventContractTest {
                                 "INSUFFICIENT_FUNDS")),
                 Arguments.of(WalletTopics.CMD_BANK_CHARGE, "BankCharge",
                         new BankChargeCommand(UUID.randomUUID(), wallet, 500_000, ECurrency.VND)),
+                Arguments.of(WalletTopics.CMD_BANK_CHARGE, "BankCharge",
+                        // 2.2b: IP người dùng cho cổng thanh toán (field optional)
+                        new BankChargeCommand(UUID.randomUUID(), wallet, 500_000, ECurrency.VND,
+                                "2001:db8:85a3::8a2e:370:7334")),
                 Arguments.of(WalletTopics.EVT_BANK_CHARGE_PENDING, "BankChargePending",
                         new BankChargePendingEvent(UUID.randomUUID(), wallet, "mock", "MOCK-1",
                                 "https://sandbox.example/pay/MOCK-1")),
@@ -143,6 +147,17 @@ class EventContractTest {
         BankChargeCommand command = READER.read(charge, BankChargeCommand.class).payload();
         assertThat(command.amountMinor()).isEqualTo(500_000);
         assertThat(command.currency()).isEqualTo(ECurrency.VND);
+        assertThat(command.clientIp())
+                .as("lệnh v1 trước 2.2b không có IP: vẫn đọc được, IP là null (adapter dùng IP máy chủ)")
+                .isNull();
+
+        // Lệnh v1 sau 2.2b mang IP người dùng (field optional, không đổi version)
+        String withIp = fixture("txn.command.bank-charge.v1-with-client-ip.json");
+        EventSchemas.assertValid(WalletTopics.CMD_BANK_CHARGE, withIp);
+        BankChargeCommand commandWithIp = READER.read(withIp, BankChargeCommand.class).payload();
+        assertThat(commandWithIp.clientIp()).isEqualTo("203.0.113.7");
+        assertThat(commandWithIp.amountMinor()).isEqualTo(500_000);
+        assertThat(commandWithIp.currency()).isEqualTo(ECurrency.VND);
     }
 
     @Test
@@ -200,6 +215,12 @@ class EventContractTest {
         assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
                 charge.replace("\"VND\"", "\"BTC\"")))
                 .as("loại tiền ngoài enum").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"currency\": \"VND\"", "\"currency\": \"VND\", \"clientIp\": \"" + "1".repeat(46) + "\"")))
+                .as("clientIp dài hơn IPv6 dạng chữ (45) là rác, không phải IP").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"currency\": \"VND\"", "\"currency\": \"VND\", \"clientIp\": \"203.0.113.7\"")))
+                .as("đối chứng: clientIp hợp lệ được chấp nhận").isEmpty();
     }
 
     private static String fixture(String name) throws IOException {

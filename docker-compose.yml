@@ -252,6 +252,14 @@ services:
       BANK_PROVIDER: ${BANK_PROVIDER:?Thiếu BANK_PROVIDER — đặt BANK_PROVIDER=mock trong .env cho máy dev}
       # Xác nhận thứ hai cho provider giả; mặc định false (ADR-016)
       BANK_MOCK_ALLOWED: ${BANK_MOCK_ALLOWED:-false}
+      # VNPay (ADR-017): chỉ dùng khi BANK_PROVIDER=vnpay. Rỗng ở đây không sao với mock; với vnpay thì
+      # bank-adapter tự từ chối khởi động và nêu tên biến thiếu.
+      VNPAY_TMN_CODE: ${VNPAY_TMN_CODE:-}
+      VNPAY_HASH_SECRET: ${VNPAY_HASH_SECRET:-}
+      VNPAY_PAY_URL: ${VNPAY_PAY_URL:-}
+      VNPAY_API_URL: ${VNPAY_API_URL:-}
+      VNPAY_RETURN_URL: ${VNPAY_RETURN_URL:-}
+      VNPAY_SERVER_IP: ${VNPAY_SERVER_IP:-}
     depends_on:
       postgres:
         condition: service_healthy

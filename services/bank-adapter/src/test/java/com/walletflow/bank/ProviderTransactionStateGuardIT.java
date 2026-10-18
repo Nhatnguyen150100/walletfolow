@@ -20,6 +20,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -106,7 +107,7 @@ class ProviderTransactionStateGuardIT {
     static final List<Move> MOVES = List.of(
             new Move("markPending", "NEW", "PENDING",
                     (repo, tenantId, id) -> repo.markPending(tenantId, id, "REF-" + id, "http://pay.example/x",
-                            "{\"late\":\"created\"}", 30)),
+                            "{\"late\":\"created\"}", 30, Instant.now(), Instant.now().plusSeconds(900))),
             new Move("markSucceeded", "PENDING", "SUCCEEDED",
                     (repo, tenantId, id) -> repo.markSucceeded(tenantId, id, "{\"late\":\"succeeded\"}")),
             new Move("markFailed(từ NEW)", "NEW", "FAILED",

@@ -122,7 +122,7 @@ class ProviderResilienceIT {
         long started = System.nanoTime();
         scheduler.schedule(() -> {
             try {
-                provider.getStatus(providerRef);
+                provider.getStatus(providerRef, null);
                 outcome.complete(null);
             } catch (Throwable failure) {
                 outcome.complete(failure);
@@ -158,7 +158,7 @@ class ProviderResilienceIT {
                     .hasMessageContaining("circuit breaker đang mở")
                     .hasCauseInstanceOf(CallNotPermittedException.class);
         }
-        assertThatThrownBy(() -> provider.getStatus(providerRef))
+        assertThatThrownBy(() -> provider.getStatus(providerRef, null))
                 .isInstanceOf(ProviderUnavailableException.class)
                 .hasCauseInstanceOf(CallNotPermittedException.class);
         assertThatThrownBy(() -> provider.refund(
@@ -172,7 +172,7 @@ class ProviderResilienceIT {
 
         // Đối chứng: mock vẫn trả lời được — lời gọi trên bị từ chối vì MẠCH, không phải vì mock hỏng
         breaker.reset();
-        assertThat(provider.getStatus(providerRef).state()).isEqualTo(EProviderState.PENDING);
+        assertThat(provider.getStatus(providerRef, null).state()).isEqualTo(EProviderState.PENDING);
     }
 
     @Test
@@ -241,7 +241,7 @@ class ProviderResilienceIT {
         mock.settle(providerRef, EProviderState.FAILED);
 
         for (int i = 0; i < 12; i++) {
-            assertThat(provider.getStatus(providerRef).state()).isEqualTo(EProviderState.FAILED);
+            assertThat(provider.getStatus(providerRef, null).state()).isEqualTo(EProviderState.FAILED);
         }
 
         assertThat(breaker.getState()).isEqualTo(CircuitBreaker.State.CLOSED);
@@ -254,6 +254,7 @@ class ProviderResilienceIT {
     }
 
     private static ChargeRequest chargeRequest(long amountMinor) {
-        return new ChargeRequest(UUID.randomUUID().toString(), amountMinor, ECurrency.VND);
+        return new ChargeRequest(UUID.randomUUID().toString(), amountMinor, ECurrency.VND, null,
+                Duration.ofMinutes(15));
     }
 }

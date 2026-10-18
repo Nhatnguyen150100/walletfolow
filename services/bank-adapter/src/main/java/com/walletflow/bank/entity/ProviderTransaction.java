@@ -21,8 +21,8 @@ import java.util.UUID;
  * {@code ProviderTransactionRepository}, để hai luồng đua nhau (lệnh gửi lại, job đối chiếu, webhook ở
  * 2.3) không bao giờ cùng chuyển một hàng.
  *
- * <p>Cột {@code raw_request}/{@code raw_response}/{@code next_check_at} cố ý không map: chúng chỉ được
- * ghi bằng SQL và chỉ đọc khi đối soát.
+ * <p>Cột {@code raw_request}/{@code raw_response}/{@code next_check_at}/{@code check_attempts} cố ý không
+ * map: chúng chỉ được ghi bằng SQL và chỉ đọc khi đối soát hoặc bởi chính câu SQL của job đối chiếu.
  */
 @Entity
 @Getter
@@ -71,6 +71,25 @@ public class ProviderTransaction {
 
     @Column(name = "failure_code", length = 32)
     private String failureCode;
+
+    /** Lúc provider tạo phiên (V2) — truyền lại cho {@code getStatus}; NULL với hàng trước 2.2b. */
+    @Column(name = "provider_created_at")
+    private Instant providerCreatedAt;
+
+    /** Hạn phiên thanh toán (V2); NULL = phiên không bao giờ tự hết hạn. */
+    @Column(name = "expires_at")
+    private Instant expiresAt;
+
+    /** Tài khoản merchant đã tạo phiên (V2); NULL với hàng trước 2.2b. */
+    @Column(name = "provider_account", length = 64)
+    private String providerAccount;
+
+    /**
+     * Hàng này có hỏi được bằng {@code account} không. Hàng trước 2.2b (NULL) chỉ có của mock — coi là hỏi được.
+     */
+    public boolean belongsToAccount(String account) {
+        return providerAccount == null || providerAccount.equals(account);
+    }
 
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;

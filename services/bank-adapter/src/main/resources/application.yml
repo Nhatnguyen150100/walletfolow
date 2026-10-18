@@ -35,7 +35,7 @@ spring:
 
 walletflow:
   bank:
-    # BẮT BUỘC, không có mặc định: `mock` (máy dev/test) | `vnpay` (2.2b). Thiếu biến thì service KHÔNG
+    # BẮT BUỘC, không có mặc định: `mock` (máy dev/test) | `vnpay` (ADR-017). Thiếu biến thì service KHÔNG
     # khởi động. Một mặc định ở đây là cách MockProvider lọt lên môi trường thật và "thu" tiền giả —
     # tức cộng tiền thật vào ví mà không ai trả (ADR-016).
     provider: ${BANK_PROVIDER}
@@ -50,11 +50,40 @@ walletflow:
       sliding-window-size: 20
       minimum-calls: 10
       open-wait: 30s
+    # Phiên thanh toán (ADR-017, chốt 2026-10-18)
+    session:
+      # Hạn phiên gửi cho provider (VNPay: vnp_ExpireDate) — quá mốc này provider không nhận tiền nữa
+      ttl: PT15M
+      # Quá hạn + grace mà provider vẫn khẳng định CHƯA thu -> FAILED(EXPIRED). Grace che độ trễ giữa lúc ngân
+      # hàng trừ tiền và lúc provider ghi nhận; chỉ câu trả lời của provider mới kết thúc được lần thu.
+      expiry-grace: PT15M
+      # Sau khi đã báo EXPIRED, hỏi provider THÊM MỘT lần sau chừng này: tiền về muộn (ngân hàng chậm) thì
+      # metric expired_needs_review + alert page. Chỉ phát hiện, không bao giờ tự đổi trạng thái.
+      expired-confirm-after: PT1H
     # Job đối chiếu: hỏi lại provider cho các lần thu đang PENDING (webhook chỉ là gợi ý, 2.3)
     status-check:
       interval-ms: 10000
+      # Nhịp hỏi lại giãn cấp số: 30s, 1m, 2m, 4m, 8m, rồi mỗi 10m — phiên bỏ dở, hàng lệch số tiền,
+      # hàng lơ lửng không dội provider đều đặn mãi
       recheck-after: PT30S
+      max-recheck-after: PT10M
       batch-size: 50
+    # Chỉ có tác dụng khi provider = vnpay. Mọi biến VNPAY_* BẮT BUỘC, không có mặc định — kể cả URL: URL
+    # sandbox lọt lên môi trường thật là "thu" tiền giả mà cộng tiền thật (profile prod từ chối sandbox).
+    vnpay:
+      tmn-code: ${VNPAY_TMN_CODE}
+      hash-secret: ${VNPAY_HASH_SECRET}
+      pay-url: ${VNPAY_PAY_URL}
+      api-url: ${VNPAY_API_URL}
+      # Trang người dùng quay về sau khi trả tiền — chỉ hiển thị, kết quả chỉ chốt qua querydr (ADR-016)
+      return-url: ${VNPAY_RETURN_URL}
+      # IP máy chủ gửi kèm querydr, và thay IP người dùng khi lệnh thu không mang IP
+      server-ip: ${VNPAY_SERVER_IP}
+      locale: vn
+      order-type: other
+      # Phải NGẮN hơn resilience.timeout (kiểm lúc khởi động)
+      connect-timeout: 2s
+      read-timeout: 3s
     # Chỉ có tác dụng khi provider = mock
     mock:
       # Xác nhận THỨ HAI để chạy mock (cùng với provider=mock). Mặc định false: một biến gõ nhầm ở môi

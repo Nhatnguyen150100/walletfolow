@@ -63,7 +63,7 @@ class ResilientPaymentProviderTest {
             mock.setLatency(Duration.ofMillis(900));
 
             assertThatThrownBy(() -> provider.charge(
-                    new ChargeRequest(UUID.randomUUID().toString(), 5_000, ECurrency.VND)))
+                    new ChargeRequest(UUID.randomUUID().toString(), 5_000, ECurrency.VND, null, Duration.ofMinutes(15))))
                     .isInstanceOf(ProviderUnavailableException.class)
                     .hasMessageContaining("quá thời gian chờ");
 
@@ -95,7 +95,7 @@ class ResilientPaymentProviderTest {
                     mock.failNextCalls(4);
                     for (int i = 0; i < 4; i++) {
                         assertThatThrownBy(() -> provider.charge(
-                                new ChargeRequest(UUID.randomUUID().toString(), 5_000, ECurrency.VND)))
+                                new ChargeRequest(UUID.randomUUID().toString(), 5_000, ECurrency.VND, null, Duration.ofMinutes(15))))
                                 .isInstanceOf(ProviderUnavailableException.class);
                     }
                     assertThat(transitions).as("đủ lỗi kỹ thuật thì mạch phải mở")
