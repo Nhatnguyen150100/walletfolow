@@ -8,7 +8,8 @@ Ví điện tử microservices (fintech). **Sổ cái double-entry (ledger-servi
 về tiền**; wallet-service là read model số dư (CQRS) dựng lại được từ ledger; transaction-service nhận
 lệnh chuyển tiền idempotent rồi điều phối Saga (orchestration) qua Kafka. Client đi qua api-gateway
 (verify JWT RS256 qua JWKS của auth-service, gắn header `X-User-*`, rate limit bằng Redis).
-Đang ở **Phase 1** — trạng thái từng mục: `docs/walletflow-production-roadmap.md` §Phase 1.
+Đang ở **Phase 2** (Phase 1 đã đóng — `docs/PR-phase-1.md`); định vị sản phẩm: ADR-015. Trạng thái từng
+mục: `docs/walletflow-production-roadmap.md`.
 
 | Module | Cổng | Package gốc |
 |---|---|---|
@@ -66,7 +67,7 @@ Không có tầng domain riêng; logic nằm ở `services/`. Code dùng chung g
 5. Schema chỉ đổi bằng Flyway, expand → backfill → contract.
 6. Không bí mật nào trong repo, kể cả default cho dev. Thiếu env thì service phải KHÔNG khởi động.
 7. Phân loại lỗi trước khi xử lý: lỗi nghiệp vụ → từ chối dứt khoát; lỗi kỹ thuật → retry → DLT.
-8. Mỗi quyết định kiến trúc = 1 ADR trong `docs/adr/` (đánh số tiếp, hiện tới ADR-014).
+8. Mỗi quyết định kiến trúc = 1 ADR trong `docs/adr/` (đánh số tiếp, hiện tới ADR-015).
 
 ## Quy ước code
 - Tiền: `long` minor unit + value object `Money` (ADR-005), cột `BIGINT`. Không bao giờ `double`/`float`; `BigDecimal` chỉ khi tính tỉ lệ, làm tròn với `RoundingMode` tường minh. Cộng/trừ qua `Money` (`addExact`).
