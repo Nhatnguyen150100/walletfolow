@@ -3,9 +3,9 @@
 #   docker compose up -d --build
 #
 # Thứ tự khởi động (qua depends_on + healthcheck):
-#   hạ tầng (postgres/kafka/redis/jaeger) -> discovery -> config -> auth/ledger -> wallet
-#   -> transaction -> gateway
-# Các service còn lại (bank-adapter/notification) sẽ được thêm vào ở các bước sau của roadmap.
+#   hạ tầng (postgres/kafka/redis/jaeger) -> discovery -> config -> auth/ledger/bank-adapter
+#   -> wallet -> transaction -> gateway
+# bank-adapter (Phase 2.2) cần BANK_PROVIDER trong .env — xem .env.example.
 # =====================================================================
 services:
 
@@ -235,6 +235,32 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8084/actuator/health | grep UP || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # Cầu nối tới cổng thanh toán (roadmap 2.2, ADR-016). Nhận lệnh thu qua Kafka, không có API
+  # công khai, không map cổng ra host.
+  bank-adapter:
+    build:
+      context: .
+      dockerfile: services/bank-adapter/Dockerfile
+    container_name: wf-bank-adapter
+    environment:
+      <<: *common-env
+      # Không có mặc định: thiếu thì compose dừng ngay. `mock` cho máy dev — xem .env.example.
+      BANK_PROVIDER: ${BANK_PROVIDER:?Thiếu BANK_PROVIDER — đặt BANK_PROVIDER=mock trong .env cho máy dev}
+      # Xác nhận thứ hai cho provider giả; mặc định false (ADR-016)
+      BANK_MOCK_ALLOWED: ${BANK_MOCK_ALLOWED:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8085/actuator/health | grep UP || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10

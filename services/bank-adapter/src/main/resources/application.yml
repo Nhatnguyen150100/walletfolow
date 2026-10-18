@@ -1,0 +1,90 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: bank-adapter
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/railsdb
+    username: ${DB_USER:walletflow}
+    password: ${DB_PASS:walletflow}
+  jpa:
+    hibernate:
+      ddl-auto: validate      # Flyway quản schema; Hibernate chỉ validate
+    open-in-view: false
+    properties:
+      hibernate.format_sql: true
+  flyway:
+    enabled: true
+    # railsdb chưa từng được dùng trước service này — không có schema cũ nào cần baseline.
+    baseline-on-migrate: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    consumer:
+      group-id: bank-adapter
+      auto-offset-reset: earliest
+  task:
+    scheduling:
+      pool:
+        # Mặc định Spring chỉ có MỘT thread cho mọi @Scheduled. Job đối chiếu gọi provider (mỗi lời gọi tới
+        # resilience.timeout) mà chiếm thread đó thì outbox relay đứng theo — người dùng không nhận được URL
+        # thanh toán và kết quả thu tiền trễ đúng lúc provider đang chậm.
+        size: 4
+
+walletflow:
+  bank:
+    # BẮT BUỘC, không có mặc định: `mock` (máy dev/test) | `vnpay` (2.2b). Thiếu biến thì service KHÔNG
+    # khởi động. Một mặc định ở đây là cách MockProvider lọt lên môi trường thật và "thu" tiền giả —
+    # tức cộng tiền thật vào ví mà không ai trả (ADR-016).
+    provider: ${BANK_PROVIDER}
+    # Bọc mọi lời gọi ra provider (ResilientPaymentProvider)
+    resilience:
+      timeout: 5s
+      # Bulkhead: provider chậm chỉ chiếm được chừng này thread, không kéo cả consumer Kafka theo
+      max-threads: 8
+      queue-capacity: 16
+      # Circuit breaker: >= 50% của 20 lời gọi gần nhất lỗi -> mở 30s, không gọi ra ngoài nữa
+      failure-rate-threshold: 50
+      sliding-window-size: 20
+      minimum-calls: 10
+      open-wait: 30s
+    # Job đối chiếu: hỏi lại provider cho các lần thu đang PENDING (webhook chỉ là gợi ý, 2.3)
+    status-check:
+      interval-ms: 10000
+      recheck-after: PT30S
+      batch-size: 50
+    # Chỉ có tác dụng khi provider = mock
+    mock:
+      # Xác nhận THỨ HAI để chạy mock (cùng với provider=mock). Mặc định false: một biến gõ nhầm ở môi
+      # trường thật chưa đủ để bật provider giả — chỉ stack dev/E2E đặt BANK_MOCK_ALLOWED=true.
+      allowed: ${BANK_MOCK_ALLOWED:false}
+      payment-base-url: http://localhost:8085/mock-pay
+      latency: 0ms
+      # Tỉ lệ lỗi kỹ thuật ngẫu nhiên (0.0 - 1.0) — để chaos test cục bộ
+      failure-rate: 0.0
+      # Số tiền (minor) vượt ngưỡng này bị từ chối nghiệp vụ; 0 = không từ chối
+      decline-above-minor: 0
+      # Phiên tự "được trả" sau chừng này — thay cho người dùng bấm thanh toán trên máy dev
+      auto-settle-after: PT10S
+      settle-outcome: SUCCEEDED
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}

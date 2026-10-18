@@ -19,6 +19,7 @@ mục: `docs/walletflow-production-roadmap.md`.
 | `services/wallet-service` | 8082 | `com.walletflow.wallet` |
 | `services/ledger-service` | 8083 | `com.walletflow.ledger` |
 | `services/transaction-service` | 8084 | `com.walletflow.transaction` |
+| `services/bank-adapter` | 8085 | `com.walletflow.bank` (provider ở `provider/`, chọn qua `BANK_PROVIDER`) |
 
 ## Stack
 - Java 21 (CI) · Spring Boot 3.5.0 · Spring Cloud 2025.0.0 · **Maven multi-module** qua `./mvnw` (không có Gradle).
@@ -26,7 +27,7 @@ mục: `docs/walletflow-production-roadmap.md`.
 - Kafka (apache/kafka 3.9.1), topic khai báo tường minh trong `WalletTopics` (`<domain>.<command|event>.<tên>.v<N>`), auto-create TẮT.
 - Lombok được dùng: `@Getter`, `@NoArgsConstructor` (entity), `@RequiredArgsConstructor`, `@Slf4j`, `@Builder`. Không dùng `@Data`/`@EqualsAndHashCode`/`@ToString` trên entity.
 - REST: code-first với springdoc (không có `openapi.yaml`). **Hợp đồng event Kafka** là JSON Schema trong `common-lib/src/main/resources/schemas/` + `EventContractTest`.
-- Test: JUnit 5, AssertJ, Testcontainers (Postgres 16, Kafka), JaCoCo gate trên **integration test** (ledger/wallet/transaction 85%, auth 70%). Không có Spotless/ArchUnit.
+- Test: JUnit 5, AssertJ, Testcontainers (Postgres 16, Kafka), JaCoCo gate trên **integration test** (ledger/wallet/transaction/bank-adapter 85%, auth 70%). Không có Spotless/ArchUnit.
 
 ## Lệnh
 Máy local chạy JDK 23 → **luôn thêm `-Dmaven.compiler.proc=full`** (không thì Lombok không chạy, hàng trăm lỗi `cannot find symbol`). Integration test cần Docker Desktop đang chạy.
@@ -67,7 +68,7 @@ Không có tầng domain riêng; logic nằm ở `services/`. Code dùng chung g
 5. Schema chỉ đổi bằng Flyway, expand → backfill → contract.
 6. Không bí mật nào trong repo, kể cả default cho dev. Thiếu env thì service phải KHÔNG khởi động.
 7. Phân loại lỗi trước khi xử lý: lỗi nghiệp vụ → từ chối dứt khoát; lỗi kỹ thuật → retry → DLT.
-8. Mỗi quyết định kiến trúc = 1 ADR trong `docs/adr/` (đánh số tiếp, hiện tới ADR-015).
+8. Mỗi quyết định kiến trúc = 1 ADR trong `docs/adr/` (đánh số tiếp, hiện tới ADR-016).
 
 ## Quy ước code
 - Tiền: `long` minor unit + value object `Money` (ADR-005), cột `BIGINT`. Không bao giờ `double`/`float`; `BigDecimal` chỉ khi tính tỉ lệ, làm tròn với `RoundingMode` tường minh. Cộng/trừ qua `Money` (`addExact`).
