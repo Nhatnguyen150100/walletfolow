@@ -27,3 +27,12 @@ secrets/
 
 # Bản sao lưu DB — dữ liệu, không phải mã nguồn
 backups/
+
+# Load test (1.5b): thông tin đăng nhập user seed + kết quả thô — số liệu chốt nằm ở docs/benchmarks
+k6/.data/
+k6/.out/
+
+# Claude Code: commit .claude/ (settings, hooks, commands, agents, skills), bỏ qua các file cá nhân/tạm
+.claude/.state/
+.claude/settings.local.json
+CLAUDE.local.md

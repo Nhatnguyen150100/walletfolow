@@ -56,6 +56,44 @@ jobs:
           retention-days: 7
 
   # ==================================================================
+  # E2E — dựng CẢ stack bằng compose, kiểm Definition of Done Phase 1 qua gateway (roadmap 1.5a)
+  # ==================================================================
+  # IT của từng service chạy với fake cho service bên cạnh; job này là nơi duy nhất chứng minh các
+  # mảnh ghép thật nói chuyện được với nhau: JWT → gateway → transaction → Kafka → ledger → wallet,
+  # kể cả khi một service bị giết giữa saga.
+  e2e:
+    name: E2E (compose + DoD Phase 1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # up.sh tự sinh khoá JWT tạm cho lần chạy (không có .env trên runner, và không cần secret nào)
+      - name: Dựng stack
+        run: bash scripts/e2e/up.sh
+
+      - name: Kiểm DoD Phase 1 qua gateway
+        run: bash scripts/e2e/phase1-dod.sh
+
+      # `docker compose logs` cần khoá JWT để nội suy file compose — đọc log theo container thay vì vậy.
+      # cancelled(): chạm timeout-minutes là job bị HUỶ chứ không phải failure — đúng lúc cần log nhất.
+      - name: Thu log container khi hỏng
+        if: failure() || cancelled()
+        run: |
+          mkdir -p e2e-logs
+          for c in $(docker ps -a --filter name=wf- --format '{{.Names}}'); do
+            docker logs --timestamps "$c" > "e2e-logs/$c.log" 2>&1 || true
+          done
+
+      - name: Upload log container khi hỏng
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-container-logs
+          path: e2e-logs/
+          retention-days: 7
+
+  # ==================================================================
   # Quét bí mật — chạy song song, không phụ thuộc build
   # ==================================================================
   secrets-scan:
@@ -127,7 +165,7 @@ jobs:
   # và một PR không có nhãn vẫn merge được bình thường.
   label-ci-result:
     name: Label CI result
-    needs: [verify, guardrails, secrets-scan]
+    needs: [verify, guardrails, secrets-scan, e2e]
     # always(): phải chạy CẢ KHI job phía trước thất bại — đó mới là lúc cần gỡ
     # nhãn "mergeable" cũ xuống. Không có always() thì nhãn xanh của lần push
     # trước sẽ nằm lại trên một PR đang đỏ.
@@ -145,12 +183,14 @@ jobs:
           echo "verify=${{ needs.verify.result }}"
           echo "guardrails=${{ needs.guardrails.result }}"
           echo "secrets=${{ needs['secrets-scan'].result }}"
+          echo "e2e=${{ needs.e2e.result }}"
           # Bắt buộc dùng bracket notation cho job id có dấu gạch ngang:
           # `needs.secrets-scan.result` bị parser hiểu thành phép trừ
           # (needs.secrets - scan.result) và cho ra kết quả rỗng một cách im lặng.
           if [[ "${{ needs.verify.result }}"          == "success" && \
                 "${{ needs.guardrails.result }}"      == "success" && \
-                "${{ needs['secrets-scan'].result }}" == "success" ]]; then
+                "${{ needs['secrets-scan'].result }}" == "success" && \
+                "${{ needs.e2e.result }}"             == "success" ]]; then
             echo "passed=true" >> "$GITHUB_OUTPUT"
           else
             echo "passed=false" >> "$GITHUB_OUTPUT"
