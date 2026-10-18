@@ -5,7 +5,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.walletflow.common.event.AccountOpenedEvent;
+import com.walletflow.common.event.BankChargeCommand;
+import com.walletflow.common.event.BankChargePendingEvent;
+import com.walletflow.common.event.BankCompletedEvent;
+import com.walletflow.common.event.BankFailedEvent;
 import com.walletflow.common.event.EAccountStatus;
+import com.walletflow.common.event.EBankOperation;
 import com.walletflow.common.event.EJournalType;
 import com.walletflow.common.event.EnvelopeReader;
 import com.walletflow.common.event.EventEnvelope;
@@ -89,7 +94,22 @@ class EventContractTest {
                 Arguments.of(WalletTopics.EVT_TXN_FAILED, "TransactionFailed",
                         new TransactionFailedEvent(UUID.randomUUID(), EJournalType.TRANSFER,
                                 UUID.randomUUID(), wallet, UUID.randomUUID(), 1_000, ECurrency.VND,
-                                "INSUFFICIENT_FUNDS")));
+                                "INSUFFICIENT_FUNDS")),
+                Arguments.of(WalletTopics.CMD_BANK_CHARGE, "BankCharge",
+                        new BankChargeCommand(UUID.randomUUID(), wallet, 500_000, ECurrency.VND)),
+                Arguments.of(WalletTopics.EVT_BANK_CHARGE_PENDING, "BankChargePending",
+                        new BankChargePendingEvent(UUID.randomUUID(), wallet, "mock", "MOCK-1",
+                                "https://sandbox.example/pay/MOCK-1")),
+                Arguments.of(WalletTopics.EVT_BANK_COMPLETED, "BankCompleted",
+                        new BankCompletedEvent(UUID.randomUUID(), EBankOperation.CHARGE, wallet, "mock",
+                                "MOCK-1", 500_000, ECurrency.VND)),
+                Arguments.of(WalletTopics.EVT_BANK_FAILED, "BankFailed",
+                        new BankFailedEvent(UUID.randomUUID(), EBankOperation.CHARGE, wallet, "mock",
+                                "MOCK-1", "DECLINED")),
+                Arguments.of(WalletTopics.EVT_BANK_FAILED, "BankFailed",
+                        // Provider từ chối ngay lúc tạo phiên: chưa có mã phía provider
+                        new BankFailedEvent(UUID.randomUUID(), EBankOperation.CHARGE, wallet, "mock",
+                                null, "DECLINED")));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -117,6 +137,12 @@ class EventContractTest {
         String opened = fixture("ledger.event.account-opened.v1.json");
         EventSchemas.assertValid(WalletTopics.EVT_ACCOUNT_OPENED, opened);
         assertThat(READER.read(opened, AccountOpenedEvent.class).payload().statusVersion()).isEqualTo(2);
+
+        String charge = fixture("txn.command.bank-charge.v1.json");
+        EventSchemas.assertValid(WalletTopics.CMD_BANK_CHARGE, charge);
+        BankChargeCommand command = READER.read(charge, BankChargeCommand.class).payload();
+        assertThat(command.amountMinor()).isEqualTo(500_000);
+        assertThat(command.currency()).isEqualTo(ECurrency.VND);
     }
 
     @Test
@@ -155,6 +181,25 @@ class EventContractTest {
         assertThat(EventSchemas.validate(WalletTopics.EVT_ACCOUNT_OPENED,
                 opened.replace("\"FROZEN\"", "\"SUSPENDED\"")))
                 .as("trạng thái ngoài enum").isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("Schema từ chối lệnh thu tiền: số tiền 0/âm, thiếu ví, loại tiền lạ")
+    void schema_tu_choi_lenh_thu_tien_sai() throws IOException {
+        String charge = fixture("txn.command.bank-charge.v1.json");
+
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"amountMinor\": 500000", "\"amountMinor\": 0")))
+                .as("thu 0 đồng là vô nghĩa").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"amountMinor\": 500000", "\"amountMinor\": -500000")))
+                .as("thu số âm là chi tiền ra — sai loại thao tác").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"walletId\"", "\"walletIdX\"")))
+                .as("không có ví thì thu xong không biết cộng vào đâu").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"VND\"", "\"BTC\"")))
+                .as("loại tiền ngoài enum").isNotEmpty();
     }
 
     private static String fixture(String name) throws IOException {

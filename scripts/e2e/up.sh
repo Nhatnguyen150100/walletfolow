@@ -15,15 +15,18 @@ cd "$(dirname "$0")/../.."
 source scripts/e2e/lib.sh
 
 ensure_jwt_keys
+ensure_bank_provider
 
 log "Build + khởi động stack (lần đầu mất vài phút: mỗi image build Maven từ source)"
-# Chỉ những service E2E cần — bỏ prometheus/grafana/jaeger cho nhẹ runner CI (7 JVM + Kafka + PG).
+# Chỉ những service E2E cần — bỏ prometheus/grafana/jaeger cho nhẹ runner CI (8 JVM + Kafka + PG).
 # Trace gửi tới jaeger không có thì exporter chỉ log cảnh báo, không ảnh hưởng nghiệp vụ.
+# bank-adapter chưa nằm trên luồng nào của DoD Phase 1, nhưng vẫn bật và chờ healthy: một service chỉ có
+# IT thì không ai biết nó có khởi động được trong compose hay không (bài học gateway ở 1.5a).
 docker compose -p wf-e2e -f docker-compose.yml -f docker-compose.e2e.yml up -d --build \
   postgres redis kafka discovery-server config-server \
-  auth-service ledger-service wallet-service transaction-service api-gateway
+  auth-service ledger-service wallet-service transaction-service bank-adapter api-gateway
 
-for c in wf-ledger wf-wallet wf-transaction; do
+for c in wf-ledger wf-wallet wf-transaction wf-bank-adapter; do
   wait_healthy "$c" 420
 done
 

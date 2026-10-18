@@ -24,7 +24,7 @@ Hệ thống ví điện tử phân tán xây bằng **Java 21 · Spring Boot 3.
 | ledger-service | 8083 | Sổ cái double-entry (nguồn sự thật) | ✅ |
 | wallet-service | 8082 | Read model số dư (CQRS), dựng lại được từ sổ cái | ✅ |
 | transaction-service | 8084 | Nhận lệnh chuyển idempotent + Saga orchestration | ✅ |
-| bank-adapter | 8085 | Cổng ngân hàng ngoài | ⏳ Phase 2 |
+| bank-adapter | 8085 | Cổng thanh toán: thu tiền nạp ví idempotent, Resilience4j — [ADR-016](docs/adr/ADR-016-bank-adapter-charge-model.md) | 🟡 Phase 2 (2.2a: provider giả; VNPay ở 2.2b) |
 | notification-service | 8086 | Thông báo kết quả | ✂️ gộp vào webhook khách hàng (Phase 5.1) — [ADR-015](docs/adr/ADR-015-product-positioning.md) |
 
 **Hạ tầng:** PostgreSQL (DB-per-service), Redis, Apache Kafka, Jaeger, Prometheus + Grafana.
@@ -177,4 +177,5 @@ Chi tiết: [roadmap §Phase 2](docs/walletflow-production-roadmap.md).
 
 Tồn đọng từ Phase 0:
 - [x] Diễn tập restore và đo RTO — **4 giây**, 2026-10-16 ([`docs/runbooks/restore.md`](docs/runbooks/restore.md)); nên lặp lại định kỳ
-- [ ] Bật branch protection trên `master` (bắt buộc PR + CI xanh, gồm cả check `E2E (compose + DoD Phase 1)`)
+- [x] Bật branch protection trên `master` — bắt buộc `Build & test`, `Guardrails`, `Secret scan`
+- [ ] Thêm check `E2E (compose + DoD Phase 1)` vào danh sách bắt buộc của branch protection

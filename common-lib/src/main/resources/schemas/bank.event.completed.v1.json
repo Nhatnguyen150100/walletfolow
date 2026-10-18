@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/bank.event.completed.v1.json",
+  "title": "BankCompleted v1 — provider xác nhận thao tác thành công",
+  "description": "Topic bank.event.completed.v1. Producer: bank-adapter. Consumer: transaction-service. Chỉ phát sau khi bank-adapter tự hỏi lại provider (getStatus) — webhook là gợi ý, không phải sự thật (ADR-016). eventId tất định theo lần thu. Luật tiến hoá: chỉ THÊM field optional.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid" },
+    "eventType": { "const": "BankCompleted" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["transactionId", "operation", "walletId", "provider", "providerRef", "amountMinor", "currency"],
+      "properties": {
+        "transactionId": { "$ref": "#/$defs/uuid" },
+        "operation": { "enum": ["CHARGE", "REFUND", "PAYOUT"] },
+        "walletId": { "$ref": "#/$defs/uuid" },
+        "provider": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "providerRef": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "amountMinor": { "type": "integer", "exclusiveMinimum": 0 },
+        "currency": { "enum": ["VND", "USD"] }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}

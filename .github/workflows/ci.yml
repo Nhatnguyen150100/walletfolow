@@ -259,6 +259,7 @@ jobs:
           - { name: ledger-service,   path: services/ledger-service }
           - { name: wallet-service,   path: services/wallet-service }
           - { name: transaction-service, path: services/transaction-service }
+          - { name: bank-adapter,     path: services/bank-adapter }
     steps:
       - uses: actions/checkout@v7
 

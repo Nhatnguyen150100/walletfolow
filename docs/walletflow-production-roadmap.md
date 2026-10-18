@@ -777,6 +777,20 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 > Tương ứng M4 của master plan, cộng phần webhook (master plan chưa đề cập nhưng là **phần khó
 > nhất trong thực tế**).
 
+### Trạng thái Phase 2 (cập nhật 2026-10-18)
+
+| Mục | Trạng thái | PR |
+|---|---|---|
+| 2.2a bank-adapter — `PaymentProvider` + `MockProvider`, thu tiền idempotent, Resilience4j ([ADR-016](adr/ADR-016-bank-adapter-charge-model.md)) | 🟡 `feat/phase-2-bank-adapter` | |
+| 2.2b bank-adapter — VNPay sandbox + masking log | ⬜ | |
+| 2.3 Webhook ingestion | ⬜ | |
+| 2.4 Saga top-up có bù trừ | ⬜ | |
+| 2.5 Admin API & manual review | ⬜ | |
+| 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
+
+Đường găng nạp tiền: **2.2a → 2.2b → 2.3 → 2.4 (top-up)**. DoD ô "rút tiền" chưa đạt được khi 2.1 còn bị
+chặn.
+
 ## 2.1 — Mô hình HOLD / available balance (GAP-A2) · 3 ngày 🔴
 
 Không có cái này thì không được mở luồng rút tiền. Trong lúc chờ ngân hàng xác nhận payout,
@@ -804,6 +818,15 @@ mà nguyên tắc §5.1 cấm.
 fail → tiền quay về đủ; `SUM = 0` đúng ở cả ba trạng thái.
 
 ## 2.2 — bank-adapter (:8085) với kiến trúc provider · 5 ngày
+
+> **Tách 2 PR, mô hình thu đã chốt ở [ADR-016](adr/ADR-016-bank-adapter-charge-model.md):**
+> - Thu tiền theo luồng chuyển hướng + xác nhận bất đồng bộ.
+> - Kết quả cuối chỉ phát sau khi adapter tự `getStatus`.
+> - Idempotent theo `(tenant, transactionId, operation)`, khoá gửi provider tất định.
+> - Lệnh gửi lại thì phát lại câu trả lời.
+>
+> **2.2a:** khung service, `MockProvider`, Resilience4j, job đối chiếu. **2.2b:** VNPay sandbox, masking log.
+> `payout` chưa có trong interface: phục vụ luồng rút, đang bị chặn.
 
 - Interface `PaymentProvider`: `charge(ChargeRequest) → ChargeResult`,
   `payout(PayoutRequest) → PayoutResult`, `getStatus(providerRef)`, `refund(providerRef)`.

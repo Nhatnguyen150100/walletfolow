@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/txn.command.bank-charge.v1.json",
+  "title": "BankCharge v1 — lệnh thu tiền qua cổng thanh toán (nạp tiền)",
+  "description": "Topic txn.command.bank-charge.v1. Producer: transaction-service (saga top-up). Consumer: bank-adapter. Idempotent theo (tenant, transactionId): gửi lại chỉ tạo MỘT phiên thanh toán và luôn nhận lại câu trả lời theo trạng thái hiện tại. Cùng transactionId mà khác walletId/amountMinor/currency là bug producer -> DLT. Luật tiến hoá: chỉ THÊM field optional.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid" },
+    "eventType": { "const": "BankCharge" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["transactionId", "walletId", "amountMinor", "currency"],
+      "properties": {
+        "transactionId": { "$ref": "#/$defs/uuid" },
+        "walletId": { "$ref": "#/$defs/uuid" },
+        "amountMinor": { "type": "integer", "exclusiveMinimum": 0 },
+        "currency": { "enum": ["VND", "USD"] }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}

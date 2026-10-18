@@ -50,6 +50,7 @@ public class KafkaTopicsAutoConfiguration {
       WalletTopics.EVT_LEDGER_POSTED,
       WalletTopics.EVT_LEDGER_REJECTED,
       WalletTopics.EVT_ACCOUNT_OPENED,
+      WalletTopics.EVT_BANK_CHARGE_PENDING,
       WalletTopics.EVT_BANK_COMPLETED,
       WalletTopics.EVT_BANK_FAILED,
       WalletTopics.EVT_TXN_COMPLETED,

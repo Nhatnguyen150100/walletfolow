@@ -32,6 +32,9 @@ public final class WalletTopics {
   public static final String EVT_LEDGER_POSTED = "ledger.event.posted.v1";
   public static final String EVT_LEDGER_REJECTED = "ledger.event.rejected.v1";
   public static final String EVT_ACCOUNT_OPENED = "ledger.event.account-opened.v1";
+  // bank-adapter: phiên thanh toán đã tạo, chờ người trả tiền (mang URL chuyển hướng) — ADR-016
+  public static final String EVT_BANK_CHARGE_PENDING = "bank.event.charge-pending.v1";
+  // Kết quả CUỐI, chỉ phát sau khi đã hỏi lại provider (getStatus) — ADR-016
   public static final String EVT_BANK_COMPLETED = "bank.event.completed.v1";
   public static final String EVT_BANK_FAILED = "bank.event.failed.v1";
 
