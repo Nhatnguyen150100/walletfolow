@@ -1,0 +1,2 @@
+# Hook của Claude Code chạy bằng bash: CRLF làm hỏng script trên Linux/macOS/WSL
+.claude/hooks/*.sh text eol=lf

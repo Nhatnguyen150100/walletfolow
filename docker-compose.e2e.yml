@@ -1,0 +1,38 @@
+# =====================================================================
+# Override CHỈ DÙNG CHO E2E (roadmap 1.5a) — chạy qua scripts/e2e/up.sh, không gọi tay.
+#
+#   docker compose -p wf-e2e -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
+#   dọn: ./scripts/e2e/down.sh
+#
+# Chỉ đổi THỜI GIAN, không nới bất kỳ kiểm tra nào: rate limit, xác thực, tenant giữ nguyên như
+# production — E2E phải chứng minh hệ thống THẬT, không phải một bản đã được nới cho dễ qua.
+# =====================================================================
+services:
+
+  transaction-service:
+    environment:
+      # SPRING_APPLICATION_JSON thay vì biến môi trường dạng WALLETFLOW_TRANSACTION_...: các khoá này
+      # được đọc bằng @Value, và tên env suy ra từ khoá có gạch ngang (saga-deadline) dễ gõ sai mà
+      # không báo lỗi — service lặng lẽ dùng mặc định PT2M và E2E chờ quá hạn.
+      #
+      # - saga-deadline PT10S + quét mỗi 3s: ca "giết ledger giữa saga" thấy job quét gửi lại lệnh
+      #   sau ~10 giây thay vì 2 phút.
+      # - max-attempts 10 (production: 3): deadline ngắn thì 3 lần gửi lại hết trong lúc ledger còn
+      #   đang khởi động lại, saga sang MANUAL_REVIEW và bắn alert giả. Kết quả về tiền không đổi
+      #   (LedgerPosted vẫn đưa MANUAL_REVIEW → COMPLETED), chỉ là E2E đo ca chính chứ không đo ca đó.
+      SPRING_APPLICATION_JSON: >-
+        {"walletflow":{"transaction":{
+          "saga-deadline":"PT10S",
+          "saga-scan":{"interval-ms":3000,"max-attempts":10}}}}
+    healthcheck:
+      start_period: 180s
+
+  # Runner CI khởi động 7 JVM cùng lúc: cho thời gian khởi động trước khi tính lần healthcheck hỏng,
+  # nếu không `depends_on: service_healthy` đánh trượt cả stack vì một JVM chậm.
+  ledger-service:
+    healthcheck:
+      start_period: 180s
+
+  wallet-service:
+    healthcheck:
+      start_period: 180s
