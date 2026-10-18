@@ -410,20 +410,21 @@ Ghi lại vì cả hai đều thuộc loại **cho kết quả dương tính gi�
 >
 > Tương ứng M2 + M3 của master plan, nhưng nâng chuẩn lên mức production.
 
-### Trạng thái Phase 1 (cập nhật 2026-10-16)
+### Trạng thái Phase 1 (cập nhật 2026-10-17)
 
 | Mục | Trạng thái | PR |
 |---|---|---|
 | 1.0 Multi-tenancy — phía Kafka/ledger | ✅ | #17 |
 | 1.0b Tenant ở biên HTTP + vòng đời tài khoản sổ cái | ✅ | #18 |
 | 1.1 wallet-service (gộp 1.3 contract test) | ✅ | #20 |
-| 1.2a transaction-service — nhận lệnh + idempotency | 🟡 review | #23 |
-| **1.2b transaction-service — saga + quét saga treo** | 🟡 review | `feat/phase-1-saga` |
+| 1.2a transaction-service — nhận lệnh + idempotency | ✅ | #23 |
+| 1.2b transaction-service — saga + quét saga treo | ✅ | #24 |
+| 1.5a E2E qua gateway — kiểm DoD trên stack thật | ✅ | #25 |
+| **1.5b Load test k6 + số liệu cơ sở** | 🟡 review | `feat/phase-1-load-test` |
 | 1.4 notification-service | ⬜ cắt được nếu thiếu thời gian | |
-| 1.5 E2E + load test | ⬜ | |
 
-Đường găng: **1.0b → 1.1 → 1.2a → 1.2b**. Mỗi dòng là một PR riêng — PR nhỏ review được, PR
-20 ngày công thì không.
+Đường găng: **1.0b → 1.1 → 1.2a → 1.2b → 1.5a → 1.5b**. Mỗi dòng là một PR riêng — PR nhỏ review
+được, PR 20 ngày công thì không.
 
 ## 1.0 — Multi-tenancy từ đầu (🔀 bắt buộc nếu chọn con đường B) · 1,5 ngày · ✅ PR #17
 
@@ -670,22 +671,95 @@ là gợi ý UX.
 - Có dedup (dùng lại `EventDeduplicator`) — **thông báo trùng là lỗi nhìn thấy được với người dùng**.
 - Bảng `notifications` lưu lịch sử để tra cứu.
 
-## 1.5 — Load test lần đầu · 1,5 ngày
+## 1.5a — E2E qua gateway: kiểm DoD trên stack thật · ~2 ngày
 
-- Script k6: `k6/transfer.js` — 50 → 500 VU, trộn ví nóng (cùng ví) và ví nguội (ví khác nhau).
-- Ghi lại đường cơ sở: TPS, p50/p95/p99, tỉ lệ lỗi, outbox lag, consumer lag, số lần retry
-  optimistic lock.
-- **Commit kết quả vào `docs/benchmarks/phase1.md`** — có số cơ sở thì mới nói được "tối ưu" sau này
-  có nghĩa gì.
+> Tách khỏi 1.5 khi bắt tay làm: chưa chứng minh stack chạy đúng end-to-end thì số liệu load test
+> không có nghĩa. IT của từng service dùng fake cho service bên cạnh (`FakeWalletDirectory`,
+> `FakeLedger`) — chưa có chỗ nào chứng minh các mảnh ghép THẬT nói chuyện được với nhau.
+
+- `scripts/e2e/up.sh` dựng cả stack (`docker compose -p wf-e2e` + `docker-compose.e2e.yml` chỉ rút
+  ngắn deadline saga), sinh khoá JWT tạm trong bộ nhớ; `scripts/e2e/phase1-dod.sh` kiểm từng ô DoD
+  bằng curl qua gateway, đối chiếu với sổ cái bằng psql. Job CI `e2e` chạy cả hai trên mọi PR.
+- **Nạp tiền:** Phase 1 chưa có API top-up (2.4) → `scripts/e2e/seed-topup.sh` gửi lệnh
+  `PostJournal TOPUP` lên Kafka — đi đúng đường của mọi lệnh ghi sổ, không thêm cửa sau nào vào code.
+- **ADMIN để rebuild:** chưa có API cấp quyền (2.5) → `scripts/e2e/make-admin.sh` sửa `authdb`, chỉ
+  cho stack dev/E2E.
+- ⚠️ **Lỗi E2E bắt được ngay lần chạy đầu:** api-gateway CHƯA TỪNG khởi động được trong compose — hai
+  bean `KeyResolver` không có `@Primary`, `RequestRateLimiterGatewayFilterFactory` không tạo được.
+  Có từ commit đầu; không lộ vì gateway chỉ có unit test và CI chỉ build image. Sửa bằng `@Primary`
+  cho `ipKeyResolver` + `ApiGatewayApplicationTest` (load context thật, fail trước khi sửa).
+- **Rate limit giữ nguyên mức production**: 100 lệnh song song của một user gặp 429 và được gửi lại
+  với CÙNG `Idempotency-Key` — thêm một phép thử idempotency dưới tải.
+- **Không làm:** E2E hai tenant thật — auth chỉ phục vụ một tenant lấy từ cấu hình (`auth.tenant-id`)
+  tới Phase 5. Cách ly tenant đã chứng minh ở `TenantIsolationIT`, `WalletApiIT`; E2E chứng minh
+  phần còn lại: tenant/danh tính CHỈ lấy từ token, header giả bị gateway xoá.
+
+**Ánh xạ DoD → `phase1-dod.sh`:** (1) chuyển + số dư 2 ví khớp sổ cái và read model · (2) gửi lại
+cùng key, kể cả 10 lần song song → body khớp từng byte; 10 request ĐẦU TIÊN song song cùng một key
+mới → một giao dịch; bằng chứng là số dư + số giao dịch (unique của ledger khiến "số bút toán theo
+transactionId" không bao giờ > 1) · (3) `docker kill` ledger, job quét gửi lại lệnh, `docker kill`
+transaction-service, ledger ghi sổ khi transaction-service chết, khởi động lại → `COMPLETED`, số dư
+đúng · (4) làm hỏng số dư + xoá lịch sử → rebuild (ADMIN) khớp sổ
+cái · (5) không token 401, header `X-Tenant-Id`/`X-User-*` giả vô hiệu, dữ liệu người khác trả cùng
+lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 10 → đúng 10 `COMPLETED`, ví về 0;
+`SUM(postings) = 0` theo tenant; không message nào vào DLT.
+
+## 1.5b — Load test lần đầu · 1,5 ngày · [số liệu](benchmarks/phase1.md)
+
+> **Đã triển khai — khác đề xuất ban đầu ở ba điểm:**
+> - ~~50 → 500 VU~~ → **mô hình mở** (`constant-arrival-rate`) 5 → 80 TPS. Mô hình VU đóng tự giảm tải
+>   khi hệ thống chậm và che mất điểm bão hoà; 500 VU cũng vô nghĩa khi hệ thống gãy dưới 40 TPS.
+> - ~~Ví nóng = cùng ví nguồn~~ → **cùng ví NHẬN** (merchant). Gateway giữ ngưỡng production 10
+>   rps/user, và một người không gửi được từ ví người khác; nhiều người chuyển vào một ví vẫn tạo
+>   tranh khoá thật trên tài khoản nhận.
+> - ~~Số lần retry optimistic lock~~ — không còn khoá lạc quan nào (1.1 đã bỏ `version`; ledger và wallet
+>   dùng `FOR UPDATE`).
+
+- `scripts/load/up.sh`: stack cấu hình **production** + Prometheus. KHÔNG áp `docker-compose.e2e.yml`
+  — deadline saga 10 s sẽ làm job quét gửi lại lệnh hàng loạt khi tải cao.
+- `scripts/load/seed.sh`: 40 người gửi + 1 merchant, nạp tiền một lô qua Kafka.
+- `k6/transfer.js` + `scripts/load/run.sh`:
+  - Độ trễ nhận lệnh lấy từ k6.
+  - Độ trễ end-to-end theo mức tính bằng SQL theo `note` của lệnh — không poll API, vì poll ăn vào hạn
+    mức 10 rps/user.
+  - Công suất đọc từ **tốc độ publish của relay** (Prometheus). Hai cách tính throughput đã bị loại vì
+    cho số sai:
+    - Chia cho cả lượt: bị lịch tải chặn trên, luôn ra cùng một số.
+    - Tốc độ xả hàng đợi: outbox FIFO dồn sức cho lệnh còn tồn, nên đó chỉ là số tạm thời.
+  - Consumer lag, Hikari, CPU cũng lấy từ Prometheus.
+  - Kiểm tiền **sau tải**:
+    - `SUM=0`; không ví âm.
+    - Mỗi lệnh COMPLETED của lượt có đúng một bút toán TRANSFER (lọc theo `transaction_id`).
+    - Tổng tiền các ví seed không đổi — bắt được ghi sổ trùng mà `SUM=0` không bắt được.
+    - Read model khớp sổ cái; DLT không tăng.
+  - Mỗi lượt chỉ bắt đầu và kết thúc khi outbox rỗng. Đo chồng lượt từng làm số của lượt sau thành độ
+    trễ của lượt trước.
+
+**Kết quả** (4 lượt):
+- **Chịu bền 20 TPS** (p95 end-to-end 3,3–3,7 s), **không chịu được 40 TPS** (p95 25–26 s, hàng đợi tăng).
+- **Công suất bền vững ≈ 25 TPS.** Outbox relay của transaction-service chạm đúng trần cấu hình
+  **50 bản ghi/s** ở cả 4 lượt (100 bản ghi mỗi lần quét, quét lại sau 2 s); mỗi giao dịch cần 2 bản ghi.
+  - Thời gian gửi Kafka gần bằng 0, nên đòn bẩy là kích thước lô và chu kỳ quét.
+  - Consumer lag gần như 0: hàng đợi nằm trong bảng outbox.
+- Một lượt **suy biến**:
+  - transaction-service cạn pool DB (190 thread chờ);
+  - độ trễ vượt deadline saga 2 phút → job quét gửi lại 350 lệnh, tức retry storm.
+- Ví nóng ≈ ví nguội, vì ledger chỉ chạy 1 thread consumer — chưa đo được tranh chấp khoá.
+- Tiền đúng ở cả 4 lượt (~35.700 lệnh), kể cả lượt có 350 lần gửi lại.
 
 ### ✅ Definition of Done — Phase 1
 
-- [ ] `curl POST /api/v1/transactions/transfer` qua gateway → tiền chuyển, số dư 2 ví đúng
-- [ ] Gửi lại cùng `Idempotency-Key` → không trừ tiền lần hai
-- [ ] Giết service giữa saga → giao dịch vẫn kết thúc đúng
-- [ ] Rebuild projection cho kết quả khớp ledger 100%
-- [ ] Tenant A không thấy được gì của tenant B
-- [ ] Có số liệu load test cơ sở
+> Bằng chứng 5 ô đầu: `scripts/e2e/phase1-dod.sh` (job CI `e2e`) — 52/52 kiểm tra PASS trên stack
+> thật ngày 2026-10-17 (1.5a).
+
+- [x] `curl POST /api/v1/transactions/transfer` qua gateway → tiền chuyển, số dư 2 ví đúng
+- [x] Gửi lại cùng `Idempotency-Key` → không trừ tiền lần hai
+- [x] Giết service giữa saga → giao dịch vẫn kết thúc đúng
+- [x] Rebuild projection cho kết quả khớp ledger 100%
+- [x] Tenant A không thấy được gì của tenant B — cách ly dữ liệu ở `TenantIsolationIT`/`WalletApiIT`;
+  E2E chứng minh tenant/danh tính chỉ lấy từ token (hai tenant thật qua gateway: Phase 5)
+- [x] Có số liệu load test cơ sở — [`docs/benchmarks/phase1.md`](benchmarks/phase1.md) (1.5b):
+  chịu bền 20 TPS, gãy ở 40 TPS, công suất bền vững ~25 TPS do outbox relay, tiền đúng dưới tải
 
 ---
 
@@ -929,7 +1003,25 @@ Làm thật, ghi lại thời gian thật:
 
 ## 4.5 — Tối ưu (GAP-A6) · 1 ngày+
 
-Chỉ làm **sau khi** load test chỉ ra nghẽn thật:
+Chỉ làm **sau khi** load test chỉ ra nghẽn thật. Load test 1.5b ([số liệu](benchmarks/phase1.md)) đã
+chỉ ra, theo thứ tự ưu tiên. Mỗi việc phải chạy lại `scripts/load/run.sh` và ghi số trước/sau:
+- **Outbox relay** — chạm trần cấu hình 50 bản ghi/s ở mọi lượt; công suất bền vững ≈ 25 TPS.
+  - Hiện trạng: quét mỗi 2 s (`outbox.relay.delay-ms`), 100 bản ghi/lần (hard-code trong
+    `JpaOutboxReader`).
+  - Đo được thời gian gửi 100 bản ghi gần bằng 0, nên **gửi bất đồng bộ không nâng được trần**.
+  - Sửa: cho cấu hình kích thước lô và rút chu kỳ quét, rồi đo lại xem trần mới nằm ở đâu (DB, Kafka ack
+    hay consumer). Thêm nhãn topic cho `walletflow.outbox.published`.
+- **Chống retry storm khi quá tải** — một lượt load test vượt deadline saga 2 phút, job quét gửi lại 350
+  lệnh đúng lúc hệ thống ngộp. Lệnh còn nằm trong outbox (chưa từng rời service) thì không cần gửi lại.
+- **Ledger consumer `concurrency`** = số partition. Sau đó đo lại kịch bản `hot` — hiện ledger 1 thread
+  nên chưa từng có tranh chấp khoá thật.
+- Percentile histogram cho `http.server.requests`: panel p95 và alert `LatencyP95High` hiện không có
+  dữ liệu.
+- Gateway: gặp `kid` lạ thì chờ nạp JWKS (có timeout) thay vì 401 ngay. Hiện token hợp lệ đầu tiên sau
+  khi gateway khởi động trước auth bị từ chối.
+- Điều tra đợt cạn pool Hikari của transaction-service.
+  - Pool đầy ở 3/4 lượt; có thread chờ ở hai lượt (190 và 9); một lượt đo trước đó cũng thấy 53.
+  - Chưa rõ nguyên nhân. Cần `pg_stat_activity` và đo thời gian giữ kết nối của từng luồng.
 - Tách nostro `EXTERNAL_BANK` thành nhiều tài khoản theo provider/shard để giảm tranh chấp khoá.
 - Partition bảng `postings` theo tháng khi dữ liệu lớn.
 - Read replica cho truy vấn lịch sử/báo cáo.

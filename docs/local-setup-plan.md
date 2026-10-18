@@ -244,6 +244,11 @@ hơn, cho bạn công cụ để nhìn thấy luồng tiền bằng mắt.
 
 Bật lại chế độ A (`docker compose -f docker-compose.infra.yml up -d` + chạy ledger với profile `local`).
 
+> ⚠️ **Đã lỗi thời từ Phase 1** — giữ lại như nhật ký học. Tài khoản `USER` giờ chỉ mở được qua
+> wallet-service (`POST /api/v1/wallets`, ref là UUID của ví — ADR-011), mọi message bắt buộc có
+> `tenantId` (ADR-010), và `scripts/seed-accounts.sql` không tồn tại. Nạp tiền đúng cách:
+> `./scripts/e2e/seed-topup.sh <wallet-id> <số tiền>`; kiểm cả vòng: `./scripts/e2e/phase1-dod.sh`.
+
 ## B1. Seed tài khoản ví · `scripts/seed-accounts.sql`
 
 ```sql
