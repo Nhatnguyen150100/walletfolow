@@ -410,7 +410,7 @@ Ghi lại vì cả hai đều thuộc loại **cho kết quả dương tính gi�
 >
 > Tương ứng M2 + M3 của master plan, nhưng nâng chuẩn lên mức production.
 
-### Trạng thái Phase 1 (cập nhật 2026-10-17)
+### Trạng thái Phase 1 (cập nhật 2026-10-18) · **ĐÃ ĐÓNG** — xem DoD cuối Phase
 
 | Mục | Trạng thái | PR |
 |---|---|---|
@@ -420,8 +420,8 @@ Ghi lại vì cả hai đều thuộc loại **cho kết quả dương tính gi�
 | 1.2a transaction-service — nhận lệnh + idempotency | ✅ | #23 |
 | 1.2b transaction-service — saga + quét saga treo | ✅ | #24 |
 | 1.5a E2E qua gateway — kiểm DoD trên stack thật | ✅ | #25 |
-| **1.5b Load test k6 + số liệu cơ sở** | 🟡 review | `feat/phase-1-load-test` |
-| 1.4 notification-service | ⬜ cắt được nếu thiếu thời gian | |
+| 1.5b Load test k6 + số liệu cơ sở | ✅ | #26 |
+| 1.4 notification-service | ✂️ cắt — gộp vào webhook khách hàng (5.1), [ADR-015](adr/ADR-015-product-positioning.md) | |
 
 Đường găng: **1.0b → 1.1 → 1.2a → 1.2b → 1.5a → 1.5b**. Mỗi dòng là một PR riêng — PR nhỏ review
 được, PR 20 ngày công thì không.
@@ -664,7 +664,13 @@ là gợi ý UX.
 - Luật tiến hoá: chỉ thêm field optional; đổi phá vỡ ⇒ topic `.v2` + giai đoạn chạy song song.
 - 🔀 Nếu đi con đường B: cân nhắc Schema Registry + Avro ở Phase 4 (khách hàng cần đảm bảo tương thích).
 
-## 1.4 — notification-service (:8086) · 2 ngày
+## 1.4 — notification-service (:8086) · 2 ngày · ✂️ cắt
+
+> **Cắt khi đóng Phase 1 ([ADR-015](adr/ADR-015-product-positioning.md)).** Không nằm trong DoD. Với con
+> đường B, khách hàng doanh nghiệp nhận kết quả giao dịch qua **webhook** (5.1), không qua một service
+> thông báo riêng. Nguồn cho webhook là event `txn.event.completed.v1` / `txn.event.failed.v1` (ADR-014):
+> mỗi lần chuyển sang `COMPLETED`/`FAILED` ghi một event với eventId tất định, giao at-least-once (bên
+> tiêu thụ phải khử trùng); `MANUAL_REVIEW` không phát event. Đề xuất ban đầu giữ lại bên dưới để tham khảo.
 
 - Consume `txn.event.completed.v1` / `failed` → gửi thông báo (log/email mock, tách interface
   `NotificationChannel` để sau cắm provider thật).
@@ -747,7 +753,7 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 - Ví nóng ≈ ví nguội, vì ledger chỉ chạy 1 thread consumer — chưa đo được tranh chấp khoá.
 - Tiền đúng ở cả 4 lượt (~35.700 lệnh), kể cả lượt có 350 lần gửi lại.
 
-### ✅ Definition of Done — Phase 1
+### ✅ Definition of Done — Phase 1 · **ĐÃ ĐÓNG 2026-10-18** — tổng kết: [`PR-phase-1.md`](PR-phase-1.md)
 
 > Bằng chứng 5 ô đầu: `scripts/e2e/phase1-dod.sh` (job CI `e2e`) — 52/52 kiểm tra PASS trên stack
 > thật ngày 2026-10-17 (1.5a).

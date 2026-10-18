@@ -22,10 +22,10 @@ Hệ thống ví điện tử phân tán xây bằng **Java 21 · Spring Boot 3.
 | auth-service | 8081 | Đăng ký/đăng nhập, ký JWT RS256, refresh token | ✅ |
 | common-lib | — | Money, outbox, dedup, xử lý lỗi Kafka + DLT | ✅ |
 | ledger-service | 8083 | Sổ cái double-entry (nguồn sự thật) | ✅ |
-| wallet-service | 8082 | Read model số dư (CQRS) | ⏳ Phase 1 |
-| transaction-service | 8084 | Orchestrator Saga + idempotency | ⏳ Phase 1 |
+| wallet-service | 8082 | Read model số dư (CQRS), dựng lại được từ sổ cái | ✅ |
+| transaction-service | 8084 | Nhận lệnh chuyển idempotent + Saga orchestration | ✅ |
 | bank-adapter | 8085 | Cổng ngân hàng ngoài | ⏳ Phase 2 |
-| notification-service | 8086 | Thông báo kết quả | ⏳ Phase 1 |
+| notification-service | 8086 | Thông báo kết quả | ✂️ gộp vào webhook khách hàng (Phase 5.1) — [ADR-015](docs/adr/ADR-015-product-positioning.md) |
 
 **Hạ tầng:** PostgreSQL (DB-per-service), Redis, Apache Kafka, Jaeger, Prometheus + Grafana.
 
@@ -97,7 +97,8 @@ curl http://localhost:8080/.well-known/jwks.json
 ./mvnw verify          # toàn bộ: unit + integration (cần Docker cho Testcontainers)
 ```
 
-**34 test, tất cả chạy trên Postgres + Kafka thật.** Mỗi tính chất về tiền có một test chứng minh:
+**153 test** (CI, cuối Phase 1); integration test chạy trên Postgres + Kafka thật. Mỗi tính chất về
+tiền có một test chứng minh:
 
 | Tính chất | Test |
 |---|---|
@@ -114,8 +115,15 @@ curl http://localhost:8080/.well-known/jwks.json
 | **Token ký RS256, verify được bằng khoá từ JWKS; JWKS không lộ private key** | `AuthFlowIT` |
 | **Refresh xoay vòng; dùng lại token đã thu hồi giết cả chuỗi** | `AuthFlowIT` |
 | **Bộ đếm đăng nhập sai sống sót qua rollback** | `AuthFlowIT` |
+| Tenant A không đọc/ghi được dữ liệu tenant B, kể cả khi truyền thẳng ID; `SUM = 0` theo từng tenant | `TenantIsolationIT` |
+| Ví `FROZEN` không chi được nhưng vẫn nhận; `REVERSAL` chỉ hoàn tác đúng và một lần | `AccountLifecycleIT`, `LedgerServiceIT` |
+| Read model giao hoán: event lặp/lộn thứ tự/song song → số dư khớp chính xác | `WalletProjectionIT` |
+| Rebuild ví khớp sổ cái, không làm ví khác mất tiền dù chung một event | `WalletRebuildIT` |
+| Gửi lại cùng `Idempotency-Key` → câu trả lời khớp từng byte; gửi song song → đúng một lệnh | `IdempotencyIT` (+ E2E) |
+| Câu trả lời của ledger bị mất → saga vẫn kết thúc; saga treo → `MANUAL_REVIEW` + metric cho alert | `SagaFlowIT`, `StuckSagaIT` |
+| Record và fixture của mọi topic khớp JSON Schema; message thật trên Kafka khớp schema | `EventContractTest`, `SagaFlowIT` |
 
-Độ phủ (integration): ledger-service **94,7%**, auth-service **79,8%** — có gate trong CI.
+Coverage gate trên integration test trong CI: ledger/wallet/transaction 85%, auth 70%.
 
 ### E2E — cả stack thật, qua gateway (Definition of Done Phase 1)
 
@@ -159,9 +167,14 @@ Tắt stack dev trước khi chạy (tên container `wf-*` trùng nhau). Không 
 
 ## 🗺️ Bước tiếp theo
 
-**Phase 1** — `wallet-service` (read model số dư) + `transaction-service` (Saga + idempotency key),
-để có API chuyển tiền end-to-end. Chi tiết: [roadmap §Phase 1](docs/walletflow-production-roadmap.md).
+**Phase 1 đã đóng (2026-10-18)** — API chuyển tiền chạy end-to-end qua gateway, idempotent, có Saga và
+read model. Tổng kết: [`docs/PR-phase-1.md`](docs/PR-phase-1.md).
 
-Hai việc tồn đọng của Phase 0:
-- [ ] Diễn tập restore một lần và điền RTO đo thật vào [`docs/runbooks/restore.md`](docs/runbooks/restore.md)
-- [ ] Bật branch protection trên `master` (bắt buộc PR + CI xanh)
+**Phase 2** — nạp tiền qua một cổng thanh toán thật (sandbox). Định vị sản phẩm đã chốt ở
+[ADR-015](docs/adr/ADR-015-product-positioning.md): ví đóng trước, kiến trúc Wallet-as-a-Service.
+**Luồng rút tiền ra ngoài** (phần withdraw của 2.4, cùng 2.1 HOLD phục vụ nó) chờ kết luận pháp lý.
+Chi tiết: [roadmap §Phase 2](docs/walletflow-production-roadmap.md).
+
+Tồn đọng từ Phase 0:
+- [x] Diễn tập restore và đo RTO — **4 giây**, 2026-10-16 ([`docs/runbooks/restore.md`](docs/runbooks/restore.md)); nên lặp lại định kỳ
+- [ ] Bật branch protection trên `master` (bắt buộc PR + CI xanh, gồm cả check `E2E (compose + DoD Phase 1)`)
