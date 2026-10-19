@@ -166,6 +166,36 @@ groups:
             provider trước khi làm gì — không sửa tay status sang SUCCEEDED.
           runbook: docs/runbooks/payment-provider-down.md
 
+      # Lần thu đã quá hạn phiên + grace mà vẫn PENDING (ADR-017). Lẽ ra đã kết thúc (thành công, hoặc
+      # EXPIRED khi provider khẳng định chưa thu) — còn lại tức là provider không trả lời được, báo trạng
+      # thái lơ lửng (đảo giao dịch, nghi gian lận), lệch số tiền, hoặc thuộc provider cũ. 30 phút để một
+      # lần provider chập chờn không mở ticket.
+      - alert: PendingChargeOverdue
+        expr: max by (job) (walletflow_bank_pending_overdue) > 0
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lần thu quá hạn mà chưa kết luận được ở {{ $labels.job }}"
+          description: >-
+            Tiền của người dùng có thể đã bị trừ. Tìm hàng PENDING có expires_at quá hạn trong
+            provider_transactions và đối chiếu với trang quản trị của provider — KHÔNG sửa tay status.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Lần thu đã báo EXPIRED nhưng lần hỏi xác nhận sau đó thấy provider báo đã thu / lơ lửng (ADR-017):
+      # người dùng có thể đã mất tiền mà ví không được cộng. Adapter KHÔNG tự sửa trạng thái.
+      - alert: ExpiredChargeNeedsReview
+        expr: increase(walletflow_bank_expired_needs_review_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "Lần thu đã báo hết hạn nhưng provider báo có tiền ở {{ $labels.job }}"
+          description: >-
+            Event bank.event.failed (EXPIRED) đã phát cho một lần thu mà provider nay báo đã thu hoặc trạng
+            thái lơ lửng. Đối chiếu với provider, xử lý thủ công — KHÔNG sửa tay status.
+          runbook: docs/runbooks/payment-provider-down.md
+
   - name: walletflow-availability
     interval: 30s
     rules:

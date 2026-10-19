@@ -357,6 +357,9 @@ class PendingChargeReconcilerIT {
         assertThat(failureCount()).as("lệch số không phải lỗi kỹ thuật của lần hỏi").isEqualTo(failuresBefore);
         assertThat(db.nextCheckIsInFuture(mismatched.getTransactionId()))
                 .as("đã lùi hạn, không bị hỏi dội mỗi lượt quét").isTrue();
+        assertThat(db.checkAttempts(mismatched.getTransactionId())).as("đã hỏi một lần").isEqualTo(1);
+        double firstDefer = db.secondsUntilNextCheck(mismatched.getTransactionId());
+        assertThat(firstDefer).as("lần đầu lùi recheck-after = 30s").isBetween(25.0, 30.5);
 
         assertThat(db.status(tenant, exact.getTransactionId())).isEqualTo("SUCCEEDED");
         assertThat(db.outboxEventIds(exact.getTransactionId(), WalletTopics.EVT_BANK_COMPLETED)).hasSize(1);
@@ -367,6 +370,12 @@ class PendingChargeReconcilerIT {
         assertThat(db.status(tenant, mismatched.getTransactionId())).isEqualTo("PENDING");
         assertThat(db.outboxEventIds(mismatched.getTransactionId(), WalletTopics.EVT_BANK_COMPLETED)).isEmpty();
         assertThat(amountMismatchCount() - mismatchBefore).isEqualTo(2.0);
+        // Hàng lệch số không bị hỏi đều đặn 30s mãi: lần hỏi thứ hai lùi gấp đôi (backoff cấp số, ADR-017)
+        assertThat(db.checkAttempts(mismatched.getTransactionId())).as("đã hỏi hai lần").isEqualTo(2);
+        assertThat(db.secondsUntilNextCheck(mismatched.getTransactionId()))
+                .as("lần thứ hai lùi 60s = 2 × recheck-after, lớn hơn lần đầu")
+                .isBetween(55.0, 60.5)
+                .isGreaterThan(firstDefer);
     }
 
     @Test

@@ -120,6 +120,10 @@ Chốt ngày 2026-10-18:
   tự giữa chúng.
   - Event pending muộn không được kéo giao dịch đã kết thúc lùi lại.
 
+> **Đã chốt ở [ADR-017](ADR-017-vnpay-session-expiry-log-masking.md) (2.2b):** hạn phiên 15′ + grace 15′,
+> `FAILED(EXPIRED)` chỉ khi provider khẳng định chưa thu, backoff cấp số cho mọi hàng `PENDING` (kể cả
+> hàng lệch số tiền), gauge `walletflow.bank.pending_overdue`. Phần dưới giữ nguyên làm bối cảnh.
+
 **Còn mở, phải chốt trước/trong 2.2b — lần thu `PENDING` chưa có trạng thái kết thúc:**
 - Hiện một phiên bị bỏ dở được hỏi lại mỗi `recheck-after`, mãi mãi.
 - VNPay không có phiên phía server cho tới khi người dùng mở URL, nên "không tìm thấy" là câu trả lời bình

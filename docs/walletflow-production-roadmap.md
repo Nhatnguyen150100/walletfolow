@@ -781,8 +781,8 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 
 | Mục | Trạng thái | PR |
 |---|---|---|
-| 2.2a bank-adapter — `PaymentProvider` + `MockProvider`, thu tiền idempotent, Resilience4j ([ADR-016](adr/ADR-016-bank-adapter-charge-model.md)) | 🟡 `feat/phase-2-bank-adapter` | |
-| 2.2b bank-adapter — VNPay sandbox + masking log | ⬜ | |
+| 2.2a bank-adapter — `PaymentProvider` + `MockProvider`, thu tiền idempotent, Resilience4j ([ADR-016](adr/ADR-016-bank-adapter-charge-model.md)) | ✅ | #28 |
+| 2.2b bank-adapter — VNPay sandbox, hạn phiên PENDING (15′ + grace 15′), backoff cấp số, masking log ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md)) | 🟡 `feat/phase-2-vnpay` | |
 | 2.3 Webhook ingestion | ⬜ | |
 | 2.4 Saga top-up có bù trừ | ⬜ | |
 | 2.5 Admin API & manual review | ⬜ | |
@@ -825,7 +825,8 @@ fail → tiền quay về đủ; `SUM = 0` đúng ở cả ba trạng thái.
 > - Idempotent theo `(tenant, transactionId, operation)`, khoá gửi provider tất định.
 > - Lệnh gửi lại thì phát lại câu trả lời.
 >
-> **2.2a:** khung service, `MockProvider`, Resilience4j, job đối chiếu. **2.2b:** VNPay sandbox, masking log.
+> **2.2a:** khung service, `MockProvider`, Resilience4j, job đối chiếu. **2.2b:** VNPay sandbox, masking log,
+> hạn phiên + backoff cho lần thu PENDING ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md)).
 > `payout` chưa có trong interface: phục vụ luồng rút, đang bị chặn.
 
 - Interface `PaymentProvider`: `charge(ChargeRequest) → ChargeResult`,

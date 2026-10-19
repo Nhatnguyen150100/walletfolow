@@ -134,4 +134,94 @@ public final class BankDb {
                 Boolean.class, transactionId);
         return Boolean.TRUE.equals(future);
     }
+
+    /** Số lần đã hỏi lại (cơ số của backoff). */
+    public int checkAttempts(UUID transactionId) {
+        return jdbc.queryForObject("SELECT check_attempts FROM provider_transactions WHERE transaction_id = ?",
+                Integer.class, transactionId);
+    }
+
+    /**
+     * Còn bao nhiêu giây nữa tới lần hỏi lại kế tiếp, tính bằng ĐỒNG HỒ DB (âm = đã tới hạn). Test so với giá trị
+     * mong đợi có dung sai vài giây vì giữa lúc job chạy và lúc đọc có độ trễ thật.
+     */
+    public double secondsUntilNextCheck(UUID transactionId) {
+        return jdbc.queryForObject("SELECT EXTRACT(EPOCH FROM (next_check_at - now()))::float8 "
+                + "FROM provider_transactions WHERE transaction_id = ?", Double.class, transactionId);
+    }
+
+    /**
+     * Đẩy hạn phiên về quá khứ: quá hạn + grace {@code graceSeconds} thêm {@code secondsPastGrace} giây
+     * ({@code expires_at = now() - grace - X}). X âm = đã quá hạn nhưng CÒN trong grace.
+     */
+    public void makeOverdue(UUID transactionId, long graceSeconds, long secondsPastGrace) {
+        jdbc.update("UPDATE provider_transactions SET expires_at = now() - make_interval(secs => ?) "
+                + "WHERE transaction_id = ?", graceSeconds + secondsPastGrace, transactionId);
+    }
+
+    /** Đặt hạn phiên cách bây giờ {@code seconds} giây (âm = đã quá hạn); {@code null} = hàng không có hạn (trước 2.2b). */
+    public void setExpiresInSeconds(UUID transactionId, Long seconds) {
+        if (seconds == null) {
+            jdbc.update("UPDATE provider_transactions SET expires_at = NULL WHERE transaction_id = ?", transactionId);
+            return;
+        }
+        jdbc.update("UPDATE provider_transactions SET expires_at = now() + make_interval(secs => ?) "
+                + "WHERE transaction_id = ?", seconds, transactionId);
+    }
+
+    public String failureCode(UUID tenantId, UUID transactionId) {
+        return (String) row(tenantId, transactionId).get("failure_code");
+    }
+
+    /** Giờ VN dạng yyyyMMddHHmmss của {@code provider_created_at}, do Postgres tính — độc lập với code Java của service. */
+    public String providerCreatedAtAsVnpayDate(UUID transactionId) {
+        return jdbc.queryForObject("SELECT to_char(provider_created_at AT TIME ZONE 'Asia/Ho_Chi_Minh', "
+                + "'YYYYMMDDHH24MISS') FROM provider_transactions WHERE transaction_id = ?", String.class, transactionId);
+    }
+
+    /** Khoảng cách giữa {@code expires_at} và {@code provider_created_at}, theo giây. */
+    public long sessionLifetimeSeconds(UUID transactionId) {
+        return jdbc.queryForObject("SELECT EXTRACT(EPOCH FROM (expires_at - provider_created_at))::bigint "
+                + "FROM provider_transactions WHERE transaction_id = ?", Long.class, transactionId);
+    }
+
+    /** Hạn phiên còn cách bây giờ bao nhiêu giây (đồng hồ DB). */
+    public double secondsUntilExpiry(UUID transactionId) {
+        return jdbc.queryForObject("SELECT EXTRACT(EPOCH FROM (expires_at - now()))::float8 "
+                + "FROM provider_transactions WHERE transaction_id = ?", Double.class, transactionId);
+    }
+
+    /** Đẩy lịch hỏi XÁC NHẬN của hàng FAILED(EXPIRED) về quá khứ để nó tới hạn mà không phải chờ giờ thật. */
+    public void makeExpiredConfirmationDue(UUID transactionId) {
+        jdbc.update("UPDATE provider_transactions SET next_check_at = now() - interval '5 seconds' "
+                + "WHERE transaction_id = ? AND status = 'FAILED' AND failure_code = 'EXPIRED'", transactionId);
+    }
+
+    /** next_check_at của hàng có NULL không (đã hỏi xong / không còn lịch). */
+    public boolean nextCheckIsNull(UUID transactionId) {
+        return jdbc.queryForObject("SELECT next_check_at IS NULL FROM provider_transactions WHERE transaction_id = ?",
+                Boolean.class, transactionId);
+    }
+
+    /** Gán tài khoản merchant đã tạo phiên (VNPay: vnp_TmnCode); {@code null} = hàng trước 2.2b (legacy). */
+    public void setProviderAccount(UUID transactionId, String account) {
+        jdbc.update("UPDATE provider_transactions SET provider_account = ? WHERE transaction_id = ?",
+                account, transactionId);
+    }
+
+    public String providerAccount(UUID tenantId, UUID transactionId) {
+        return (String) row(tenantId, transactionId).get("provider_account");
+    }
+
+    /** Ép hàng sang một trạng thái/mã lỗi bằng SQL — dựng hàng FAILED(mã khác) có {@code next_check_at} bất kỳ. */
+    public void forceFailed(UUID transactionId, String failureCode, boolean scheduledForConfirmation) {
+        jdbc.update("UPDATE provider_transactions SET status = 'FAILED', failure_code = ?, "
+                        + "next_check_at = CASE WHEN ? THEN now() - interval '10 seconds' END WHERE transaction_id = ?",
+                failureCode, scheduledForConfirmation, transactionId);
+    }
+
+    /** Đặt {@code check_attempts} — để dựng hàng "đã bị hỏi nhiều lần". */
+    public void setCheckAttempts(UUID transactionId, int attempts) {
+        jdbc.update("UPDATE provider_transactions SET check_attempts = ? WHERE transaction_id = ?", attempts, transactionId);
+    }
 }

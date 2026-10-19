@@ -53,6 +53,7 @@ public class ChargeService {
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final long recheckSeconds;
+    private final Duration sessionTtl;
 
     public ChargeService(ProviderTransactionRepository repository,
                          PaymentProvider provider,
@@ -60,7 +61,11 @@ public class ChargeService {
                          ProviderResponses responses,
                          ObjectMapper objectMapper,
                          PlatformTransactionManager transactionManager,
-                         @Value("${walletflow.bank.status-check.recheck-after}") Duration recheckAfter) {
+                         @Value("${walletflow.bank.status-check.recheck-after}") Duration recheckAfter,
+                         @Value("${walletflow.bank.session.ttl}") Duration sessionTtl) {
+        if (sessionTtl.isNegative() || sessionTtl.isZero()) {
+            throw new IllegalStateException("walletflow.bank.session.ttl phải dương: " + sessionTtl);
+        }
         this.repository = repository;
         this.provider = provider;
         this.events = events;
@@ -68,6 +73,7 @@ public class ChargeService {
         this.objectMapper = objectMapper;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.recheckSeconds = recheckAfter.toSeconds();
+        this.sessionTtl = sessionTtl;
     }
 
     /**
@@ -86,8 +92,9 @@ public class ChargeService {
             return claimed;
         }
 
-        ChargeResult result = provider.charge(new ChargeRequest(
-                claimed.getIdempotencyKey(), claimed.getAmountMinor(), claimed.getCurrency()));
+        // IP lấy từ lệnh đang xử lý, không từ hàng đã lưu: IP không thuộc danh tính của lần thu (ADR-017)
+        ChargeResult result = provider.charge(new ChargeRequest(claimed.getIdempotencyKey(),
+                claimed.getAmountMinor(), claimed.getCurrency(), command.clientIp(), sessionTtl));
         return transactionTemplate.execute(status -> record(claimed, result));
     }
 
@@ -103,7 +110,7 @@ public class ChargeService {
     private ProviderTransaction claim(BankChargeCommand command) {
         UUID tenantId = TenantContext.require();
         repository.insertIfAbsent(UUID.randomUUID(), tenantId, command.transactionId(),
-                EBankOperation.CHARGE.name(), provider.name(),
+                EBankOperation.CHARGE.name(), provider.name(), provider.account(),
                 idempotencyKey(tenantId, command.transactionId(), EBankOperation.CHARGE),
                 command.walletId(), command.amountMinor(), command.currency().name(), toJson(command));
 
@@ -116,10 +123,12 @@ public class ChargeService {
             throw new ConflictException("BANK_CHARGE_MISMATCH", "Giao dịch " + command.transactionId()
                     + " đã có lệnh thu với ví/số tiền/loại tiền khác");
         }
-        if (!txn.getProvider().equals(provider.name())) {
-            // Đổi provider khi còn lần thu dở dang: khoá idempotency chỉ có nghĩa ở provider cũ
+        if (!txn.getProvider().equals(provider.name()) || !txn.belongsToAccount(provider.account())) {
+            // Đổi provider/tài khoản merchant khi còn lần thu dở dang: khoá idempotency và mã tham chiếu chỉ có
+            // nghĩa ở nơi đã tạo phiên (ADR-017)
             throw new ConflictException("BANK_PROVIDER_MISMATCH", "Lần thu của giao dịch "
-                    + command.transactionId() + " thuộc provider " + txn.getProvider());
+                    + command.transactionId() + " thuộc provider " + txn.getProvider()
+                    + " / tài khoản merchant khác");
         }
         return txn;
     }
@@ -128,7 +137,7 @@ public class ChargeService {
         switch (result) {
             case ChargeResult.Created created -> repository.markPending(txn.getTenantId(), txn.getId(),
                     created.providerRef(), created.paymentUrl(), responses.json(created.rawResponse()),
-                    recheckSeconds);
+                    recheckSeconds, created.sessionCreatedAt(), created.expiresAt());
             case ChargeResult.Declined declined -> {
                 repository.markFailed(txn.getTenantId(), txn.getId(), EProviderTxnStatus.NEW.name(),
                         ProviderResponses.failureCode(declined.failureCode(), DEFAULT_DECLINE_CODE),

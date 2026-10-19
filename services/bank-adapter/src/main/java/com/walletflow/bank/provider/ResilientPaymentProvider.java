@@ -6,6 +6,7 @@ import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.timelimiter.TimeLimiter;
 
+import java.time.Instant;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
@@ -54,13 +55,27 @@ public class ResilientPaymentProvider implements PaymentProvider, AutoCloseable 
     }
 
     @Override
+    public String account() {
+        return delegate.account();
+    }
+
+    @Override
+    public boolean chargeUsesNetwork() {
+        return delegate.chargeUsesNetwork();
+    }
+
+    @Override
     public ChargeResult charge(ChargeRequest request) {
+        if (!delegate.chargeUsesNetwork()) {
+            // Không có I/O để bảo vệ; đi qua breaker thì một đợt querydr lỗi chặn luôn mọi lần tạo URL nạp tiền
+            return delegate.charge(request);
+        }
         return call("charge", () -> delegate.charge(request));
     }
 
     @Override
-    public ProviderStatus getStatus(String providerRef) {
-        return call("getStatus", () -> delegate.getStatus(providerRef));
+    public ProviderStatus getStatus(String providerRef, Instant sessionCreatedAt) {
+        return call("getStatus", () -> delegate.getStatus(providerRef, sessionCreatedAt));
     }
 
     @Override
