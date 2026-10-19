@@ -16,6 +16,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -31,7 +32,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * ({@code recheck-after × 2^n}, trần {@code max-recheck-after}), không dội đều đặn mãi.
  *
  * <p>Cuối mỗi lượt cập nhật gauge {@code walletflow.bank.pending_overdue}: số lần thu đã quá hạn + grace mà
- * vẫn PENDING — mỗi hàng là một ca cần người xem (alert {@code PendingChargeOverdue}).
+ * vẫn PENDING — mỗi hàng là một ca cần người xem (alert {@code PendingChargeOverdue}). Counter
+ * {@code walletflow.bank.expired_unconfirmed} cộng khi một hàng dùng hết lượt hỏi xác nhận (alert
+ * {@code ExpiredChargeUnconfirmed}).
  */
 @Slf4j
 @Component
@@ -47,7 +50,11 @@ public class PendingChargeReconciler {
     private final long maxRecheckSeconds;
     private final long expiryGraceSeconds;
     private final int batchSize;
+    private final int maxConfirmAttempts;
+    private final long confirmRecheckSeconds;
+    private final long maxConfirmRecheckSeconds;
     private final Counter failures;
+    private final Counter expiredUnconfirmed;
     private final AtomicLong overdue;
 
     public PendingChargeReconciler(ProviderTransactionRepository repository,
@@ -58,10 +65,23 @@ public class PendingChargeReconciler {
                                    @Value("${walletflow.bank.status-check.recheck-after}") Duration recheckAfter,
                                    @Value("${walletflow.bank.status-check.max-recheck-after}") Duration maxRecheckAfter,
                                    @Value("${walletflow.bank.session.expiry-grace}") Duration expiryGrace,
-                                   @Value("${walletflow.bank.status-check.batch-size}") int batchSize) {
+                                   @Value("${walletflow.bank.status-check.batch-size}") int batchSize,
+                                   @Value("${walletflow.bank.status-check.max-confirm-attempts}") int maxConfirmAttempts,
+                                   @Value("${walletflow.bank.session.expired-confirm-after}") Duration confirmRecheckAfter,
+                                   @Value("${walletflow.bank.status-check.max-confirm-recheck-after}") Duration maxConfirmRecheckAfter) {
         if (maxRecheckAfter.compareTo(recheckAfter) < 0) {
             throw new IllegalStateException("walletflow.bank.status-check.max-recheck-after (" + maxRecheckAfter
                     + ") phải >= recheck-after (" + recheckAfter + ")");
+        }
+        // Trần dưới: 0 nghĩa là không bao giờ hỏi xác nhận, tức là không bao giờ phát hiện được tiền về muộn.
+        // Trần trên: một con số gõ nhầm (50000) biến "có trần" thành "vô hạn" mà build vẫn xanh.
+        if (maxConfirmAttempts < 1 || maxConfirmAttempts > 50) {
+            throw new IllegalStateException("walletflow.bank.status-check.max-confirm-attempts ("
+                    + maxConfirmAttempts + ") phải nằm trong [1, 50]");
+        }
+        if (maxConfirmRecheckAfter.compareTo(confirmRecheckAfter) < 0) {
+            throw new IllegalStateException("walletflow.bank.status-check.max-confirm-recheck-after ("
+                    + maxConfirmRecheckAfter + ") phải >= session.expired-confirm-after (" + confirmRecheckAfter + ")");
         }
         this.repository = repository;
         this.statusService = statusService;
@@ -71,9 +91,15 @@ public class PendingChargeReconciler {
         this.maxRecheckSeconds = maxRecheckAfter.toSeconds();
         this.expiryGraceSeconds = expiryGrace.toSeconds();
         this.batchSize = batchSize;
+        this.maxConfirmAttempts = maxConfirmAttempts;
+        this.confirmRecheckSeconds = confirmRecheckAfter.toSeconds();
+        this.maxConfirmRecheckSeconds = maxConfirmRecheckAfter.toSeconds();
         // Đăng ký lúc khởi động để series tồn tại ở 0 (xem SagaService của transaction-service)
         this.failures = meterRegistry.counter("walletflow.bank.status_check.failures");
         this.overdue = meterRegistry.gauge("walletflow.bank.pending_overdue", new AtomicLong());
+        // COUNTER chứ không phải gauge: "vừa có N hàng hết lượt" tự hết sau cửa sổ alert, còn một gauge đếm
+        // trạng thái tích luỹ sẽ kêu mãi không tắt được (không có luồng nào đưa hàng ra khỏi điều kiện đếm)
+        this.expiredUnconfirmed = meterRegistry.counter("walletflow.bank.expired_unconfirmed");
     }
 
     /** @return số lần thu đã hỏi lại trong lượt này */
@@ -110,6 +136,11 @@ public class PendingChargeReconciler {
     /**
      * Lần hỏi xác nhận sau khi hết hạn (ADR-017): tiền có về muộn không. Lùi hạn ngay khi lấy lô như lô PENDING —
      * provider không trả lời thì hỏi lại sau {@code max-recheck-after}; có câu trả lời thì thôi hỏi.
+     *
+     * <p>Số lần hỏi có TRẦN {@code max-confirm-attempts}, nhịp giãn cấp số từ {@code session.expired-confirm-after}
+     * tới {@code max-confirm-recheck-after}. Hết lượt thì hàng thôi được hỏi và cộng vào counter
+     * {@code walletflow.bank.expired_unconfirmed}: nó cần người đối soát tay với sao kê provider, chứ không
+     * phải bị hỏi lại mãi mãi mà không ai biết.
      */
     private void confirmExpired() {
         List<ProviderTransaction> expired = transactionTemplate.execute(status -> {
@@ -117,7 +148,7 @@ public class PendingChargeReconciler {
                     provider.account(), ChargeStatusService.EXPIRED_CODE, batchSize);
             if (!rows.isEmpty()) {
                 repository.deferExpiredConfirmations(rows.stream().map(ProviderTransaction::getId).toList(),
-                        maxRecheckSeconds);
+                        ChargeStatusService.EXPIRED_CODE, confirmRecheckSeconds, maxConfirmRecheckSeconds);
             }
             return rows;
         });
@@ -128,6 +159,18 @@ public class PendingChargeReconciler {
                 failures.increment();
                 log.warn("Bank: chưa hỏi xác nhận được lần thu đã hết hạn {} (giao dịch {}) — thử lại sau: {}",
                         row.getId(), row.getTransactionId(), failure.getMessage());
+            }
+        }
+        if (!expired.isEmpty()) {
+            // SAU khi hỏi xong cả lô: hàng nào đã dùng hết hạn mức mà VẪN chưa có câu trả lời thì thôi hỏi.
+            // Hàng vừa được trả lời trong chính lượt này đã có next_check_at = NULL nên không bị tính oan.
+            Integer capped = transactionTemplate.execute(status ->
+                    repository.capExpiredConfirmations(expired.stream().map(ProviderTransaction::getId).toList(),
+                            ChargeStatusService.EXPIRED_CODE, maxConfirmAttempts));
+            if (capped != null && capped > 0) {
+                expiredUnconfirmed.increment(capped);
+                log.error("Bank: {} lần thu đã hết hạn dùng hết {} lượt hỏi xác nhận mà provider không trả lời"
+                        + " được — thôi hỏi, cần người đối soát tay với sao kê", capped, maxConfirmAttempts);
             }
         }
     }

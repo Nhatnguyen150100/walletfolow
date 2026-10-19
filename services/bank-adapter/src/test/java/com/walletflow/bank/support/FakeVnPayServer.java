@@ -106,6 +106,7 @@ public final class FakeVnPayServer implements AutoCloseable {
     private volatile boolean forgeSuccessAfterSigning;
     private volatile String forcedTmnCode;
     private volatile String forcedTxnRef;
+    private volatile String forcedCommand;
     private volatile Integer forcedHttpStatus;
     private volatile String forcedRawBody;
     private volatile Duration delay = Duration.ZERO;
@@ -252,9 +253,14 @@ public final class FakeVnPayServer implements AutoCloseable {
         this.forcedTmnCode = otherTmnCode;
     }
 
-    /** Câu trả lời đúng chữ ký nhưng nói về giao dịch khác. */
+    /** Câu trả lời đúng chữ ký nhưng nói về giao dịch khác. Chuỗi rỗng = không nói về giao dịch nào. */
     public void answerWithTxnRef(String otherTxnRef) {
         this.forcedTxnRef = otherTxnRef;
+    }
+
+    /** Câu trả lời đúng chữ ký nhưng của lệnh khác (ví dụ {@code refund} phát lại vào chỗ {@code querydr}). */
+    public void answerWithCommand(String otherCommand) {
+        this.forcedCommand = otherCommand;
     }
 
     /** Trả thẳng HTTP status này với thân rỗng (ví dụ 500). {@code null} = bình thường. */
@@ -281,6 +287,7 @@ public final class FakeVnPayServer implements AutoCloseable {
         forgeSuccessAfterSigning = false;
         forcedTmnCode = null;
         forcedTxnRef = null;
+        forcedCommand = null;
         forcedHttpStatus = null;
         forcedRawBody = null;
         delay = Duration.ZERO;
@@ -383,7 +390,7 @@ public final class FakeVnPayServer implements AutoCloseable {
             fields.put(name, "");
         }
         fields.put("vnp_ResponseId", UUID.randomUUID().toString().replace("-", ""));
-        fields.put("vnp_Command", "querydr");
+        fields.put("vnp_Command", forcedCommand != null ? forcedCommand : "querydr");
         fields.put("vnp_TmnCode", forcedTmnCode != null ? forcedTmnCode : tmnCode);
         fields.put("vnp_TxnRef", forcedTxnRef != null ? forcedTxnRef : txnRef);
         return fields;

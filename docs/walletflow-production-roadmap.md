@@ -782,7 +782,8 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | Mục | Trạng thái | PR |
 |---|---|---|
 | 2.2a bank-adapter — `PaymentProvider` + `MockProvider`, thu tiền idempotent, Resilience4j ([ADR-016](adr/ADR-016-bank-adapter-charge-model.md)) | ✅ | #28 |
-| 2.2b bank-adapter — VNPay sandbox, hạn phiên PENDING (15′ + grace 15′), backoff cấp số, masking log ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md)) | 🟡 `feat/phase-2-vnpay` | |
+| 2.2b bank-adapter — VNPay sandbox, hạn phiên PENDING (15′ + grace 15′), backoff cấp số, masking log ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md)) | ✅ | #29 |
+| 2.2c bank-adapter — siết kiểm câu trả lời `querydr` fail-closed + trần hỏi xác nhận sau EXPIRED ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendments*) | 🟡 `fix/phase-2-vnpay-querydr-guards` | |
 | 2.3 Webhook ingestion | ⬜ | |
 | 2.4 Saga top-up có bù trừ | ⬜ | |
 | 2.5 Admin API & manual review | ⬜ | |

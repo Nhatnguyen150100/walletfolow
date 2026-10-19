@@ -196,6 +196,25 @@ groups:
             thái lơ lửng. Đối chiếu với provider, xử lý thủ công — KHÔNG sửa tay status.
           runbook: docs/runbooks/payment-provider-down.md
 
+      # Lần thu đã báo EXPIRED nhưng dùng HẾT lượt hỏi xác nhận mà provider chưa bao giờ trả lời được
+      # (ADR-017). Khác ExpiredChargeNeedsReview: ở đó ta BIẾT provider nói có tiền; ở đây ta KHÔNG BIẾT gì
+      # cả — và đã thôi hỏi, nên không có gì tự giải quyết nữa. Chỉ đối soát tay với sao kê mới kết luận được.
+      # Counter chứ không gauge: một gauge đếm trạng thái tích luỹ sẽ kêu mãi không tắt được (không có luồng
+      # nào đưa hàng đã hết lượt ra khỏi điều kiện đếm), rồi bị mute — và ca thật sau đó không ai nhìn.
+      - alert: ExpiredChargeUnconfirmed
+        expr: increase(walletflow_bank_expired_unconfirmed_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lần thu hết hạn không xác nhận được ở {{ $labels.job }}"
+          description: >-
+            Adapter đã phát bank.event.failed (EXPIRED) rồi hỏi lại provider hết số lượt cho phép mà không
+            lần nào có câu trả lời đọc được. Nếu thực tế tiền ĐÃ về thì người dùng mất tiền mà ví không được
+            cộng. Tìm hàng FAILED/EXPIRED có next_check_at IS NULL và confirm_attempts >= max-confirm-attempts
+            trong provider_transactions, đối soát với sao kê provider — KHÔNG sửa tay status.
+          runbook: docs/runbooks/payment-provider-down.md
+
   - name: walletflow-availability
     interval: 30s
     rules:

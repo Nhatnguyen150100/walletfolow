@@ -217,7 +217,17 @@ public class VnPayProvider implements PaymentProvider {
         }
     }
 
-    /** Chữ ký, mã merchant, mã tham chiếu — sai bất kỳ cái nào thì câu trả lời không phải của VNPay về phiên này. */
+    /**
+     * Chữ ký, lệnh, mã merchant, mã tham chiếu — sai bất kỳ cái nào thì câu trả lời không phải của VNPay về
+     * phiên này, và "không phải về phiên này" luôn có nghĩa là KHÔNG BIẾT, không bao giờ là một kết luận.
+     *
+     * <p>Mọi điều kiện ở đây fail-closed: thiếu field cũng là sai. Một câu trả lời không chứng minh được nó
+     * nói về {@code providerRef} thì không được dùng cho việc gì — kể cả cho nhánh tưởng như vô hại
+     * {@code vnp_ResponseCode=91} ("không tìm thấy giao dịch"), vì 91 là căn cứ DUY NHẤT để
+     * {@code markExpired} kết thúc một lần thu. Nhận một câu 91 không gắn với giao dịch nào tức là cho phép
+     * phát lại nó để đánh EXPIRED một lần thu người dùng ĐÃ TRẢ TIỀN — tiền nằm ở tài khoản merchant mà ví
+     * không được cộng.
+     */
     private void verify(Map<String, String> answer, String providerRef) {
         String expected = VnPaySigner.hmacSha512(settings.hashSecret(),
                 VnPaySigner.pipeJoined(answer, RESPONSE_SIGNED_FIELDS));
@@ -225,13 +235,17 @@ public class VnPayProvider implements PaymentProvider {
             throw new ProviderUnavailableException("VNPay querydr: chữ ký câu trả lời KHÔNG hợp lệ cho " + providerRef
                     + " — bỏ qua câu trả lời");
         }
+        // Câu trả lời của lệnh khác (refund chẳng hạn) mang nghĩa hoàn toàn khác dù ký đúng bằng cùng khoá
+        if (!"querydr".equals(answer.get("vnp_Command"))) {
+            throw new ProviderUnavailableException("VNPay querydr: câu trả lời của lệnh "
+                    + answer.get("vnp_Command") + ", không phải querydr");
+        }
         if (!settings.tmnCode().equals(answer.get("vnp_TmnCode"))) {
             throw new ProviderUnavailableException("VNPay querydr: câu trả lời mang mã merchant khác");
         }
-        String txnRef = answer.get("vnp_TxnRef");
-        if (txnRef != null && !txnRef.isEmpty() && !providerRef.equals(txnRef)) {
-            throw new ProviderUnavailableException("VNPay querydr: câu trả lời nói về giao dịch " + txnRef
-                    + ", không phải " + providerRef);
+        if (!providerRef.equals(answer.get("vnp_TxnRef"))) {
+            throw new ProviderUnavailableException("VNPay querydr: câu trả lời nói về giao dịch "
+                    + answer.get("vnp_TxnRef") + ", không phải " + providerRef);
         }
     }
 
@@ -244,11 +258,7 @@ public class VnPayProvider implements PaymentProvider {
             throw new ProviderUnavailableException("VNPay querydr trả mã " + responseCode
                     + " — không kết luận được trạng thái");
         }
-        String txnRef = answer.get("vnp_TxnRef");
-        if (txnRef == null || txnRef.isEmpty()) {
-            // Câu trả lời thành công mà không nói về giao dịch nào thì không dùng được (verify đã kiểm khớp mã)
-            throw new ProviderUnavailableException("VNPay querydr: câu trả lời thành công thiếu vnp_TxnRef");
-        }
+        // vnp_TxnRef không cần kiểm lại ở đây: verify() đã bắt buộc nó khớp providerRef cho MỌI câu trả lời
         String status = answer.get("vnp_TransactionStatus");
         return switch (status == null ? "" : status) {
             // "Thành công" chỉ khi đó là giao dịch THANH TOÁN (loại 01). Loại 02/03 là hoàn toàn phần/một phần:

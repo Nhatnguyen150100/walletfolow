@@ -29,9 +29,10 @@ nhưng lệnh thu `txn.command.bank-charge.v1` không mang IP.
   - Số tiền: `vnp_Amount = amountMinor × 100`; chỉ nhận VND. Loại tiền khác thì bị từ chối
     (`CURRENCY_NOT_SUPPORTED`); quá trần `vnp_Amount` thì `AMOUNT_LIMIT_EXCEEDED`.
 - **Kết quả chỉ qua `querydr`** (ADR-016: webhook/return URL chỉ là gợi ý, IPN ở 2.3).
-  - Câu trả lời phải **qua kiểm chữ ký**, đúng `vnp_TmnCode`, đúng `vnp_TxnRef` thì mới được đọc nghĩa. Sai
-    bất kỳ cái nào thì coi là `ProviderUnavailableException`: câu trả lời giả mạo nói "đã thu" là tạo tiền từ
-    không khí.
+  - Câu trả lời phải **qua kiểm chữ ký**, đúng `vnp_Command`, đúng `vnp_TmnCode`, đúng `vnp_TxnRef` thì mới
+    được đọc nghĩa. Sai **hoặc thiếu** bất kỳ cái nào thì coi là `ProviderUnavailableException`: câu trả lời
+    giả mạo nói "đã thu" là tạo tiền từ không khí.
+  - **Mọi điều kiện fail-closed, kể cả cho `vnp_ResponseCode=91`** (cập nhật 2026-10-19, xem *Amendment 1*).
 - **Ánh xạ thận trọng:**
 
 | VNPay | Trạng thái provider | Lý do |
@@ -119,6 +120,7 @@ hạn" / "không bao giờ".
 - Gauge `walletflow.bank.pending_overdue` = số hàng `PENDING` đã quá hạn + grace, cập nhật cuối mỗi lượt
   đối chiếu. Hàng như vậy lẽ ra đã kết thúc; còn lại tức là provider không trả lời, lơ lửng, lệch số tiền,
   hoặc thuộc provider cũ. Có alert `PendingChargeOverdue` (ticket).
+- Vòng hỏi **xác nhận** sau `EXPIRED` có trần `max-confirm-attempts` (cập nhật 2026-10-19, xem *Amendment 2*).
 
 ### 5. Masking log ở common-lib, bật cho bank-adapter
 
@@ -151,6 +153,12 @@ hạn" / "không bao giờ".
     `vnp_BankCode`. Code giả định có dấu như mọi field khác.
   - Mã `91` có kèm chữ ký hay không. Nếu không, mọi phiên bỏ dở sẽ đứng `PENDING` (alert quá hạn kêu) chứ
     không hết hạn sai.
+  - **Mã `91` có echo lại `vnp_TxnRef` hay không** — quan trọng nhất trong danh sách này sau *Amendment 1*.
+    Nếu KHÔNG echo, mọi phiên bỏ dở sẽ đứng `PENDING` mãi và `PendingChargeOverdue` kêu đều: ồn ào nhưng
+    không mất tiền. Phải kiểm trước khi bật `BANK_PROVIDER=vnpay` ngoài CI; nếu đúng là không echo thì mở
+    lại quyết định này, đừng nới điều kiện kiểm.
+  - VNPay có echo `vnp_RequestId` của request vào `vnp_ResponseId` không. Nếu có thì nên kiểm thêm để chặn
+    phát lại một câu trả lời CŨ nhưng thật của chính giao dịch đó (xem *Rủi ro còn lại*).
   - `vnp_TransactionType` của giao dịch thanh toán đúng là `01` trong câu trả lời `querydr`. Nếu sandbox trả
     khác, mọi lần thu thành công sẽ thành `UNRESOLVED` (alert quá hạn kêu, không mất tiền).
 - Alert mới: `PendingChargeOverdue` (ticket) và `ExpiredChargeNeedsReview` (page). Với backoff, một hàng lỗi
@@ -174,6 +182,74 @@ hạn" / "không bao giờ".
 - **WireMock cho test:** thêm dependency. Một fake trên `HttpServer` của JDK, tự ký và kiểm chữ ký độc lập với
   code chính, kiểm được nhiều hơn.
 - **Bật masking cho mọi service ngay:** diff rộng; bank-adapter là nơi có bí mật của bên thứ ba.
+
+## Amendments
+
+Hai lỗ hổng do review độc lập của PR #29 phát hiện (sau khi #29 đã merge), sửa ở PR tiếp theo. Cả hai đều là
+**siết chặt** quyết định cũ, không đảo ngược nó.
+
+### Amendment 1 (2026-10-19) — kiểm câu trả lời `querydr` fail-closed
+
+**Vấn đề.** Bản đầu bỏ qua kiểm `vnp_TxnRef` khi field đó rỗng/thiếu, và nhánh `vnp_ResponseCode=91` trả
+`PENDING` **trước** mọi kiểm tra khác. Mà `PENDING` là căn cứ DUY NHẤT để `markExpired` kết thúc một lần thu.
+Hệ quả: một câu trả lời `91` ký đúng nhưng **không gắn với giao dịch nào** (phát lại, hoặc proxy trả bừa) ép
+được một lần thu người dùng ĐÃ TRẢ TIỀN sang `FAILED(EXPIRED)` — tiền nằm ở tài khoản merchant, ví không
+được cộng. Ngoài ra câu trả lời của **lệnh khác** (`refund`) ký bằng cùng khoá cũng được chấp nhận làm bằng
+chứng thu tiền thành công.
+
+**Quyết định.** `verify()` bắt buộc khớp `vnp_Command = querydr`, `vnp_TmnCode`, `vnp_TxnRef` cho **mọi** câu
+trả lời, không có ngoại lệ cho `91`. Thiếu field cũng là sai. Không khớp ⇒ `ProviderUnavailableException`
+("không biết"), không bao giờ là một kết luận.
+
+**Phạm vi — đọc kỹ.** Việc này chỉ chặn câu trả lời **không gắn với `providerRef` đang hỏi**. Một câu `91`
+THẬT của chính ref đó, chụp lại trước khi người dùng trả tiền rồi phát lại sau, vẫn qua được mọi kiểm tra:
+không có đối chiếu `vnp_RequestId`/`vnp_ResponseId` và không có mốc tươi. Đó vẫn là rủi ro còn lại, chỉ TLS
+chặn (xem *Rủi ro còn lại*) — đừng đọc Amendment này thành "đã đóng hẳn đường phát lại".
+
+**Đánh đổi đã chấp nhận.** Nếu VNPay thật không echo `vnp_TxnRef` khi trả `91`, phiên bỏ dở sẽ không bao giờ
+tự hết hạn mà đứng `PENDING` cho tới khi `PendingChargeOverdue` kêu. Đó là hướng an toàn: ồn ào thay vì mất
+tiền. Việc kiểm tay trên sandbox nằm ở *Hệ quả → phải kiểm tay*.
+
+**Test chứng minh.** `VnPayChargeIT.tra_loi_91_thieu_ma_tham_chieu_khong_duoc_lam_het_han` (trước khi sửa:
+hàng ra `FAILED`) và `VnPayChargeIT.tra_loi_cua_lenh_khac_khong_duoc_tin` (trước khi sửa: hàng ra `SUCCEEDED`).
+
+### Amendment 2 (2026-10-19) — trần số lần hỏi xác nhận sau `EXPIRED`
+
+**Vấn đề.** Vòng hỏi xác nhận chỉ dừng khi provider trả lời được. Provider trả mã lạ / sai chữ ký cho một ref
+vĩnh viễn thì hàng bị lùi hạn thêm `max-recheck-after` rồi quay lại lô, **mãi mãi**. Hàng đã `FAILED` nên
+`countOverdue` không đếm và `PendingChargeOverdue` không kêu — một hàng dội provider vô hạn mà không ai thấy.
+
+**Quyết định.** Thêm `walletflow.bank.status-check.max-confirm-attempts` (mặc định 5). Hết lượt thì
+`next_check_at = NULL` (rơi khỏi lô vĩnh viễn) và **counter** `walletflow.bank.expired_unconfirmed` tăng →
+alert `ExpiredChargeUnconfirmed` (ticket).
+
+- **Cột riêng `confirm_attempts`** (`V3__confirm_attempts.sql`, EXPAND-only), không dùng lại `check_attempts`:
+  - Hàng đã `EXPIRED` từ trước mang `check_attempts` tích luỹ của giai đoạn `PENDING` (6–8 lượt là thường).
+    Dùng chung cột thì chúng vượt trần ngay lần hỏi đầu — mất cơ hội phát hiện tiền về muộn và bắn alert giả.
+    Cột mới mặc định 0 nên hàng cũ nhận đủ hạn mức, **không cần backfill**.
+  - Hàng cũ đã xác nhận xong có `next_check_at` NULL và `check_attempts` lớn: dùng chung cột thì không phân
+    biệt được "đã xác nhận" với "hết lượt".
+  - Lúc rolling deploy, bản app cũ không bao giờ ghi cột này nên không làm hỏng bộ đếm của bản mới.
+- **Counter chứ không gauge.** Gauge đếm trạng thái tích luỹ sẽ kêu mãi không tắt được: không có luồng nào
+  đưa một hàng đã hết lượt ra khỏi điều kiện đếm, nên alert thứ hai không phân biệt được với alert thứ nhất
+  và cả alert sẽ bị mute. Counter + `increase(...[1h])` tự giải, đồng bộ với `expired_needs_review`.
+- **Chốt hạn mức SAU khi đã hỏi xong cả lô**, và chỉ chạm hàng còn `next_check_at`: hàng vừa nhận được câu
+  trả lời ở đúng lượt chót đã được `finishExpiredConfirmation` đưa về NULL nên không bị tính oan là "không
+  xác nhận được". Đây là ca biên thật, có test riêng.
+- **Nhịp hỏi xác nhận giãn cấp số riêng** (`session.expired-confirm-after` → `max-confirm-recheck-after`,
+  mặc định 1h → 16h), không dùng nhịp của `PENDING`. Với trần 5 lượt, cửa sổ phát hiện tiền về muộn kéo tới
+  ~T+31h. Dùng nhịp `PENDING` (trần 10 phút) thì cửa sổ chỉ còn ~50 phút — hẹp hơn nhiều so với độ trễ chốt
+  sổ thật của ngân hàng (thường tính bằng giờ tới T+1), tức là tự bịt mắt đúng thứ vòng này sinh ra để thấy.
+- Khác `ExpiredChargeNeedsReview`: ở đó ta **biết** provider nói có tiền; ở đây ta **không biết gì**, và đã
+  thôi hỏi. Chỉ đối soát tay với sao kê mới kết luận được (roadmap 3.1 tầng 3).
+
+**Test chứng minh.** `PendingExpiryIT.vong_hoi_xac_nhan_co_tran_va_keu_khi_het_luot`,
+`xac_nhan_duoc_o_luot_cuoi_thi_khong_keu` (ca biên), `hang_expired_cu_khong_bi_coi_la_het_luot` (hàng trước V3).
+
+**Còn hở.** Hàng thuộc tài khoản merchant CŨ không bao giờ được `lockDueExpiredConfirmations` lấy (lọc
+`provider_account`), nên `confirm_attempts` đứng ở 0 và chúng không vào counter này, cũng không vào
+`countOverdue` (đã `FAILED`). Nhóm này vẫn chỉ được chặn bằng quy trình xả hàng trước khi đổi tài khoản
+(runbook), chưa có alert. Ghi nhận, chưa sửa trong PR này.
 
 ## Liên quan
 
