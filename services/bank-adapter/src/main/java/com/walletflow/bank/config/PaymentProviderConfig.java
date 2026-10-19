@@ -62,14 +62,17 @@ public class PaymentProviderConfig {
             @Value("${walletflow.bank.mock.failure-rate}") double failureRate,
             @Value("${walletflow.bank.mock.decline-above-minor}") long declineAboveMinor,
             @Value("${walletflow.bank.mock.auto-settle-after:#{null}}") Duration autoSettleAfter,
-            @Value("${walletflow.bank.mock.settle-outcome}") EProviderState settleOutcome) {
+            @Value("${walletflow.bank.mock.settle-outcome}") EProviderState settleOutcome,
+            // Không có mặc định (CLAUDE.md §6): thiếu khoá thì webhook của mock TẮT, không phải mở bằng
+            // một khoá ai cũng đoán được. Chỉ test và môi trường dev tự đặt.
+            @Value("${walletflow.bank.mock.webhook-secret:#{null}}") String webhookSecret) {
         if (!allowed || environment.acceptsProfiles(Profiles.of("prod"))) {
             throw new IllegalStateException("walletflow.bank.provider=mock nhưng mock không được cho phép ở "
                     + "đây (cần walletflow.bank.mock.allowed=true và không ở profile 'prod'): MockProvider "
                     + "không thu tiền của ai nhưng saga vẫn sẽ cộng tiền thật vào ví. Từ chối khởi động.");
         }
         return new MockProvider(paymentBaseUrl, Clock.systemUTC(), latency, failureRate, declineAboveMinor,
-                autoSettleAfter, settleOutcome);
+                autoSettleAfter, settleOutcome, webhookSecret);
     }
 
     /**

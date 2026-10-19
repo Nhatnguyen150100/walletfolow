@@ -8,17 +8,31 @@ import com.walletflow.bank.provider.ProviderStatus;
 import com.walletflow.bank.provider.ProviderUnavailableException;
 import com.walletflow.bank.provider.RefundRequest;
 import com.walletflow.bank.provider.RefundResult;
+import com.walletflow.bank.provider.VerifiedWebhook;
 import com.walletflow.common.money.ECurrency;
 import lombok.extern.slf4j.Slf4j;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HexFormat;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 /**
  * Provider giả, giữ phiên trong bộ nhớ, có <b>fail injection</b> (roadmap 2.2): độ trễ, tỉ lệ lỗi kỹ
@@ -47,6 +61,12 @@ public class MockProvider implements PaymentProvider {
 
     private final ConcurrentMap<String, Session> sessionsByKey = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Session> sessionsByRef = new ConcurrentHashMap<>();
+    /**
+     * Khoá ký webhook của mock. {@code null} = KHÔNG cấu hình ⇒ mock từ chối mọi webhook. Cố ý không có giá
+     * trị mặc định (CLAUDE.md §6): thiếu bí mật thì tính năng TẮT, không bao giờ là một khoá ai cũng đoán được.
+     */
+    private final String webhookSecret;
+
     private final ConcurrentMap<String, RefundResult.Refunded> refundsByKey = new ConcurrentHashMap<>();
     private final AtomicInteger chargeCalls = new AtomicInteger();
     private final AtomicInteger failNextCalls = new AtomicInteger();
@@ -57,11 +77,13 @@ public class MockProvider implements PaymentProvider {
      *                        bấm thanh toán; {@code null} = chỉ đổi khi gọi {@link #settle}
      */
     public MockProvider(String paymentBaseUrl, Clock clock, Duration latency, double failureRate,
-                        long declineAboveMinor, Duration autoSettleAfter, EProviderState settleOutcome) {
+                        long declineAboveMinor, Duration autoSettleAfter, EProviderState settleOutcome,
+                        String webhookSecret) {
         this.paymentBaseUrl = paymentBaseUrl;
         this.clock = clock;
         this.defaults = new Settings(latency, failureRate, declineAboveMinor, autoSettleAfter, settleOutcome);
         this.settings = defaults;
+        this.webhookSecret = webhookSecret == null || webhookSecret.isBlank() ? null : webhookSecret;
         log.warn("Bank-adapter đang dùng MockProvider — KHÔNG có tiền thật nào được thu.");
     }
 
@@ -218,6 +240,51 @@ public class MockProvider implements PaymentProvider {
         chargeCalls.set(0);
         failNextCalls.set(0);
         loseNextChargeResponses.set(0);
+    }
+
+    /**
+     * Mock ký webhook cùng kiểu VNPay (HMAC-SHA512 trên chuỗi query đã sắp xếp) để test được đúng hình dạng
+     * tấn công thật, nhưng bằng tham số riêng: {@code ref} và {@code signature}.
+     *
+     * <p>Chưa cấu hình {@code walletflow.bank.mock.webhook-secret} thì mọi webhook đều bị từ chối.
+     */
+    @Override
+    public Optional<VerifiedWebhook> verifyWebhook(Map<String, String> params) {
+        String secret = webhookSecret;
+        String received = params.get("signature");
+        if (secret == null || received == null || received.isEmpty()) {
+            return Optional.empty();
+        }
+        SortedMap<String, String> signed = new TreeMap<>(params);
+        signed.remove("signature");
+        if (signed.isEmpty()) {
+            return Optional.empty();
+        }
+        // PHẢI encode cả tên lẫn giá trị, y như VNPay. Nối thô thì một giá trị chứa '&' hoặc '=' dựng ra
+        // cùng chuỗi ký với một payload khác hẳn: bắt được webhook "ref=A&state=PENDING" là phát lại được
+        // "?ref=A%26state%3DPENDING" với ĐÚNG chữ ký cũ, nhưng provider_ref ghi vào DB thành thứ khác.
+        String data = signed.entrySet().stream()
+                .map(entry -> URLEncoder.encode(entry.getKey(), StandardCharsets.US_ASCII)
+                        + "=" + URLEncoder.encode(entry.getValue(), StandardCharsets.US_ASCII))
+                .collect(Collectors.joining("&"));
+        String expected = hmacSha512(secret, data);
+        if (!MessageDigest.isEqual(expected.getBytes(StandardCharsets.US_ASCII),
+                received.toLowerCase(Locale.ROOT).getBytes(StandardCharsets.US_ASCII))) {
+            return Optional.empty();
+        }
+        String ref = signed.get("ref");
+        return Optional.of(new VerifiedWebhook(ref == null || ref.isEmpty() ? null : ref, data));
+    }
+
+    /** Dùng lại thuật toán của VNPay để mock là bản sao trung thực về hình dạng, không phải một thứ dễ hơn. */
+    private static String hmacSha512(String secret, String data) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA512");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA512"));
+            return HexFormat.of().formatHex(mac.doFinal(data.getBytes(StandardCharsets.UTF_8)));
+        } catch (GeneralSecurityException impossible) {
+            throw new IllegalStateException("JDK không có HmacSHA512", impossible);
+        }
     }
 
     private void simulateNetwork(String operation) {

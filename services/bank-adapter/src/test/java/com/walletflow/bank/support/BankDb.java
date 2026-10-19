@@ -23,6 +23,7 @@ public final class BankDb {
     public void clean() {
         jdbc.execute("DELETE FROM outbox_event");
         jdbc.execute("DELETE FROM provider_transactions");
+        jdbc.execute("DELETE FROM webhook_events");
     }
 
     /**
@@ -223,5 +224,22 @@ public final class BankDb {
     /** Đặt {@code check_attempts} — để dựng hàng "đã bị hỏi nhiều lần". */
     public void setCheckAttempts(UUID transactionId, int attempts) {
         jdbc.update("UPDATE provider_transactions SET check_attempts = ? WHERE transaction_id = ?", attempts, transactionId);
+    }
+
+    // ------------------------------------------------------------------
+    // webhook_events (2.3)
+    // ------------------------------------------------------------------
+
+    public int webhookCount() {
+        return jdbc.queryForObject("SELECT count(*) FROM webhook_events", Integer.class);
+    }
+
+    public List<Map<String, Object>> webhooks() {
+        return jdbc.queryForList("SELECT * FROM webhook_events ORDER BY received_at, id");
+    }
+
+    public int webhookCountOfRef(String providerRef) {
+        return jdbc.queryForObject("SELECT count(*) FROM webhook_events WHERE provider_ref = ?",
+                Integer.class, providerRef);
     }
 }

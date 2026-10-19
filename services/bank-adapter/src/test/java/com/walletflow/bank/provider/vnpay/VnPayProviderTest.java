@@ -6,6 +6,7 @@ import com.walletflow.bank.provider.ChargeResult;
 import com.walletflow.bank.provider.ProviderStatus;
 import com.walletflow.bank.provider.ProviderUnavailableException;
 import com.walletflow.bank.provider.RefundRequest;
+import com.walletflow.bank.provider.VerifiedWebhook;
 import com.walletflow.bank.support.FakeVnPayServer;
 import com.walletflow.common.money.ECurrency;
 import org.junit.jupiter.api.DisplayName;
@@ -16,14 +17,22 @@ import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.web.client.RestClient;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.SortedMap;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -236,6 +245,167 @@ class VnPayProviderTest {
             fake.setStatus(txnRef, transactionStatus);
             fake.setTransactionType(txnRef, transactionType);
             return against.getStatus(session.providerRef(), session.sessionCreatedAt());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // verifyWebhook — IPN (2.3). Chữ ký tính ĐỘC LẬP, không gọi VnPaySigner.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("⭐ IPN ký đúng: chấp nhận, trả vnp_TxnRef và đúng chuỗi đã ký (không gồm vnp_SecureHash)")
+    void ipn_ky_dung_duoc_chap_nhan() {
+        Map<String, String> ipn = ipnParams();
+        String data = ipnSignedData();
+        ipn.put("vnp_SecureHash", independentHmac(SECRET, data));
+
+        Optional<VerifiedWebhook> verified = provider.verifyWebhook(ipn);
+
+        assertThat(verified).isPresent();
+        assertThat(verified.get().providerRef()).isEqualTo(TXN_REF);
+        assertThat(verified.get().signedData()).isEqualTo(data);
+    }
+
+    @Test
+    @DisplayName("⭐ IPN bị sửa nội dung sau khi ký: từ chối — nếu không, ai cũng tự tuyên bố đã trả tiền")
+    void ipn_bi_sua_sau_khi_ky_bi_tu_choi() {
+        Map<String, String> ipn = ipnParams();
+        ipn.put("vnp_SecureHash", independentHmac(SECRET, ipnSignedData()));
+        ipn.put("vnp_Amount", "99900000");
+
+        assertThat(provider.verifyWebhook(ipn)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("vnp_SecureHashType KHÔNG nằm trong dữ liệu ký: gửi kèm vẫn verify được")
+    void ipn_co_secure_hash_type_van_verify_duoc() {
+        Map<String, String> ipn = ipnParams();
+        ipn.put("vnp_SecureHash", independentHmac(SECRET, ipnSignedData()));
+        ipn.put("vnp_SecureHashType", "HmacSHA512");
+
+        assertThat(provider.verifyWebhook(ipn)).isPresent();
+    }
+
+    @Test
+    @DisplayName("Tham số có giá trị RỖNG bị bỏ khỏi dữ liệu ký (quy tắc của VNPay)")
+    void ipn_tham_so_rong_khong_nam_trong_du_lieu_ky() {
+        Map<String, String> ipn = ipnParams();
+        // Chữ ký tính trên chuỗi KHÔNG có vnp_PromotionCode; gửi kèm nó rỗng vẫn phải khớp
+        ipn.put("vnp_PromotionCode", "");
+        ipn.put("vnp_SecureHash", independentHmac(SECRET, ipnSignedData()));
+
+        assertThat(provider.verifyWebhook(ipn)).isPresent();
+    }
+
+    @ParameterizedTest(name = "chữ ký [{0}]")
+    @NullSource
+    @ValueSource(strings = {"", "deadbeef", "KHONGPHAIHEX"})
+    @DisplayName("Chữ ký thiếu, rỗng hoặc sai: từ chối, không có ngoại lệ nào")
+    void ipn_chu_ky_hong_bi_tu_choi(String signature) {
+        Map<String, String> ipn = ipnParams();
+        if (signature != null) {
+            ipn.put("vnp_SecureHash", signature);
+        }
+
+        assertThat(provider.verifyWebhook(ipn)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("⭐ IPN ký đúng nhưng mang mã merchant KHÁC: từ chối — cùng chuẩn với querydr")
+    void ipn_ma_merchant_khac_bi_tu_choi() {
+        Map<String, String> ipn = ipnParams();
+        ipn.put("vnp_TmnCode", "OTHER001");
+        String data = ipnSignedData().replace("vnp_TmnCode=WFTEST01", "vnp_TmnCode=OTHER001");
+        ipn.put("vnp_SecureHash", independentHmac(SECRET, data));
+
+        assertThat(provider.verifyWebhook(ipn)).isEmpty();
+    }
+
+    @ParameterizedTest(name = "vnp_TxnRef = [{0}]")
+    @ValueSource(strings = {"co ky tu la!", "qua-dai-vi-co-gach", "ref@voi#ky$tu%la"})
+    @DisplayName("vnp_TxnRef không đúng khuôn Alphanumeric: vẫn hợp lệ chữ ký nhưng providerRef là null "
+            + "(mã dài hơn cột provider_ref sẽ thành lỗi ghi DB → 500)")
+    void ipn_txn_ref_sai_khuon_thi_khong_lay_lam_ref(String txnRef) {
+        Optional<VerifiedWebhook> verified = provider.verifyWebhook(signedIpnWithTxnRef(txnRef));
+
+        assertThat(verified).isPresent();
+        assertThat(verified.get().providerRef()).isNull();
+    }
+
+    /** IPN tối giản mang {@code txnRef} đã cho, ký đúng — để soi riêng khuôn của mã tham chiếu. */
+    private static Map<String, String> signedIpnWithTxnRef(String txnRef) {
+        SortedMap<String, String> sorted = new TreeMap<>();
+        sorted.put("vnp_TmnCode", "WFTEST01");
+        sorted.put("vnp_TxnRef", txnRef);
+        String data = sorted.entrySet().stream()
+                .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.US_ASCII)
+                        + "=" + URLEncoder.encode(e.getValue(), StandardCharsets.US_ASCII))
+                .collect(Collectors.joining("&"));
+        Map<String, String> ipn = new LinkedHashMap<>(sorted);
+        ipn.put("vnp_SecureHash", independentHmac(SECRET, data));
+        return ipn;
+    }
+
+    @Test
+    @DisplayName("vnp_TxnRef dài 101 ký tự (quá khuôn VNPay và quá cột provider_ref): providerRef là null")
+    void ipn_txn_ref_qua_dai_thi_khong_lay_lam_ref() {
+        Optional<VerifiedWebhook> verified = provider.verifyWebhook(signedIpnWithTxnRef("x".repeat(101)));
+
+        assertThat(verified).isPresent();
+        assertThat(verified.get().providerRef()).isNull();
+    }
+
+    @Test
+    @DisplayName("IPN chỉ có mỗi chữ ký (không tham số nào khác): từ chối, không bao giờ coi là hợp lệ")
+    void ipn_rong_bi_tu_choi() {
+        assertThat(provider.verifyWebhook(Map.of("vnp_SecureHash", independentHmac(SECRET, "")))).isEmpty();
+        assertThat(provider.verifyWebhook(Map.of())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("IPN ký đúng nhưng KHÔNG mang vnp_TxnRef: vẫn hợp lệ nhưng providerRef là null (tầng trên tự xử)")
+    void ipn_thieu_txn_ref_van_hop_le_nhung_khong_co_ref() {
+        Map<String, String> ipn = new LinkedHashMap<>();
+        ipn.put("vnp_ResponseCode", "00");
+        ipn.put("vnp_TmnCode", "WFTEST01");
+        ipn.put("vnp_SecureHash", independentHmac(SECRET, "vnp_ResponseCode=00&vnp_TmnCode=WFTEST01"));
+
+        Optional<VerifiedWebhook> verified = provider.verifyWebhook(ipn);
+
+        assertThat(verified).isPresent();
+        assertThat(verified.get().providerRef()).isNull();
+    }
+
+    /**
+     * IPN giống thật: có {@code vnp_OrderInfo} mang KHOẢNG TRẮNG (phải thành {@code +} trong chuỗi ký) và
+     * {@code vnp_PayDate}. Fixture toàn chữ-số sẽ không chạm tới quy tắc encode — đúng chỗ rủi ro nhất.
+     */
+    private static Map<String, String> ipnParams() {
+        Map<String, String> ipn = new LinkedHashMap<>();
+        ipn.put("vnp_TxnRef", TXN_REF);
+        ipn.put("vnp_Amount", "15000000");
+        ipn.put("vnp_ResponseCode", "00");
+        ipn.put("vnp_TmnCode", "WFTEST01");
+        ipn.put("vnp_OrderInfo", "Nap tien vi " + TXN_REF);
+        ipn.put("vnp_BankCode", "NCB");
+        ipn.put("vnp_PayDate", "20261018143500");
+        return ipn;
+    }
+
+    /** Chuỗi ký của {@link #ipnParams()}: sắp theo tên, encode US-ASCII (dấu cách thành {@code +}). */
+    private static String ipnSignedData() {
+        return "vnp_Amount=15000000&vnp_BankCode=NCB&vnp_OrderInfo=Nap+tien+vi+" + TXN_REF
+                + "&vnp_PayDate=20261018143500&vnp_ResponseCode=00&vnp_TmnCode=WFTEST01&vnp_TxnRef=" + TXN_REF;
+    }
+
+    /** HMAC-SHA512 viết lại trong test — một lỗi ở VnPaySigner không được tự xác nhận chính nó. */
+    private static String independentHmac(String secret, String data) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA512");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA512"));
+            return HexFormat.of().formatHex(mac.doFinal(data.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception impossible) {
+            throw new IllegalStateException(impossible);
         }
     }
 

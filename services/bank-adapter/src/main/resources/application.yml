@@ -107,6 +107,10 @@ walletflow:
       # Phiên tự "được trả" sau chừng này — thay cho người dùng bấm thanh toán trên máy dev
       auto-settle-after: PT10S
       settle-outcome: SUCCEEDED
+      # Khoá ký webhook của mock (/webhooks/mock). KHÔNG có mặc định (CLAUDE.md §6): thiếu thì webhook của
+      # mock TẮT HẲN — mọi request bị 401 — chứ không bao giờ mở bằng một khoá ai cũng đoán được.
+      # Chỉ đặt ở máy dev và test. Xem ADR-018 §7.
+      webhook-secret: ${BANK_MOCK_WEBHOOK_SECRET:}
 
 eureka:
   client:
