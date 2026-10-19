@@ -68,6 +68,15 @@ walletflow:
       recheck-after: PT30S
       max-recheck-after: PT10M
       batch-size: 50
+      # Trần số lần hỏi XÁC NHẬN sau khi đã EXPIRED. Hết lượt thì thôi hỏi và cộng counter
+      # walletflow.bank.expired_unconfirmed — ca phải đối soát tay với sao kê provider. Không có trần thì
+      # một hàng provider không bao giờ trả lời được sẽ bị hỏi lại mãi mãi, mà nó đã FAILED nên
+      # countOverdue không đếm và không alert nào kêu.
+      max-confirm-attempts: 5
+      # Nhịp hỏi xác nhận giãn cấp số từ session.expired-confirm-after (1h): 1h, 2h, 4h, 8h, 16h — với trần
+      # 5 lượt thì cửa sổ phát hiện tiền về muộn kéo tới ~T+31h. Phải rộng hơn nhịp PENDING rất nhiều: tiền
+      # về muộn là do ngân hàng chốt sổ chậm, thường tính bằng giờ tới T+1, không phải bằng phút.
+      max-confirm-recheck-after: PT16H
     # Chỉ có tác dụng khi provider = vnpay. Mọi biến VNPAY_* BẮT BUỘC, không có mặc định — kể cả URL: URL
     # sandbox lọt lên môi trường thật là "thu" tiền giả mà cộng tiền thật (profile prod từ chối sandbox).
     vnpay:

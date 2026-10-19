@@ -391,6 +391,54 @@ class VnPayChargeIT {
         assertThat(db.status(tenant, row.getTransactionId())).isEqualTo("SUCCEEDED");
     }
 
+    @Test
+    @DisplayName("⭐ Câu trả lời 91 KHÔNG mang vnp_TxnRef: không chứng minh được nói về phiên nào → quá hạn + grace vẫn KHÔNG hết hạn "
+            + "(một câu '91' phát lại không được phép kết thúc một lần thu ĐÃ TRẢ TIỀN)")
+    void tra_loi_91_thieu_ma_tham_chieu_khong_duoc_lam_het_han() {
+        ProviderTransaction row = createPending(60_000, "203.0.113.7");
+        fake.pay(row.getPaymentUrl());                  // người dùng ĐÃ trả tiền
+        db.makeOverdue(row.getTransactionId(), GRACE_SECONDS, 60);
+        double failuresBefore = failureCount();
+
+        // Câu trả lời ký đúng, đúng merchant, nhưng rỗng vnp_TxnRef: không gắn với giao dịch nào
+        fake.respondWithCode("91");
+        fake.answerWithTxnRef("");
+
+        assertThat(reconciler.reconcile()).isEqualTo(1);
+
+        assertThat(db.status(tenant, row.getTransactionId()))
+                .as("không biết câu trả lời nói về phiên nào thì không kết luận")
+                .isEqualTo("PENDING");
+        assertThat(db.failureCode(tenant, row.getTransactionId())).isNull();
+        assertThat(failureCount() - failuresBefore).as("tính là lỗi kỹ thuật, không phải câu trả lời").isEqualTo(1.0);
+        assertThat(db.outboxEventIds(row.getTransactionId(), WalletTopics.EVT_BANK_FAILED)).isEmpty();
+
+        // Trả lời tử tế trở lại: tiền đã trả được nhận ra, hàng chốt SUCCEEDED chứ không phải EXPIRED
+        fake.respondWithCode(null);
+        fake.answerWithTxnRef(null);
+        assertThat(reconciler.reconcile()).isEqualTo(1);
+        assertThat(db.status(tenant, row.getTransactionId())).isEqualTo("SUCCEEDED");
+    }
+
+    @Test
+    @DisplayName("Câu trả lời ký đúng nhưng của lệnh khác (vnp_Command != querydr): không được tin, PENDING + đếm lỗi")
+    void tra_loi_cua_lenh_khac_khong_duoc_tin() {
+        ProviderTransaction row = createPending(60_000, "203.0.113.7");
+        fake.pay(row.getPaymentUrl());
+        double failuresBefore = failureCount();
+
+        fake.answerWithCommand("refund");
+
+        assertThat(reconciler.reconcile()).isEqualTo(1);
+        assertThat(db.status(tenant, row.getTransactionId())).isEqualTo("PENDING");
+        assertThat(failureCount() - failuresBefore).isEqualTo(1.0);
+        assertThat(db.outboxEventIds(row.getTransactionId(), WalletTopics.EVT_BANK_COMPLETED)).isEmpty();
+
+        fake.answerWithCommand(null);
+        assertThat(reconciler.reconcile()).isEqualTo(1);
+        assertThat(db.status(tenant, row.getTransactionId())).isEqualTo("SUCCEEDED");
+    }
+
     @ParameterizedTest(name = "thân trả lời: [{0}]")
     @ValueSource(strings = {"<html>Bad gateway</html>", "", "[]", "null", "{\"vnp_ResponseCode\":\"00\",\"vnp_TransactionStatus\":\"00\"}"})
     @DisplayName("Câu trả lời rác (không phải JSON, rỗng, không phải object, không có chữ ký): PENDING + đếm lỗi, không completed")

@@ -1,4 +1,4 @@
-# Runbook — `PaymentProviderDown` / `BankStatusCheckFailing` / `ProviderAmountMismatch` / `PendingChargeOverdue` / `ExpiredChargeNeedsReview`
+# Runbook — `PaymentProviderDown` / `BankStatusCheckFailing` / `ProviderAmountMismatch` / `PendingChargeOverdue` / `ExpiredChargeNeedsReview` / `ExpiredChargeUnconfirmed`
 
 > **`PaymentProviderDown` — mức page.** Circuit breaker của bank-adapter đang mở: cổng thanh toán lỗi
 > liên tục (timeout, 5xx, mất kết nối) nên adapter ngừng gọi ra ngoài.
@@ -115,6 +115,39 @@ khoản người dùng mà ví không được cộng.
 - Adapter **không** tự sửa trạng thái; **KHÔNG** sửa tay sang `SUCCEEDED` (saga đã kết thúc giao dịch).
   Hướng xử lý: hoàn tiền cho người dùng qua provider, hoặc ghi bút toán nạp bù qua admin API (2.5) — ghi lại
   trong ticket cho tới lúc đó.
+
+## `ExpiredChargeUnconfirmed` — mức ticket
+
+Một lần thu đã kết thúc `FAILED(EXPIRED)`, rồi adapter hỏi lại provider **hết số lượt cho phép**
+(`walletflow.bank.status-check.max-confirm-attempts`, mặc định 5) mà **không lần nào** có câu trả lời đọc
+được. Khác `ExpiredChargeNeedsReview`: ở đó ta biết provider nói có tiền; ở đây ta **không biết gì cả**, và
+adapter đã thôi hỏi — sẽ không có gì tự giải quyết nữa.
+
+```sql
+SELECT id, tenant_id, transaction_id, provider_ref, amount_minor, provider_created_at, updated_at
+  FROM provider_transactions
+ WHERE status = 'FAILED' AND failure_code = 'EXPIRED'
+   AND next_check_at IS NULL AND confirm_attempts >= 5    -- = max-confirm-attempts
+ ORDER BY updated_at DESC;
+```
+
+- Alert là **counter** (`increase(...[1h])`), nên nó tự tắt sau một giờ không có ca mới. Kêu lại nghĩa là có
+  ca MỚI, không phải ca cũ chưa đóng — đừng mute.
+- Nguyên nhân hay gặp: provider đổi hợp đồng câu trả lời, `provider_created_at` sai nên VNPay luôn nói
+  "không tìm thấy" mà không ký đúng, hoặc mạng ra provider hỏng suốt cả cửa sổ hỏi (~31 giờ với cấu hình
+  mặc định).
+- Đối soát **tay** với sao kê/settlement của provider theo `provider_ref`. Đây là đúng việc mà đối soát tầng
+  3 (roadmap 3.1) sẽ tự động hoá; tới lúc đó phải làm tay.
+- Nếu sao kê cho thấy tiền ĐÃ về: xử lý như `ExpiredChargeNeedsReview` (hoàn tiền, hoặc nạp bù qua admin API
+  2.5). **KHÔNG** sửa tay `status`.
+- Nếu sao kê cho thấy không có giao dịch: kết luận `EXPIRED` là đúng, đóng ticket. Không cần sửa gì trong DB
+  — counter đã kêu xong và không kêu lại cho hàng này nữa.
+
+> **Hàng của tài khoản merchant CŨ không vào alert này.** `lockDueExpiredConfirmations` lọc theo
+> `provider_account`, nên hàng của `VNPAY_TMN_CODE` cũ không bao giờ được hỏi, `confirm_attempts` đứng ở 0 và
+> chúng cũng không vào `PendingChargeOverdue` (đã `FAILED`). Nhóm này hiện chỉ được chặn bằng quy trình xả
+> hàng trước khi đổi tài khoản (mục trên) — chưa có alert. Nếu vừa đổi tài khoản, phải tự rà bằng tay:
+> `SELECT * FROM provider_transactions WHERE provider_account <> '<tmn hiện tại>' AND status IN ('PENDING','FAILED');`
 
 ## Liên quan
 ADR-016, ADR-017, `ResilientPaymentProvider`, `ChargeService`, `ChargeStatusService`, `PendingChargeReconciler`,

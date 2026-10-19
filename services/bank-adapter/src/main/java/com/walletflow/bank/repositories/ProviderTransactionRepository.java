@@ -149,6 +149,9 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
      * <p>{@code next_check_at} KHÔNG về NULL: đặt lịch một lần hỏi xác nhận sau {@code confirmAfterSeconds} để
      * phát hiện tiền về muộn (xem {@link #lockDueExpiredConfirmations}).
      *
+     * <p>Bộ đếm lượt hỏi xác nhận nằm ở cột RIÊNG {@code confirm_attempts} (V3), mặc định 0, nên không phải
+     * đặt lại gì ở đây: {@code check_attempts} giữ nguyên nghĩa "số lần đã hỏi lúc còn PENDING".
+     *
      * @return 1 nếu vừa hết hạn; 0 nếu chưa tới hạn, hoặc luồng khác đã chuyển hàng trước
      */
     @Modifying(clearAutomatically = true)
@@ -186,14 +189,48 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
                                                           @Param("expiredCode") String expiredCode,
                                                           @Param("limit") int limit);
 
-    /** Lùi lần hỏi xác nhận — gọi ngay khi lấy lô; provider không trả lời thì lần sau hỏi lại. */
+    /**
+     * Lùi lần hỏi xác nhận — gọi ngay khi lấy lô; provider không trả lời thì lần sau hỏi lại, nhịp giãn theo
+     * cấp số như lô PENDING ({@code baseSeconds × 2^confirm_attempts}, trần {@code maxSeconds}). Tiền về muộn
+     * do ngân hàng chốt sổ chậm có thể tới sau nhiều giờ, nên cửa sổ hỏi phải rộng hơn nhịp PENDING rất nhiều.
+     *
+     * <p>Vế phải của SET đọc {@code confirm_attempts} CŨ.
+     */
     @Modifying
     @Query(value = """
             UPDATE provider_transactions
-               SET next_check_at = now() + make_interval(secs => :seconds), updated_at = now()
-             WHERE id IN (:ids) AND status = 'FAILED'
+               SET next_check_at = now() + make_interval(secs => LEAST(:maxSeconds,
+                                        :baseSeconds * power(2, LEAST(confirm_attempts, 30)))),
+                   confirm_attempts = confirm_attempts + 1, updated_at = now()
+             WHERE id IN (:ids) AND status = 'FAILED' AND failure_code = :expiredCode
             """, nativeQuery = true)
-    int deferExpiredConfirmations(@Param("ids") Collection<UUID> ids, @Param("seconds") long seconds);
+    int deferExpiredConfirmations(@Param("ids") Collection<UUID> ids,
+                                  @Param("expiredCode") String expiredCode,
+                                  @Param("baseSeconds") long baseSeconds,
+                                  @Param("maxSeconds") long maxSeconds);
+
+    /**
+     * Hàng đã dùng hết hạn mức hỏi xác nhận MÀ VẪN chưa có câu trả lời: {@code next_check_at} về NULL, thôi
+     * hỏi vĩnh viễn. Không có trần thì một hàng provider không bao giờ trả lời được sẽ bị hỏi lại mỗi
+     * {@code max-confirm-recheck-after} mãi mãi — mà nó đã là {@code FAILED} nên {@link #countOverdue} không
+     * đếm và không alert nào kêu.
+     *
+     * <p>Gọi SAU khi đã hỏi xong cả lô, và chỉ chạm hàng còn {@code next_check_at}: hàng vừa nhận được câu
+     * trả lời trong chính lượt này đã được {@link #finishExpiredConfirmation} đưa về NULL nên KHÔNG bị tính
+     * là "không xác nhận được". Đây là ca biên thật: câu trả lời tới đúng ở lượt chót.
+     *
+     * @return số hàng vừa hết lượt; caller cộng vào counter {@code walletflow.bank.expired_unconfirmed}
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE provider_transactions
+               SET next_check_at = NULL, updated_at = now()
+             WHERE id IN (:ids) AND status = 'FAILED' AND failure_code = :expiredCode
+               AND next_check_at IS NOT NULL AND confirm_attempts >= :maxAttempts
+            """, nativeQuery = true)
+    int capExpiredConfirmations(@Param("ids") Collection<UUID> ids,
+                                @Param("expiredCode") String expiredCode,
+                                @Param("maxAttempts") int maxAttempts);
 
     /** Đã có câu trả lời xác nhận (dù tốt hay xấu): không hỏi nữa. */
     @Modifying(clearAutomatically = true)

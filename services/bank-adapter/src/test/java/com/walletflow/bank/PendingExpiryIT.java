@@ -65,6 +65,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         "walletflow.bank.session.expiry-grace=PT15M",
         // Sau EXPIRED hỏi xác nhận một lần sau chừng này (ADR-017) — phát hiện tiền về muộn
         "walletflow.bank.session.expired-confirm-after=PT1H",
+        "walletflow.bank.status-check.max-confirm-attempts=3",
+        // Nhịp hỏi xác nhận: 1h rồi chạm trần 2h — test đẩy next_check_at về quá khứ nên không chờ giờ thật
+        "walletflow.bank.status-check.max-confirm-recheck-after=PT2H",
         "walletflow.bank.resilience.timeout=1s"
 })
 @Testcontainers
@@ -74,9 +77,12 @@ class PendingExpiryIT {
     private static final long GRACE_SECONDS = 900;
     /** Phải khớp walletflow.bank.session.expired-confirm-after ở trên. */
     private static final long CONFIRM_SECONDS = 3600;
+    /** Phải khớp walletflow.bank.status-check.max-confirm-attempts ở trên. */
+    private static final int MAX_CONFIRM_ATTEMPTS = 3;
     private static final String NEEDS_REVIEW_METRIC = "walletflow.bank.expired_needs_review";
     private static final String FAILURE_METRIC = "walletflow.bank.status_check.failures";
     private static final String OVERDUE_GAUGE = "walletflow.bank.pending_overdue";
+    private static final String UNCONFIRMED_METRIC = "walletflow.bank.expired_unconfirmed";
 
     @SuppressWarnings("resource")
     @Container
@@ -530,7 +536,8 @@ class PendingExpiryIT {
     }
 
     @Test
-    @DisplayName("Hỏi xác nhận mà provider không trả lời: counter không đổi, đếm lỗi +1, lùi hạn (max-recheck-after) chứ không bỏ; hồi lại thì phát hiện")
+    @DisplayName("Hỏi xác nhận mà provider không trả lời: counter không đổi, đếm lỗi +1, lùi hạn theo nhịp XÁC NHẬN "
+            + "(expired-confirm-after, không phải nhịp PENDING) chứ không bỏ; hồi lại thì phát hiện")
     void xac_nhan_provider_khong_tra_loi_thi_hoi_lai_sau() {
         ProviderTransaction row = expire(tenant, 40_000);
         db.makeExpiredConfirmationDue(row.getTransactionId());
@@ -545,8 +552,9 @@ class PendingExpiryIT {
         assertThat(db.status(tenant, row.getTransactionId())).isEqualTo("FAILED");
         assertThat(db.nextCheckIsNull(row.getTransactionId())).as("chưa có câu trả lời: phải còn lịch hỏi lại").isFalse();
         assertThat(db.secondsUntilNextCheck(row.getTransactionId()))
-                .as("lùi max-recheck-after = 2 phút, không phải 1 giờ và không dội mỗi lượt")
-                .isBetween(115.0, 120.5);
+                .as("lượt xác nhận đầu lùi expired-confirm-after = 1 giờ (nhịp này rộng hơn nhịp PENDING rất "
+                        + "nhiều vì tiền về muộn tính bằng giờ), và không dội mỗi lượt")
+                .isBetween(CONFIRM_SECONDS - 5.0, CONFIRM_SECONDS + 0.5);
         assertThat(reconciler.reconcile()).isZero();
         assertThat(failureCount() - failuresBefore).as("chưa tới hạn: không hỏi lại").isEqualTo(1.0);
 
@@ -557,6 +565,85 @@ class PendingExpiryIT {
         assertThat(reviewCount() - reviewBefore).isEqualTo(1.0);
         assertThat(db.status(tenant, row.getTransactionId())).isEqualTo("FAILED");
         assertThat(db.nextCheckIsNull(row.getTransactionId())).isTrue();
+    }
+
+    @Test
+    @DisplayName("⭐ Provider không bao giờ xác nhận được: vòng hỏi dừng đúng sau max-confirm-attempts lượt, counter "
+            + "expired_unconfirmed +1 — không dội provider mãi mãi trong im lặng")
+    void vong_hoi_xac_nhan_co_tran_va_keu_khi_het_luot() {
+        ProviderTransaction row = expire(tenant, 45_000);
+        double failuresBefore = failureCount();
+        double unconfirmedBefore = unconfirmedCount();
+        mock.failNextCalls(100);   // provider hỏng hẳn với hàng này
+
+        for (int round = 1; round < MAX_CONFIRM_ATTEMPTS; round++) {
+            db.makeExpiredConfirmationDue(row.getTransactionId());
+            assertThat(reconciler.reconcile()).as("lượt %d", round).isZero();
+            assertThat(db.nextCheckIsNull(row.getTransactionId()))
+                    .as("lượt %d: còn hạn mức thì phải còn lịch hỏi lại", round).isFalse();
+            assertThat(unconfirmedCount()).as("lượt %d: chưa hết lượt thì chưa kêu", round).isEqualTo(unconfirmedBefore);
+        }
+
+        db.makeExpiredConfirmationDue(row.getTransactionId());
+        assertThat(reconciler.reconcile()).as("lượt cuối").isZero();
+
+        assertThat(db.status(tenant, row.getTransactionId())).isEqualTo("FAILED");
+        assertThat(db.failureCode(tenant, row.getTransactionId())).isEqualTo("EXPIRED");
+        assertThat(failureCount() - failuresBefore)
+                .as("mỗi lượt hỏi hỏng đếm đúng một lỗi").isEqualTo((double) MAX_CONFIRM_ATTEMPTS);
+        assertThat(db.nextCheckIsNull(row.getTransactionId()))
+                .as("hết lượt thì thôi hỏi — không còn được lấy vào lô").isTrue();
+        assertThat(unconfirmedCount() - unconfirmedBefore)
+                .as("hàng không xác nhận được phải kêu đúng một lần, không biến mất im lặng").isEqualTo(1.0);
+
+        // Không makeExpiredConfirmationDue nữa: hàng phải nằm im kể cả khi job chạy tiếp
+        double failuresAfterCap = failureCount();
+        assertThat(reconciler.reconcile()).isZero();
+        assertThat(failureCount()).as("không hỏi provider nữa").isEqualTo(failuresAfterCap);
+        assertThat(unconfirmedCount() - unconfirmedBefore).as("không kêu lại").isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("⭐ Câu trả lời tới đúng LƯỢT CUỐI (ca biên): hàng coi như đã xác nhận, counter expired_unconfirmed KHÔNG tăng")
+    void xac_nhan_duoc_o_luot_cuoi_thi_khong_keu() {
+        ProviderTransaction row = expire(tenant, 46_000);
+        double unconfirmedBefore = unconfirmedCount();
+        mock.failNextCalls(MAX_CONFIRM_ATTEMPTS - 1);
+
+        for (int round = 1; round < MAX_CONFIRM_ATTEMPTS; round++) {
+            db.makeExpiredConfirmationDue(row.getTransactionId());
+            assertThat(reconciler.reconcile()).isZero();
+        }
+
+        // Lượt cuối: provider trả lời được — đây đúng lúc capExpiredConfirmations cũng chạm trần
+        mock.settle(row.getProviderRef(), EProviderState.SUCCEEDED);
+        db.makeExpiredConfirmationDue(row.getTransactionId());
+        double reviewBefore = reviewCount();
+        assertThat(reconciler.reconcile()).isZero();
+
+        assertThat(reviewCount() - reviewBefore).as("tiền về muộn vẫn được phát hiện").isEqualTo(1.0);
+        assertThat(db.nextCheckIsNull(row.getTransactionId())).isTrue();
+        assertThat(unconfirmedCount() - unconfirmedBefore)
+                .as("đã có câu trả lời, chỉ là trả lời ở lượt chót — không phải ca 'không biết gì'").isZero();
+    }
+
+    @Test
+    @DisplayName("⭐ Hàng EXPIRED có sẵn từ trước V3 (check_attempts lớn của giai đoạn PENDING): vẫn được hỏi đủ hạn mức, "
+            + "không bị kết luận hết lượt ngay và không kêu oan")
+    void hang_expired_cu_khong_bi_coi_la_het_luot() {
+        ProviderTransaction row = expire(tenant, 47_000);
+        // Dựng lại hàng kiểu cũ: bộ đếm giai đoạn PENDING còn nguyên, chưa từng có confirm_attempts
+        db.setCheckAttempts(row.getTransactionId(), 9);
+        double unconfirmedBefore = unconfirmedCount();
+        mock.failNextCalls(100);
+
+        db.makeExpiredConfirmationDue(row.getTransactionId());
+        assertThat(reconciler.reconcile()).isZero();
+
+        assertThat(db.nextCheckIsNull(row.getTransactionId()))
+                .as("check_attempts của giai đoạn PENDING không được tiêu hạn mức hỏi xác nhận").isFalse();
+        assertThat(unconfirmedCount()).isEqualTo(unconfirmedBefore);
+        assertThat(db.checkAttempts(row.getTransactionId())).as("cột cũ không bị đụng tới").isEqualTo(9);
     }
 
     @Test
@@ -669,5 +756,9 @@ class PendingExpiryIT {
 
     private double overdueGauge() {
         return meterRegistry.get(OVERDUE_GAUGE).gauge().value();
+    }
+
+    private double unconfirmedCount() {
+        return meterRegistry.get(UNCONFIRMED_METRIC).counter().count();
     }
 }
