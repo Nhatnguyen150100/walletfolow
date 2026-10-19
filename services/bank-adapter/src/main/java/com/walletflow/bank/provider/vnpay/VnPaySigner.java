@@ -43,11 +43,25 @@ final class VnPaySigner {
 
     /** Query string kèm {@code vnp_SecureHash}. Tham số rỗng bị bỏ, như mẫu của VNPay. */
     static String signedQuery(SortedMap<String, String> params, String hashSecret) {
-        String query = params.entrySet().stream()
+        // Dùng chung một cách dựng với chiều NHẬN (ipnSignedData): nếu hai chiều lệch nhau dù chỉ quy tắc
+        // encode, thì hoặc ta ký sai (VNPay từ chối) hoặc ta kiểm sai (nhận cả chữ ký giả)
+        String query = ipnSignedData(params);
+        return query + "&vnp_SecureHash=" + hmacSha512(hashSecret, query);
+    }
+
+    /**
+     * Chuỗi được ký của một IPN: ĐÚNG cách dựng như {@link #signedQuery} nhưng không có phần
+     * {@code &vnp_SecureHash=…}. VNPay ký trên chính chuỗi query nó gửi đi, nên muốn kiểm thì phải dựng
+     * lại y hệt — kể cả quy tắc bỏ tham số rỗng và encode dấu cách thành {@code +}.
+     *
+     * <p>Người gọi phải loại {@code vnp_SecureHash} và {@code vnp_SecureHashType} khỏi {@code params}
+     * trước: hai trường đó không nằm trong dữ liệu ký.
+     */
+    static String ipnSignedData(SortedMap<String, String> params) {
+        return params.entrySet().stream()
                 .filter(entry -> entry.getValue() != null && !entry.getValue().isEmpty())
                 .map(entry -> encode(entry.getKey()) + "=" + encode(entry.getValue()))
                 .collect(Collectors.joining("&"));
-        return query + "&vnp_SecureHash=" + hmacSha512(hashSecret, query);
     }
 
     /** Dữ liệu ký của API: các giá trị theo đúng thứ tự, {@code null} thành chuỗi rỗng, nối bằng {@code |}. */

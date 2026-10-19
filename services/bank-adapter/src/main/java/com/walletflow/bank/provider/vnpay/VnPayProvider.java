@@ -12,6 +12,7 @@ import com.walletflow.bank.provider.ProviderStatus;
 import com.walletflow.bank.provider.ProviderUnavailableException;
 import com.walletflow.bank.provider.RefundRequest;
 import com.walletflow.bank.provider.RefundResult;
+import com.walletflow.bank.provider.VerifiedWebhook;
 import com.walletflow.common.money.ECurrency;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
@@ -24,8 +25,11 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * Cổng VNPay, API 2.1.0, luồng chuyển hướng (ADR-016 §7, ADR-017).
@@ -68,6 +72,8 @@ public class VnPayProvider implements PaymentProvider {
     static final long MAX_AMOUNT_MINOR = 9_999_999_999L;
     /** {@code vnp_TransactionType} của giao dịch thanh toán (02/03 là hoàn tiền toàn phần/một phần). */
     static final String PAYMENT_TRANSACTION_TYPE = "01";
+    /** Khuôn {@code vnp_TxnRef} theo tài liệu VNPay: Alphanumeric, tối đa 100 ký tự. */
+    private static final Pattern VALID_TXN_REF = Pattern.compile("[A-Za-z0-9]{1,100}");
 
     /** Thứ tự ký của request querydr — theo tài liệu VNPay, không được đổi. */
     private static final String[] QUERY_SIGNED_FIELDS = {"vnp_RequestId", "vnp_Version", "vnp_Command",
@@ -179,6 +185,41 @@ public class VnPayProvider implements PaymentProvider {
     @Override
     public RefundResult refund(RefundRequest request) {
         throw new UnsupportedOperationException("VNPay refund chưa được hỗ trợ (roadmap 2.4)");
+    }
+
+    /**
+     * IPN của VNPay được ký trên CHÍNH chuỗi query nó gửi, nên kiểm bằng cách dựng lại chuỗi đó rồi so
+     * HMAC — cùng một hàm dựng với chiều gửi ({@link VnPaySigner#ipnSignedData}).
+     *
+     * <p>Fail-closed: thiếu {@code vnp_SecureHash}, sai chữ ký, hoặc payload rỗng đều là không hợp lệ.
+     * {@code vnp_SecureHash} và {@code vnp_SecureHashType} bị loại khỏi dữ liệu ký — chúng không được ký.
+     */
+    @Override
+    public Optional<VerifiedWebhook> verifyWebhook(Map<String, String> params) {
+        String received = params.get("vnp_SecureHash");
+        if (received == null || received.isEmpty() || params.isEmpty()) {
+            return Optional.empty();
+        }
+        SortedMap<String, String> signed = new TreeMap<>(params);
+        signed.remove("vnp_SecureHash");
+        signed.remove("vnp_SecureHashType");
+        if (signed.isEmpty()) {
+            return Optional.empty();
+        }
+        String data = VnPaySigner.ipnSignedData(signed);
+        if (!VnPaySigner.signatureMatches(VnPaySigner.hmacSha512(settings.hashSecret(), data), received)) {
+            return Optional.empty();
+        }
+        // Cùng chuẩn với getStatus: câu trả lời mang mã merchant khác không nói gì về phiên của ta
+        if (!settings.tmnCode().equals(signed.get("vnp_TmnCode"))) {
+            return Optional.empty();
+        }
+        // Mã tham chiếu chỉ ĐỌC ra ở đây; việc nó có khớp lần thu nào không là của tầng trên. Chỉ nhận mã
+        // đúng khuôn VNPay (Alphanumeric): mã dài hơn cột provider_ref sẽ thành lỗi ghi DB → 500, và một
+        // mã chứa ký tự lạ thì chắc chắn không tra được lần thu nào.
+        String txnRef = signed.get("vnp_TxnRef");
+        return Optional.of(new VerifiedWebhook(VALID_TXN_REF.matcher(txnRef == null ? "" : txnRef).matches()
+                ? txnRef : null, data));
     }
 
     private String post(Map<String, String> body) {

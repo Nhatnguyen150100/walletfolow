@@ -783,8 +783,9 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 |---|---|---|
 | 2.2a bank-adapter — `PaymentProvider` + `MockProvider`, thu tiền idempotent, Resilience4j ([ADR-016](adr/ADR-016-bank-adapter-charge-model.md)) | ✅ | #28 |
 | 2.2b bank-adapter — VNPay sandbox, hạn phiên PENDING (15′ + grace 15′), backoff cấp số, masking log ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md)) | ✅ | #29 |
-| 2.2c bank-adapter — siết kiểm câu trả lời `querydr` fail-closed + trần hỏi xác nhận sau EXPIRED ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendments*) | 🟡 `fix/phase-2-vnpay-querydr-guards` | |
-| 2.3 Webhook ingestion | ⬜ | |
+| 2.2c bank-adapter — siết kiểm câu trả lời `querydr` fail-closed + trần hỏi xác nhận sau EXPIRED ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendments*) | ✅ | #30 |
+| 2.3a Webhook ingestion — nhận & xác thực, chống phát lại ([ADR-018](adr/ADR-018-webhook-ingestion.md)) | 🟡 `feat/phase-2-webhook-ingest` | |
+| 2.3b Webhook ingestion — worker xử lý bất đồng bộ + return URL | ⬜ | |
 | 2.4 Saga top-up có bù trừ | ⬜ | |
 | 2.5 Admin API & manual review | ⬜ | |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |

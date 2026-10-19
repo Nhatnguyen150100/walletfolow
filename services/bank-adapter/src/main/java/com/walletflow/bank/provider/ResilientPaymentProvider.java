@@ -7,6 +7,8 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.timelimiter.TimeLimiter;
 
 import java.time.Instant;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
@@ -81,6 +83,12 @@ public class ResilientPaymentProvider implements PaymentProvider, AutoCloseable 
     @Override
     public RefundResult refund(RefundRequest request) {
         return call("refund", () -> delegate.refund(request));
+    }
+
+    /** Kiểm chữ ký là tính toán cục bộ, không có I/O — không đi qua breaker/bulkhead/timeout. */
+    @Override
+    public Optional<VerifiedWebhook> verifyWebhook(Map<String, String> params) {
+        return delegate.verifyWebhook(params);
     }
 
     /** Để quan sát và để test đưa mạch về trạng thái ban đầu. */

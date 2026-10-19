@@ -82,6 +82,38 @@ class JwtAuthenticationFilterTest {
   }
 
   @Test
+  @DisplayName("⭐ /webhooks/** công khai (provider không có JWT của ta), nhưng header danh tính client tự gửi vẫn bị xoá")
+  void webhook_cong_khai_nhung_van_xoa_header_danh_tinh() {
+    MockServerWebExchange exchange = MockServerWebExchange.from(
+        MockServerHttpRequest.get("/webhooks/vnpay?vnp_TxnRef=abc")
+            .header(HDR_TENANT_ID, FORGED_TENANT)
+            .header(HDR_USER_ID, UUID.randomUUID().toString()));
+
+    filter.filter(exchange, chain).block();
+
+    assertThat(forwarded.get()).as("webhook phải đi qua được, provider không có token").isNotNull();
+    assertThat(forwarded.get().getHeaders().get(HDR_TENANT_ID))
+        .as("bank-adapter suy tenant từ provider_ref, KHÔNG bao giờ từ header của người gửi webhook")
+        .isNull();
+    assertThat(forwarded.get().getHeaders().get(HDR_USER_ID)).isNull();
+  }
+
+  @Test
+  @DisplayName("⭐ Đi vòng qua /webhooks/ để tới path cần đăng nhập: chặn — tiền tố công khai mới không được mở đường vào ví")
+  void khong_di_vong_qua_webhooks_de_vao_path_bao_ve() {
+    MockServerWebExchange exchange = MockServerWebExchange.from(
+        MockServerHttpRequest.get("/webhooks/../api/v1/wallets/me")
+            .header(HDR_USER_ID, UUID.randomUUID().toString()));
+
+    filter.filter(exchange, chain).block();
+
+    assertThat(forwarded.get()).as("không được xuống downstream").isNull();
+    assertThat(exchange.getResponse().getStatusCode())
+        .as("chặn ở bước 0 (path đi vòng) trước mọi so khớp tiền tố, nên là 400 chứ không phải 401")
+        .isEqualTo(HttpStatus.BAD_REQUEST);
+  }
+
+  @Test
   @DisplayName("Path bảo vệ: tenant lấy từ claim tid, giá trị client tự gửi bị ghi đè")
   void tenant_lay_tu_token_khong_lay_tu_client() {
     String userId = UUID.randomUUID().toString();
