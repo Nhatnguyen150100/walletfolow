@@ -269,6 +269,56 @@ class ChargeIdempotencyIT {
         }
     }
 
+    /**
+     * Hồi quy cho lỗi làm đỏ master sau #31: bảng có HAI khoá unique luôn trùng nhau theo dữ liệu
+     * ({@code (tenant, giao dịch, thao tác)} và {@code (provider, idempotency_key)} — khoá sinh tất định từ bộ
+     * ba kia). {@code ON CONFLICT (cột của khoá thứ nhất)} chỉ "không làm gì" khi Postgres đụng ĐÚNG khoá đó;
+     * hai INSERT đồng thời có lúc đụng khoá thứ hai trước và nổ {@code 23505}. Một vòng thì lúc đỏ lúc xanh
+     * (CI của PR xanh, CI của master đỏ) — nhiều vòng thì lộ ổn định.
+     */
+    @Test
+    @DisplayName("⭐ 40 vòng × 12 lệnh trùng đồng thời: không lần giành quyền nào nổ lỗi unique — mỗi lệnh đều nhận câu trả lời")
+    void nhieu_vong_lenh_trung_dong_thoi_khong_bao_gio_no_loi_unique() throws Exception {
+        int rounds = 40;
+        int threads = 12;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            for (int round = 0; round < rounds; round++) {
+                BankChargeCommand command = BankFixtures.freshCharge(10_000 + round);
+                CountDownLatch ready = new CountDownLatch(threads);
+                CountDownLatch go = new CountDownLatch(1);
+                List<Future<ProviderTransaction>> futures = new ArrayList<>();
+                for (int i = 0; i < threads; i++) {
+                    futures.add(pool.submit(() -> {
+                        ready.countDown();
+                        go.await();
+                        return charge(tenant, command);
+                    }));
+                }
+                assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+                go.countDown();
+                List<ProviderTransaction> results = new ArrayList<>();
+                for (Future<ProviderTransaction> future : futures) {
+                    // Ném ExecutionException (bọc DataIntegrityViolationException) nếu một lần giành quyền nổ
+                    ProviderTransaction result = future.get(60, TimeUnit.SECONDS);
+                    assertThat(result.getStatus())
+                            .as("vòng %d: lệnh trùng nhận đúng câu trả lời, không phải lỗi kỹ thuật", round)
+                            .isEqualTo(EProviderTxnStatus.PENDING);
+                    results.add(result);
+                }
+                assertThat(db.rowCount(tenant, command.transactionId())).as("vòng %d: một hàng", round).isEqualTo(1);
+                // Tính chất về TIỀN dưới cuộc đua lặp lại: mỗi lệnh đúng một phiên ở provider (không thu hai lần)
+                assertThat(mock.sessionCount()).as("vòng %d: tổng số phiên = số lệnh khác nhau", round)
+                        .isEqualTo(round + 1);
+                assertThat(results.stream().map(ProviderTransaction::getProviderRef).distinct().toList())
+                        .as("vòng %d: mọi luồng nhận cùng một provider_ref", round)
+                        .hasSize(1);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
     // ------------------------------------------------------------------
     // Tenant
     // ------------------------------------------------------------------

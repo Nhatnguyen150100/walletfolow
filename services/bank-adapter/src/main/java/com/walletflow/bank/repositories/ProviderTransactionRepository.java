@@ -29,6 +29,19 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
      * gì — Postgres bắt câu INSERT thứ hai chờ ở unique key tới khi câu thứ nhất commit, nên không bao giờ
      * có hai hàng, và không có lần nào vỡ unique key thành lỗi.
      *
+     * <p><b>{@code ON CONFLICT DO NOTHING} không chỉ định khoá — cố ý.</b> Hai khoá unique luôn trùng nhau theo
+     * dữ liệu: {@code (tenant, giao dịch, thao tác)} và {@code (provider, idempotency_key)} (khoá sinh tất định từ
+     * bộ ba kia). Chỉ định một khoá thì chỉ khoá đó (arbiter) được xử lý "không làm gì"; khoá unique khác được
+     * kiểm như INSERT thường — luồng thua chờ luồng thắng commit rồi nổ {@code 23505}. Lệnh trùng khi đó không
+     * nhận được câu trả lời mà bị thử lại rồi vào DLT (từng làm đỏ master, {@code ChargeIdempotencyIT}). Không
+     * chỉ định thì xung đột ở khoá nào cũng là "đã có".
+     *
+     * <p>Không nuốt nhầm gì: xung đột thật chỉ ở {@code idempotency_key} với bộ ba khác là không thể (khoá băm từ
+     * chính bộ ba); {@code uk_provider_txn_provider_ref} không bao giờ đụng lúc INSERT ({@code provider_ref}
+     * NULL, NULLS DISTINCT); {@code id} ngẫu nhiên. Nếu một xung đột lạ xảy ra, {@code claim} đọc lại theo bộ ba
+     * không thấy hàng → lỗi kỹ thuật → DLT (fail-closed), không bao giờ thu hai lần. <b>Thêm unique index mới vào
+     * bảng này thì nó cũng bị "nuốt" theo cách đó — cân nhắc lại câu này khi thêm.</b>
+     *
      * @return 1 nếu vừa tạo, 0 nếu đã có
      */
     @Modifying
@@ -38,7 +51,7 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
                     wallet_id, amount_minor, currency, status, raw_request, created_at, updated_at)
             VALUES (:id, :tenantId, :transactionId, :operation, :provider, :providerAccount, :idempotencyKey,
                     :walletId, :amountMinor, :currency, 'NEW', CAST(:rawRequest AS jsonb), now(), now())
-            ON CONFLICT (tenant_id, transaction_id, operation) DO NOTHING
+            ON CONFLICT DO NOTHING
             """, nativeQuery = true)
     int insertIfAbsent(@Param("id") UUID id,
                        @Param("tenantId") UUID tenantId,

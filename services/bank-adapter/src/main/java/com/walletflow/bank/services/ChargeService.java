@@ -117,7 +117,8 @@ public class ChargeService {
         ProviderTransaction txn = repository.findByTenantIdAndTransactionIdAndOperation(
                         tenantId, command.transactionId(), EBankOperation.CHARGE)
                 .orElseThrow(() -> new IllegalStateException(
-                        "Vừa giành quyền mà không đọc lại được lần thu của giao dịch " + command.transactionId()));
+                        "Vừa giành quyền mà không đọc lại được lần thu của giao dịch " + command.transactionId()
+                                + " (xung đột ở một khoá unique khác của provider_transactions?)"));
 
         if (!txn.sameChargeAs(command)) {
             throw new ConflictException("BANK_CHARGE_MISMATCH", "Giao dịch " + command.transactionId()
