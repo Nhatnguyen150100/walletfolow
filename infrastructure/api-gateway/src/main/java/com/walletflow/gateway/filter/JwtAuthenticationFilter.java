@@ -82,7 +82,10 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
       "/actuator/**",
       // Webhook/IPN của cổng thanh toán (roadmap 2.3): provider không có JWT của ta. Ranh giới tin cậy
       // là CHỮ KÝ, kiểm ở bank-adapter — không phải đường dẫn này. Rate limit theo IP ở route.
-      "/webhooks/**");
+      "/webhooks/**",
+      // Trang người dùng quay về sau khi trả tiền (roadmap 2.3b): trình duyệt tới thẳng từ provider nên
+      // không mang JWT. Cũng chỉ chữ ký mới được tin, và endpoint chỉ ĐỌC trạng thái.
+      "/payments/return/**");
 
   @Override
   public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {

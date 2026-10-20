@@ -77,6 +77,20 @@ spring:
                 redis-rate-limiter.replenishRate: 20
                 redis-rate-limiter.burstCapacity: 40
 
+        # Trang người dùng quay về sau khi trả tiền (roadmap 2.3b): CÔNG KHAI, trình duyệt tới thẳng từ
+        # provider nên không mang JWT. Chỉ ĐỌC trạng thái, ranh giới tin cậy vẫn là chữ ký.
+        # Nhịp rộng hơn webhook: người dùng bấm F5 là chuyện thường, và mỗi lần chỉ là một câu SELECT.
+        - id: bank-payment-return
+          uri: lb://BANK-ADAPTER
+          predicates:
+            - Path=/payments/return/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@ipKeyResolver}"
+                redis-rate-limiter.replenishRate: 30
+                redis-rate-limiter.burstCapacity: 60
+
 jwt:
   # Gateway CHỈ verify. Nó lấy public key qua JWKS và không hề biết private key —
   # nên gateway bị chiếm cũng không phát hành được token. Xem ADR-009.

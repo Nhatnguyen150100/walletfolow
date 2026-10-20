@@ -242,4 +242,42 @@ public final class BankDb {
         return jdbc.queryForObject("SELECT count(*) FROM webhook_events WHERE provider_ref = ?",
                 Integer.class, providerRef);
     }
+
+    /** Hàng webhook theo mã tham chiếu (đọc thẳng, không qua repository của production). */
+    public Map<String, Object> webhookOfRef(String providerRef) {
+        return jdbc.queryForMap("SELECT * FROM webhook_events WHERE provider_ref = ?", providerRef);
+    }
+
+    /**
+     * Một webhook của provider KHÁC (ví dụ trước khi đổi cấu hình) — dựng bằng SQL vì service chỉ ghi
+     * được webhook của provider đang chạy.
+     *
+     * @return id của hàng
+     */
+    public UUID insertWebhookOfProvider(String provider, String providerRef) {
+        UUID id = UUID.randomUUID();
+        jdbc.update("INSERT INTO webhook_events (id, provider, provider_event_id, provider_ref, raw_payload, "
+                        + "received_at) VALUES (?, ?, ?, ?, 'seed', now())",
+                id, provider, UUID.randomUUID().toString().replace("-", "") + "0".repeat(32), providerRef);
+        return id;
+    }
+
+    public Map<String, Object> webhookById(UUID id) {
+        return jdbc.queryForMap("SELECT * FROM webhook_events WHERE id = ?", id);
+    }
+
+    /** Đẩy hạn thử lại về quá khứ để webhook "tới hạn" mà không phải chờ giờ thật. */
+    public void makeWebhookDue(String providerRef) {
+        jdbc.update("UPDATE webhook_events SET next_attempt_at = now() - interval '5 seconds' "
+                + "WHERE provider_ref = ? AND processed_at IS NULL", providerRef);
+    }
+
+    /**
+     * Còn bao nhiêu giây nữa tới lần thử kế tiếp, tính bằng ĐỒNG HỒ DB (âm = đã tới hạn). Test so với giá
+     * trị mong đợi có dung sai vì giữa lúc worker chạy và lúc đọc có độ trễ thật.
+     */
+    public double secondsUntilNextWebhookAttempt(String providerRef) {
+        return jdbc.queryForObject("SELECT EXTRACT(EPOCH FROM (next_attempt_at - now()))::float8 "
+                + "FROM webhook_events WHERE provider_ref = ?", Double.class, providerRef);
+    }
 }

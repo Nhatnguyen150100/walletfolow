@@ -11,12 +11,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
 /**
  * Nhận webhook/IPN của cổng thanh toán (roadmap 2.3, ADR-018). Endpoint CÔNG KHAI — gateway không kiểm
@@ -79,45 +75,13 @@ public class WebhookController {
     }
 
     private WebhookIngestService.Outcome ingest(String provider, HttpServletRequest request) {
-        Optional<Map<String, String>> params = singleValuedParams(request);
+        Optional<Map<String, String>> params = SignedParams.singleValued(request);
         if (params.isEmpty()) {
             // Tham số lặp tên: provider thật không gửi thế. Chọn bừa một giá trị là mở đường lách chữ ký
             // (ký trên giá trị này, cho ta đọc giá trị kia), nên từ chối thẳng.
             log.debug("Bank: webhook {} có tham số lặp tên — từ chối", provider);
             return WebhookIngestService.Outcome.REJECTED;
         }
-        return ingestService.accept(provider, params.get(), rawPayload(request, params.get()));
-    }
-
-    /**
-     * Bằng chứng đối soát. Với GET thì là nguyên văn query string. Với POST (tham số nằm ở body form,
-     * {@code getQueryString()} rỗng) thì dựng lại từ chính tập tham số ĐÃ kiểm chữ ký — nếu không, cột
-     * {@code raw_payload} sẽ rỗng và ta lưu một "bằng chứng" không chứng minh được gì.
-     */
-    private static String rawPayload(HttpServletRequest request, Map<String, String> params) {
-        String query = request.getQueryString();
-        if (query != null && !query.isBlank()) {
-            return query;
-        }
-        return params.entrySet().stream()
-                .map(entry -> URLEncoder.encode(entry.getKey(), StandardCharsets.UTF_8)
-                        + "=" + URLEncoder.encode(entry.getValue(), StandardCharsets.UTF_8))
-                .collect(Collectors.joining("&"));
-    }
-
-    /** {@code Optional.empty()} nếu có bất kỳ tham số nào xuất hiện nhiều hơn một lần. */
-    private static Optional<Map<String, String>> singleValuedParams(HttpServletRequest request) {
-        Map<String, String> params = new LinkedHashMap<>();
-        for (Map.Entry<String, String[]> entry : request.getParameterMap().entrySet()) {
-            String[] values = entry.getValue();
-            if (values == null || values.length == 0) {
-                continue;
-            }
-            if (values.length > 1) {
-                return Optional.empty();
-            }
-            params.put(entry.getKey(), values[0]);
-        }
-        return Optional.of(params);
+        return ingestService.accept(provider, params.get(), SignedParams.rawPayload(request, params.get()));
     }
 }

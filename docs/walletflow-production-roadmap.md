@@ -777,7 +777,7 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 > Tương ứng M4 của master plan, cộng phần webhook (master plan chưa đề cập nhưng là **phần khó
 > nhất trong thực tế**).
 
-### Trạng thái Phase 2 (cập nhật 2026-10-18)
+### Trạng thái Phase 2 (cập nhật 2026-10-20)
 
 | Mục | Trạng thái | PR |
 |---|---|---|
@@ -785,8 +785,8 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.2b bank-adapter — VNPay sandbox, hạn phiên PENDING (15′ + grace 15′), backoff cấp số, masking log ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md)) | ✅ | #29 |
 | 2.2c bank-adapter — siết kiểm câu trả lời `querydr` fail-closed + trần hỏi xác nhận sau EXPIRED ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendments*) | ✅ | #30 |
 | 2.3a Webhook ingestion — nhận & xác thực, chống phát lại ([ADR-018](adr/ADR-018-webhook-ingestion.md)) | ✅ | #31 |
-| fix — lệnh thu trùng đồng thời nổ `23505` ở khoá unique thứ hai (master đỏ sau #31) | 🟡 `fix/bank-charge-claim-race` | |
-| 2.3b Webhook ingestion — worker xử lý bất đồng bộ + return URL | ⬜ | |
+| fix — lệnh thu trùng đồng thời nổ `23505` ở khoá unique thứ hai (master đỏ sau #31) | ✅ | #32 |
+| 2.3b Webhook ingestion — worker xử lý bất đồng bộ + trang quay về ([ADR-018](adr/ADR-018-webhook-ingestion.md) *Amendments*) | 🟡 `feat/phase-2-webhook-worker` | |
 | 2.4 Saga top-up có bù trừ | ⬜ | |
 | 2.5 Admin API & manual review | ⬜ | |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
@@ -863,8 +863,10 @@ Cổng thanh toán báo kết quả bằng webhook — và webhook thì **trùng
 - Nguyên tắc vàng: **webhook là gợi ý, không phải sự thật**. Với giao dịch quan trọng, luôn
   `getStatus(providerRef)` để xác nhận lại trước khi ghi sổ.
 
-**Test chứng minh:** `WebhookIT` — chữ ký sai bị từ chối; webhook trùng chỉ ghi sổ một lần; webhook
-success đến sau khi đã đánh fail → đi vào `MANUAL_REVIEW` chứ không âm thầm ghi đè.
+**Test chứng minh:** `WebhookIT` — chữ ký sai bị từ chối; webhook trùng chỉ ghi sổ một lần. `WebhookWorkerIT`
+(2.3b) — webhook nói "đã thu" mà provider nói chưa thì KHÔNG ghi tiền; webhook success đến sau khi đã đánh
+fail → không ghi đè, bật metric cần-người-xem (bảng `MANUAL_REVIEW` để 2.5, xem ADR-018 *Amendments*).
+`PaymentReturnIT` (2.3b) — tham số redirect không bao giờ là kết quả.
 
 ## 2.4 — Saga top-up & withdraw có bù trừ · 5 ngày
 

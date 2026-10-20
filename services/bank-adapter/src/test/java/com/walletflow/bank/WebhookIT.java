@@ -60,8 +60,10 @@ import static org.assertj.core.api.Assertions.assertThat;
         "walletflow.bank.provider=mock",
         "walletflow.bank.mock.allowed=true",
         "walletflow.bank.mock.auto-settle-after=",
-        // Job đối chiếu không được chạy xen vào: test này chỉ nói về việc NHẬN webhook
+        // Job đối chiếu và worker webhook đều không được chạy xen vào: test này chỉ nói về việc NHẬN
+        // webhook. Worker (2.3b) có chạy thì nó sẽ đóng processed_at ngay sau lưng test.
         "walletflow.bank.status-check.enabled=false",
+        "walletflow.bank.webhook.enabled=false",
         "walletflow.bank.mock.webhook-secret=" + WebhookIT.SECRET
 })
 @Testcontainers
@@ -114,8 +116,10 @@ class WebhookIT {
         assertThat(rows).hasSize(1);
         assertThat(rows.get(0).get("provider")).isEqualTo("mock");
         assertThat(rows.get(0).get("provider_ref")).isEqualTo("MOCK-REF-1");
-        assertThat(rows.get(0).get("processed_at")).as("worker 2.3b chưa chạy").isNull();
-        assertThat(rows.get(0).get("tenant_id")).as("tenant chỉ suy ra được khi tra provider_ref (2.3b)").isNull();
+        assertThat(rows.get(0).get("processed_at")).as("việc nhận chỉ GHI, worker mới xử lý").isNull();
+        assertThat(rows.get(0).get("tenant_id"))
+                .as("tenant chỉ suy ra được khi tra provider_ref — việc của worker, xem WebhookWorkerIT")
+                .isNull();
         assertThat((String) rows.get(0).get("provider_event_id")).as("SHA-256 hex").hasSize(64);
     }
 

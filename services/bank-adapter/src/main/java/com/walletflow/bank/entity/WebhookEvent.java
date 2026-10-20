@@ -47,6 +47,17 @@ public class WebhookEvent {
     @Column(name = "processed_at")
     private Instant processedAt;
 
+    /** Số lượt worker đã lấy hàng này ra xử lý; tăng ngay khi lấy lô, trước khi gọi provider (V5). */
+    @Column(nullable = false)
+    private int attempts;
+
+    @Column(name = "next_attempt_at", nullable = false)
+    private Instant nextAttemptAt;
+
+    /** Vì sao hàng ngừng được xử lý — chỉ để vận hành đọc; xem {@link com.walletflow.bank.enums.EWebhookOutcome}. */
+    @Column(length = 24)
+    private String outcome;
+
     // raw_payload cố ý không map: nó chỉ là bằng chứng đối soát, đọc bằng SQL khi điều tra. Kéo cả
     // payload vào mọi lần đọc entity là tốn vô ích, và dễ khiến ai đó log nguyên nó ra.
 }
