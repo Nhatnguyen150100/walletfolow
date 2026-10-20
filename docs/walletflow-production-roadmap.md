@@ -786,13 +786,15 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.2c bank-adapter — siết kiểm câu trả lời `querydr` fail-closed + trần hỏi xác nhận sau EXPIRED ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendments*) | ✅ | #30 |
 | 2.3a Webhook ingestion — nhận & xác thực, chống phát lại ([ADR-018](adr/ADR-018-webhook-ingestion.md)) | ✅ | #31 |
 | fix — lệnh thu trùng đồng thời nổ `23505` ở khoá unique thứ hai (master đỏ sau #31) | ✅ | #32 |
-| 2.3b Webhook ingestion — worker xử lý bất đồng bộ + trang quay về ([ADR-018](adr/ADR-018-webhook-ingestion.md) *Amendments*) | 🟡 `feat/phase-2-webhook-worker` | |
-| 2.4 Saga top-up có bù trừ | ⬜ | |
+| 2.3b Webhook ingestion — worker xử lý bất đồng bộ + trang quay về ([ADR-018](adr/ADR-018-webhook-ingestion.md) *Amendments*) | ✅ | #33 |
+| 2.4a Saga top-up — nhận lệnh nạp, ghi sổ sau khi provider xác nhận ([ADR-019](adr/ADR-019-topup-saga.md)) | 🟡 `feat/phase-2-topup-saga` | |
+| 2.4b Saga top-up — bù trừ: hoàn tiền tự động khi ledger từ chối ([ADR-019](adr/ADR-019-topup-saga.md)) | ⬜ | |
 | 2.5 Admin API & manual review | ⬜ | |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 
 Đường găng nạp tiền: **2.2a → 2.2b → 2.3 → 2.4 (top-up)**. DoD ô "rút tiền" chưa đạt được khi 2.1 còn bị
-chặn.
+chặn. 2.4 tách hai PR: **2.4a** nối đủ đường nạp (mọi ca mất tiền dừng ở `MANUAL_REVIEW` —
+[runbook](runbooks/topup-stuck.md)), **2.4b** thay chỗ chờ người đó bằng hoàn tiền tự động.
 
 ## 2.1 — Mô hình HOLD / available balance (GAP-A2) · 3 ngày 🔴
 
@@ -869,6 +871,11 @@ fail → không ghi đè, bật metric cần-người-xem (bảng `MANUAL_REVIEW
 `PaymentReturnIT` (2.3b) — tham số redirect không bao giờ là kết quả.
 
 ## 2.4 — Saga top-up & withdraw có bù trừ · 5 ngày
+
+> **Hình dạng thật sau 2.4a** ([ADR-019](adr/ADR-019-topup-saga.md)): `PROCESSING → AWAITING_PAYMENT →
+> POSTING → COMPLETED`. Bước mở đường tới ledger là `bank.event.completed.v1` (bank-adapter đã tự
+> `getStatus`), **không** phải webhook — webhook chỉ kích hoạt việc hỏi lại (ADR-016 §1).
+> Ledger từ chối lệnh nạp ⇒ `MANUAL_REVIEW`, không phải `FAILED`: tiền đã thu của người dùng rồi.
 
 **Top-up** (nạp): `PENDING → AWAITING_PAYMENT → (webhook) → POSTING → COMPLETED`
 - Tiền chỉ vào ví **sau khi** ledger ghi xong, không phải khi nhận webhook.

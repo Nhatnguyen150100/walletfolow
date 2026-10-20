@@ -57,7 +57,38 @@ public interface SagaRepository extends Repository<SagaState, UUID> {
                     @Param("eventId") UUID eventId,
                     @Param("deadlineSeconds") long deadlineSeconds);
 
-    /** Đẩy hạn chót của một saga xử lý lỗi ra sau, để nó không chặn đầu hàng đợi của job quét. */
+    /**
+     * Chuyển saga sang bước kế tiếp: eventId MỚI, hạn chót mới, đếm lần thử về 1 (bước mới có ngân
+     * sách thử lại của riêng nó). Dùng cho nạp tiền khi provider đã xác nhận thu được tiền:
+     * {@code BANK_CHARGE -> POST_JOURNAL}.
+     *
+     * <p>Điều kiện {@code current_step = :fromStep AND step_status = 'SENT'} khiến câu này chỉ ăn MỘT
+     * lần: {@code BankCompleted} lặp lại gặp bước đã đổi và không làm gì, nên không có lệnh ghi sổ thứ
+     * hai nào được xếp vào outbox.
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE saga_state
+               SET current_step     = :toStep,
+                   command_event_id = :eventId,
+                   attempt_count    = 1,
+                   deadline_at      = now() + make_interval(secs => :deadlineSeconds),
+                   updated_at       = now()
+             WHERE tenant_id = :tenantId AND transaction_id = :transactionId
+               AND current_step = :fromStep AND step_status = 'SENT'
+            """, nativeQuery = true)
+    int advanceStep(@Param("tenantId") UUID tenantId,
+                    @Param("transactionId") UUID transactionId,
+                    @Param("fromStep") String fromStep,
+                    @Param("toStep") String toStep,
+                    @Param("eventId") UUID eventId,
+                    @Param("deadlineSeconds") long deadlineSeconds);
+
+    /**
+     * Đẩy hạn chót ra sau mà KHÔNG gửi lại gì. Hai chỗ dùng: saga xử lý lỗi (để nó không chặn đầu hàng
+     * đợi của job quét) và lệnh nạp vừa vào phòng chờ (hạn chót phải phủ được quãng người dùng ngồi
+     * trả tiền, nếu không job quét coi nó là treo).
+     */
     @Modifying
     @Query(value = """
             UPDATE saga_state

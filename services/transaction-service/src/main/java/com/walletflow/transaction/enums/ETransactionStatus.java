@@ -5,8 +5,20 @@ package com.walletflow.transaction.enums;
  * đã đi chưa". Tiền chỉ đi khi ledger ghi bút toán.
  */
 public enum ETransactionStatus {
-    /** Đã nhận, đã gửi lệnh ghi sổ, đang chờ ledger trả lời. */
+    /** Đã nhận, đã gửi lệnh (ghi sổ với chuyển tiền, thu tiền với nạp tiền), đang chờ máy trả lời. */
     PROCESSING,
+    /**
+     * Nạp tiền: provider đã cấp trang thanh toán, đang chờ NGƯỜI DÙNG trả tiền. Không phải lỗi và
+     * không phải treo — chờ ở đây hàng chục phút là bình thường, và kết thúc bằng "không trả" cũng là
+     * một kết cục hợp lệ (bank-adapter hết hạn phiên rồi báo thất bại — ADR-017).
+     */
+    AWAITING_PAYMENT,
+    /**
+     * Nạp tiền: provider đã XÁC NHẬN thu được tiền, lệnh ghi sổ đã gửi, đang chờ ledger. Cửa sổ nguy
+     * hiểm nhất của luồng nạp — tiền đã ở chỗ ta nhưng chưa vào ví ai, nên phải phân biệt được với
+     * PROCESSING (chưa thu được đồng nào) khi đối soát.
+     */
+    POSTING,
     /** Ledger đã ghi bút toán. Trạng thái cuối — không gì kéo nó về được. */
     COMPLETED,
     /** Ledger từ chối, kèm mã lỗi. */

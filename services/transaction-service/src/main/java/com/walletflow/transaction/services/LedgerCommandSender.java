@@ -23,6 +23,13 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class LedgerCommandSender {
 
+    /**
+     * Tài khoản hệ thống đại diện cho tiền nằm ở ngân hàng/cổng thanh toán. Ledger tự tạo nó cho mỗi
+     * tenant ({@code SystemAccountProvisioner}); tên phải khớp từng ký tự, sai tên là ledger từ chối
+     * dứt khoát chứ không tạo nhầm một tài khoản mới.
+     */
+    static final String EXTERNAL_BANK = "EXTERNAL_BANK";
+
     private final OutboxPublisher outboxPublisher;
 
     /**
@@ -47,5 +54,30 @@ public class LedgerCommandSender {
                 new PostJournalCommand(transactionId, EJournalType.TRANSFER, null, currency,
                         List.of(new Leg(fromWallet.toString(), -amountMinor),
                                 new Leg(toWallet.toString(), amountMinor))));
+    }
+
+    /**
+     * Lệnh ghi sổ cho một lần nạp tiền: tiền rời tài khoản hệ thống {@code EXTERNAL_BANK} của tenant
+     * và vào ví. Cùng hình dạng hai vế như chuyển tiền, nên bất biến {@code SUM = 0} vẫn đúng và số
+     * tiền hệ thống đang nợ ngân hàng luôn đọc được từ chính sổ cái.
+     *
+     * <p>CHỈ được gọi sau khi provider đã XÁC NHẬN thu được tiền ({@code BankCompleted}) — webhook
+     * hay lời báo tạo phiên đều không đủ (ADR-016 §1). Gọi sớm là ghi vào ví số tiền chưa ai trả.
+     *
+     * @param transactionId khoá idempotency của ledger: mọi lần gửi lại chỉ ra MỘT bút toán
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void sendTopup(UUID transactionId, UUID walletId, long amountMinor, ECurrency currency,
+                          UUID eventId) {
+        outboxPublisher.publish(
+                WalletTopics.CMD_POST_JOURNAL,
+                // Key = ví được ghi có. Vế còn lại là tài khoản hệ thống dùng chung, không làm key được:
+                // mọi lần nạp sẽ dồn vào một partition.
+                walletId.toString(),
+                eventId,
+                "PostJournal",
+                new PostJournalCommand(transactionId, EJournalType.TOPUP, null, currency,
+                        List.of(new Leg(EXTERNAL_BANK, -amountMinor),
+                                new Leg(walletId.toString(), amountMinor))));
     }
 }

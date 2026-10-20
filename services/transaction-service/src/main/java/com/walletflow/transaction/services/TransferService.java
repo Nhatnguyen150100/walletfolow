@@ -33,7 +33,6 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 /**
  * Nhận lệnh chuyển tiền — idempotent theo {@code Idempotency-Key} (roadmap 1.2a, ADR-013).
@@ -58,9 +57,6 @@ import java.util.regex.Pattern;
 @Slf4j
 @Service
 public class TransferService {
-
-    /** Ký tự an toàn cho log/header; đủ cho UUID, ULID và mọi định dạng key phổ biến. */
-    private static final Pattern KEY_FORMAT = Pattern.compile("[A-Za-z0-9_\\-:.]{1,64}");
 
     private final IdempotencyRepository idempotencyRepository;
     private final TransactionRepository transactionRepository;
@@ -90,22 +86,15 @@ public class TransferService {
         this.sagaDeadline = sagaDeadline;
     }
 
-    /**
-     * Câu trả lời cho một lần gọi. {@code body} là JSON nguyên văn — lần gửi lại nhận về đúng từng
-     * byte của lần đầu.
-     */
-    public record AcceptResult(int status, String body, UUID transactionId, boolean replayed) {
-    }
-
     public AcceptResult accept(UUID userId, String idempotencyKey, TransferRequest request) {
         UUID tenantId = TenantContext.require();
-        String key = requireValidKey(idempotencyKey);
+        String key = IdempotentAccept.requireValidKey(idempotencyKey);
         String hash = requestHash(request);
 
         // 1 — Key đã có câu trả lời: trả lại, không kiểm tra gì thêm
         Optional<IdempotencyRecord> answered = idempotencyRepository.findLive(tenantId, userId, key);
         if (answered.isPresent()) {
-            return replay(answered.get(), hash);
+            return IdempotentAccept.replay(answered.get(), hash);
         }
 
         // 2 — Kiểm tra ví, ngoài mọi transaction DB
@@ -118,7 +107,7 @@ public class TransferService {
             // với key MỚI — và tiền bị trừ hai lần.
             Optional<IdempotencyRecord> acceptedMeanwhile = idempotencyRepository.findLive(tenantId, userId, key);
             if (acceptedMeanwhile.isPresent()) {
-                return replay(acceptedMeanwhile.get(), hash);
+                return IdempotentAccept.replay(acceptedMeanwhile.get(), hash);
             }
             throw rejected;
         }
@@ -146,14 +135,15 @@ public class TransferService {
             // Một request cùng key đã commit trong lúc ta kiểm tra ví. Không ghi gì — trả lời của nó.
             IdempotencyRecord winner = idempotencyRepository.findLive(tenantId, userId, key)
                     .orElseThrow(() -> new IllegalStateException("Mất câu trả lời của key " + key));
-            return replay(winner, hash);
+            return IdempotentAccept.replay(winner, hash);
         }
 
         transactionRepository.insertTransfer(transactionId, tenantId, userId, request.fromWalletId(),
                 request.toWalletId(), request.amountMinor(), request.currency().name(), request.note());
 
         UUID commandEventId = UUID.randomUUID();
-        transactionRepository.insertSagaStart(transactionId, tenantId, commandEventId, sagaDeadline.toSeconds());
+        transactionRepository.insertSagaStart(transactionId, tenantId, "POST_JOURNAL", commandEventId,
+                sagaDeadline.toSeconds());
         commandSender.sendTransfer(transactionId, request.fromWalletId(), request.toWalletId(),
                 request.amountMinor(), request.currency(), commandEventId);
 
@@ -161,20 +151,6 @@ public class TransferService {
                 request.amountMinor(), request.currency(), request.fromWalletId(),
                 request.toWalletId(), transactionId);
         return new AcceptResult(HttpStatus.ACCEPTED.value(), body, transactionId, false);
-    }
-
-    /**
-     * Key đã có câu trả lời. Cùng nội dung → trả lại nguyên văn. Khác nội dung → 422: client đang dùng
-     * lại key cho một lệnh KHÁC, đó là bug phía client và phải được báo to — lặng lẽ trả lời của lệnh
-     * cũ sẽ khiến client tin lệnh mới đã được nhận.
-     */
-    private static AcceptResult replay(IdempotencyRecord record, String hash) {
-        if (!record.getRequestHash().equals(hash)) {
-            throw new AppException(HttpStatus.UNPROCESSABLE_ENTITY, "IDEMPOTENCY_KEY_REUSED",
-                    "Idempotency-Key này đã được dùng cho một lệnh khác");
-        }
-        return new AcceptResult(record.getResponseStatus(), record.getResponseBody(),
-                record.getTransactionId(), true);
     }
 
     private void validateWallets(UUID userId, TransferRequest request) {
@@ -221,18 +197,6 @@ public class TransferService {
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Không serialize được câu trả lời", e);
         }
-    }
-
-    private static String requireValidKey(String key) {
-        if (key == null || key.isBlank()) {
-            throw new BadRequestException("IDEMPOTENCY_KEY_REQUIRED",
-                    "Thiếu header Idempotency-Key — lệnh tiền không được nhận nếu không gửi lại an toàn được");
-        }
-        if (!KEY_FORMAT.matcher(key).matches()) {
-            throw new BadRequestException("IDEMPOTENCY_KEY_INVALID",
-                    "Idempotency-Key chỉ gồm chữ, số, '_', '-', ':', '.' và tối đa 64 ký tự");
-        }
-        return key;
     }
 
     /**

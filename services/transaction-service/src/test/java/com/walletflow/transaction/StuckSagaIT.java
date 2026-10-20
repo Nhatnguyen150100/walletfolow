@@ -1,11 +1,13 @@
 package com.walletflow.transaction;
 
+import com.walletflow.common.event.EJournalType;
 import com.walletflow.common.event.EnvelopeReader;
 import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.event.PostJournalCommand;
 import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.transaction.services.StuckSagaScanner;
+import com.walletflow.transaction.services.TopupService;
 import com.walletflow.transaction.services.TransferService;
 import com.walletflow.transaction.support.FakeWalletDirectory;
 import com.walletflow.transaction.support.FakeWalletDirectoryConfig;
@@ -78,6 +80,8 @@ class StuckSagaIT {
 
     @Autowired
     TransferService transferService;
+    @Autowired
+    TopupService topupService;
     @Autowired
     StuckSagaScanner scanner;
     @Autowired
@@ -301,6 +305,57 @@ class StuckSagaIT {
     }
 
     @Test
+    @DisplayName("⭐ Lệnh nạp quá hạn ở bước thu tiền: gửi lại lệnh THU, KHÔNG phải lệnh ghi sổ")
+    void lenh_nap_qua_han_thi_gui_lai_lenh_thu() {
+        Accepted txn = acceptTopup();
+        makeOverdue(txn);
+
+        assertThat(scanner.scan()).isEqualTo(1);
+
+        assertThat(outbox(WalletTopics.CMD_BANK_CHARGE, txn))
+                .as("bank-adapter idempotent theo (tenant, transactionId): gửi lại chỉ phát lại câu trả lời")
+                .hasSize(2);
+        assertThat(commands(txn))
+                .as("gửi lệnh ghi sổ cho một lệnh nạp chưa ai trả tiền là cộng tiền từ không khí vào ví")
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("⭐ Lệnh nạp đang chờ người dùng trả tiền (AWAITING_PAYMENT): saga KHÔNG bị đóng nhầm")
+    void khong_dong_nham_saga_nap_dang_cho_tra_tien() {
+        Accepted txn = acceptTopup();
+        jdbcTemplate.update("UPDATE transactions SET status = 'AWAITING_PAYMENT' WHERE id = ?", txn.transactionId());
+        makeOverdue(txn);
+
+        scanner.scan();
+
+        assertThat(saga(txn).get("step_status"))
+                .as("đóng saga ở đây là bỏ rơi một lệnh nạp còn sống: không ai gửi lại, không ai báo lỗi")
+                .isEqualTo("SENT");
+        assertThat(outbox(WalletTopics.CMD_BANK_CHARGE, txn)).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("Lệnh nạp quá hạn ở bước ghi sổ: gửi lại lệnh ghi sổ TOPUP với vế EXTERNAL_BANK")
+    void lenh_nap_qua_han_o_buoc_ghi_so() {
+        Accepted txn = acceptTopup();
+        jdbcTemplate.update("UPDATE transactions SET status = 'POSTING' WHERE id = ?", txn.transactionId());
+        jdbcTemplate.update("UPDATE saga_state SET current_step = 'POST_JOURNAL' WHERE transaction_id = ?",
+                txn.transactionId());
+        makeOverdue(txn);
+
+        scanner.scan();
+
+        List<EventEnvelope<PostJournalCommand>> journals = commands(txn);
+        assertThat(journals).hasSize(1);
+        assertThat(journals.get(0).payload().type()).isEqualTo(EJournalType.TOPUP);
+        assertThat(journals.get(0).payload().legs()).extracting("accountRef")
+                .containsExactly("EXTERNAL_BANK", txn.to().toString());
+        assertThat(outbox(WalletTopics.CMD_BANK_CHARGE, txn))
+                .as("đã qua bước thu tiền — gửi lại lệnh thu là tạo thêm một phiên thanh toán").hasSize(1);
+    }
+
+    @Test
     @DisplayName("Counter của saga tồn tại ở 0 ngay từ khởi động — nếu không, alert increase() bỏ lỡ lần đầu tiên")
     void counter_ton_tai_tu_khoi_dong() {
         // status_conflict không bao giờ được tăng trong lớp test này: nó tồn tại chỉ khi được đăng ký
@@ -316,6 +371,16 @@ class StuckSagaIT {
     // ------------------------------------------------------------------
     private Accepted accept(UUID tenant) {
         return SagaFixture.accept(transferService, wallets, tenant, 40_000);
+    }
+
+    private Accepted acceptTopup() {
+        return SagaFixture.acceptTopup(topupService, wallets, TENANT, 40_000);
+    }
+
+    private List<String> outbox(String topic, Accepted txn) {
+        return jdbcTemplate.queryForList(
+                "SELECT payload FROM outbox_event WHERE topic = ? AND payload LIKE ? ORDER BY created_at",
+                String.class, topic, "%" + txn.transactionId() + "%");
     }
 
     private void makeOverdue(Accepted txn) {

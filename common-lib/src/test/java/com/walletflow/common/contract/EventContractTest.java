@@ -95,6 +95,19 @@ class EventContractTest {
                         new TransactionFailedEvent(UUID.randomUUID(), EJournalType.TRANSFER,
                                 UUID.randomUUID(), wallet, UUID.randomUUID(), 1_000, ECurrency.VND,
                                 "INSUFFICIENT_FUNDS")),
+                Arguments.of(WalletTopics.EVT_TXN_COMPLETED, "TransactionCompleted",
+                        // 2.4a: lệnh NẠP không có ví nguồn — tiền đến từ ngân hàng (ADR-019)
+                        new TransactionCompletedEvent(UUID.randomUUID(), EJournalType.TOPUP,
+                                UUID.randomUUID(), null, wallet, 500_000, ECurrency.VND,
+                                UUID.randomUUID())),
+                Arguments.of(WalletTopics.EVT_TXN_FAILED, "TransactionFailed",
+                        new TransactionFailedEvent(UUID.randomUUID(), EJournalType.TOPUP,
+                                UUID.randomUUID(), null, wallet, 500_000, ECurrency.VND,
+                                "PAYMENT_EXPIRED")),
+                Arguments.of(WalletTopics.CMD_POST_JOURNAL, "PostJournal",
+                        // Lệnh ghi sổ của một lần nạp: tiền rời EXTERNAL_BANK và vào ví
+                        new PostJournalCommand(UUID.randomUUID(), EJournalType.TOPUP, null,
+                                ECurrency.VND, legs)),
                 Arguments.of(WalletTopics.CMD_BANK_CHARGE, "BankCharge",
                         new BankChargeCommand(UUID.randomUUID(), wallet, 500_000, ECurrency.VND)),
                 Arguments.of(WalletTopics.CMD_BANK_CHARGE, "BankCharge",
@@ -150,6 +163,16 @@ class EventContractTest {
         assertThat(command.clientIp())
                 .as("lệnh v1 trước 2.2b không có IP: vẫn đọc được, IP là null (adapter dùng IP máy chủ)")
                 .isNull();
+
+        // Kết quả của một lệnh NẠP: ví nguồn là null trên dây (2.4a, ADR-019 §7). Fixture này khoá
+        // đúng hình dạng JSON mà notification-service sẽ phải đọc được — nó PHẢI coi fromWalletId là
+        // nullable ngay từ bản đầu, không được map vào một trường không-null.
+        String topup = fixture("txn.event.completed.v1-topup.json");
+        EventSchemas.assertValid(WalletTopics.EVT_TXN_COMPLETED, topup);
+        TransactionCompletedEvent completed = READER.read(topup, TransactionCompletedEvent.class).payload();
+        assertThat(completed.fromWalletId()).isNull();
+        assertThat(completed.type()).isEqualTo(EJournalType.TOPUP);
+        assertThat(completed.amountMinor()).isEqualTo(500_000);
 
         // Lệnh v1 sau 2.2b mang IP người dùng (field optional, không đổi version)
         String withIp = fixture("txn.command.bank-charge.v1-with-client-ip.json");
@@ -221,6 +244,28 @@ class EventContractTest {
         assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
                 charge.replace("\"currency\": \"VND\"", "\"currency\": \"VND\", \"clientIp\": \"203.0.113.7\"")))
                 .as("đối chứng: clientIp hợp lệ được chấp nhận").isEmpty();
+    }
+
+    @Test
+    @DisplayName("Schema kết quả giao dịch: ví nguồn được phép null (nạp tiền) nhưng KHÔNG được vắng mặt")
+    void schema_vi_nguon_null_duoc_vang_mat_thi_khong() throws Exception {
+        UUID wallet = UUID.randomUUID();
+        String topup = MAPPER.writeValueAsString(EventEnvelope.of(UUID.randomUUID(), "TransactionCompleted",
+                TENANT, null, new TransactionCompletedEvent(UUID.randomUUID(), EJournalType.TOPUP,
+                        UUID.randomUUID(), null, wallet, 500_000, ECurrency.VND, UUID.randomUUID()),
+                Instant.now()));
+
+        assertThat(EventSchemas.validate(WalletTopics.EVT_TXN_COMPLETED, topup))
+                .as("nạp tiền không có ví nguồn — null là câu trả lời đúng, không phải thiếu dữ liệu")
+                .isEmpty();
+        // Nới ở 2.4a chỉ nới GIÁ TRỊ, không nới sự CÓ MẶT: một producer quên hẳn field vẫn phải bị bắt,
+        // nếu không thì "null" (biết là nạp tiền) và "không gửi" (bug) trở thành một thứ.
+        assertThat(EventSchemas.validate(WalletTopics.EVT_TXN_COMPLETED,
+                topup.replace("\"fromWalletId\"", "\"fromWalletIdX\"")))
+                .as("vắng mặt fromWalletId vẫn là message hỏng").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.EVT_TXN_COMPLETED,
+                topup.replace("\"fromWalletId\":null", "\"fromWalletId\":\"khong-phai-uuid\"")))
+                .as("có giá trị thì phải là UUID").isNotEmpty();
     }
 
     private static String fixture(String name) throws IOException {

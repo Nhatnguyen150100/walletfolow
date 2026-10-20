@@ -89,6 +89,35 @@ groups:
             trước khi làm bất cứ điều gì — KHÔNG gửi lại lệnh bằng tay với transactionId mới.
           runbook: docs/runbooks/saga-stuck.md
 
+      # -------------------------------------------------------------
+      # 🔴 Lệnh nạp đã THU ĐƯỢC TIỀN nhưng không vào được ví (roadmap 2.4a, ADR-019)
+      # -------------------------------------------------------------
+      # Nặng hơn SagaManualReview: ở đó tiền CÓ THỂ chưa đi, ở đây ngân hàng CHẮC CHẮN đã trừ người
+      # dùng — lệnh ghi sổ chỉ được gửi sau khi provider xác nhận. Chưa có hoàn tiền tự động (2.4b),
+      # nên mỗi ca là một thao tác tay và mỗi phút là một phút khách mất tiền mà không có gì.
+      - alert: TopupManualReview
+        expr: increase(walletflow_topup_manual_review_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $value }} lệnh nạp đã thu tiền nhưng không vào được ví ở {{ $labels.job }}"
+          description: >-
+            Đối chiếu CẢ HAI nguồn (sổ cái và cổng thanh toán) theo provider_ref trước khi quyết.
+            failure_code trong bảng transactions nói ca nào — xem bảng phân loại trong runbook.
+          runbook: docs/runbooks/topup-stuck.md
+
+      # bank-adapter nói hai điều trái nhau về cùng một lần thu, hoặc xác nhận lệch với lệnh đã gửi.
+      # Là BUG, không phải sự cố vận hành — nhưng tiền của khách đi trước, sửa code sau.
+      - alert: TopupResultConflict
+        expr: increase(walletflow_topup_result_conflict_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lần kết quả thu tiền mâu thuẫn ở {{ $labels.job }}"
+          runbook: docs/runbooks/topup-stuck.md
+
       # Gửi lại nhiều = ledger chậm hoặc message đang mất ở đâu đó — báo trước khi thành MANUAL_REVIEW
       - alert: SagaRetriesHigh
         expr: increase(walletflow_saga_retries_total[15m]) > 10

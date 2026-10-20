@@ -42,7 +42,8 @@ public class Transaction {
     @Column(name = "initiated_by", nullable = false)
     private UUID initiatedBy;
 
-    @Column(name = "from_wallet", nullable = false)
+    /** Null với TOPUP: tiền đến từ ngân hàng, không từ ví nào (V3, ADR-019). */
+    @Column(name = "from_wallet")
     private UUID fromWallet;
 
     @Column(name = "to_wallet", nullable = false)
@@ -57,6 +58,16 @@ public class Transaction {
 
     @Column(length = 140)
     private String note;
+
+    /** Phiên thanh toán của lệnh nạp (null với chuyển tiền) — xem V3. */
+    @Column(length = 32)
+    private String provider;
+
+    @Column(name = "provider_ref", length = 128)
+    private String providerRef;
+
+    @Column(name = "payment_url")
+    private String paymentUrl;
 
     @Column(name = "failure_code", length = 32)
     private String failureCode;
