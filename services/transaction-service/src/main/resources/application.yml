@@ -43,6 +43,13 @@ walletflow:
       # Hết số lần gửi mà vẫn không có câu trả lời -> MANUAL_REVIEW + alert SagaManualReview
       max-attempts: 3
       batch-size: 50
+    topup:
+      # Chờ bank-adapter tạo xong phiên thanh toán — việc của MÁY, tính bằng giây. Quá hạn thì job
+      # quét gửi lại lệnh thu (bank-adapter idempotent, chỉ phát lại câu trả lời — ADR-016).
+      charge-deadline: PT5M
+      # Chờ NGƯỜI DÙNG trả tiền, tính từ lúc có trang thanh toán. Phải phủ hạn phiên 15' + grace 15'
+      # của bank-adapter (ADR-017), nếu không job quét coi một lệnh nạp khoẻ mạnh là treo.
+      payment-deadline: PT45M
 
 eureka:
   client:

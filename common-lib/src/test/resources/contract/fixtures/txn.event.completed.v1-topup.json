@@ -1,0 +1,18 @@
+{
+  "eventId": "6f1d2a44-9c3e-4b07-8f21-5a9e0c7d3b16",
+  "eventType": "TransactionCompleted",
+  "version": 1,
+  "occurredAt": "2026-10-20T03:45:12.331Z",
+  "tenantId": "0c5a9f2e-1d84-4a6b-9f3c-7e2b8d4a1c05",
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "payload": {
+    "transactionId": "b83e1f90-2c47-4d5a-8e61-9f0a3b7c2d84",
+    "type": "TOPUP",
+    "initiatedBy": "a19c7d35-6e82-4f1b-93a0-5c8d2e4b7f61",
+    "fromWalletId": null,
+    "toWalletId": "d47b2e08-5a91-4c36-b8f2-1e6a9d0c3b57",
+    "amountMinor": 500000,
+    "currency": "VND",
+    "entryId": "e92a6c14-7b38-4f50-a1d9-3c05b8e2f746"
+  }
+}

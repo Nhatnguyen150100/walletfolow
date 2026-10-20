@@ -47,6 +47,7 @@ public class StuckSagaScanner {
     private final SagaRepository sagaRepository;
     private final TransactionRepository transactionRepository;
     private final LedgerCommandSender commandSender;
+    private final BankCommandSender bankCommandSender;
     private final TransactionTemplate transactionTemplate;
     private final Duration deadline;
     private final int maxAttempts;
@@ -59,6 +60,7 @@ public class StuckSagaScanner {
             SagaRepository sagaRepository,
             TransactionRepository transactionRepository,
             LedgerCommandSender commandSender,
+            BankCommandSender bankCommandSender,
             MeterRegistry meterRegistry,
             PlatformTransactionManager transactionManager,
             @Value("${walletflow.transaction.saga-deadline:PT2M}") Duration deadline,
@@ -67,6 +69,7 @@ public class StuckSagaScanner {
         this.sagaRepository = sagaRepository;
         this.transactionRepository = transactionRepository;
         this.commandSender = commandSender;
+        this.bankCommandSender = bankCommandSender;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.deadline = deadline;
         this.maxAttempts = maxAttempts;
@@ -126,9 +129,20 @@ public class StuckSagaScanner {
         return true;
     }
 
+    /**
+     * Trạng thái mà một saga còn mở được phép đứng ở. Lệnh nạp nằm ngoài PROCESSING gần như suốt vòng
+     * đời (chờ người dùng trả tiền, rồi chờ ledger), nên nếu chỉ chấp nhận PROCESSING thì job này sẽ
+     * đóng nhầm mọi saga nạp đang khoẻ mạnh.
+     */
+    private static boolean isOpen(ETransactionStatus status) {
+        return status == ETransactionStatus.PROCESSING
+                || status == ETransactionStatus.AWAITING_PAYMENT
+                || status == ETransactionStatus.POSTING;
+    }
+
     private void handle(SagaState saga) {
         Optional<Transaction> found = transactionRepository.lockForSaga(saga.getTenantId(), saga.getTransactionId());
-        if (found.isEmpty() || found.get().getStatus() != ETransactionStatus.PROCESSING) {
+        if (found.isEmpty() || !isOpen(found.get().getStatus())) {
             // Saga mở mà giao dịch đã đóng: hai thứ được ghi cùng transaction nên bình thường không xảy
             // ra. Đóng saga để không quét lại mãi, và kêu to để có người xem. (Mở lại một ca
             // MANUAL_REVIEW phải đặt CẢ giao dịch về PROCESSING — xem runbook saga-stuck.md.)
@@ -139,25 +153,54 @@ public class StuckSagaScanner {
         }
         Transaction txn = found.get();
 
+        boolean charging = SagaService.STEP_BANK_CHARGE.equals(saga.getCurrentStep());
+
         if (saga.getAttemptCount() >= maxAttempts) {
+            String code = charging ? "BANK_NO_RESPONSE" : "LEDGER_NO_RESPONSE";
+            String who = charging ? "Cổng thanh toán" : "Ledger";
             transactionRepository.transition(txn.getTenantId(), txn.getId(),
-                    ETransactionStatus.MANUAL_REVIEW.name(), "LEDGER_NO_RESPONSE",
-                    "Ledger không trả lời sau " + saga.getAttemptCount() + " lần gửi");
+                    ETransactionStatus.MANUAL_REVIEW.name(), code,
+                    who + " không trả lời sau " + saga.getAttemptCount() + " lần gửi");
             sagaRepository.close(txn.getId(), "MANUAL_REVIEW");
             manualReviews.increment();
-            log.error("Saga: giao dịch {} chuyển MANUAL_REVIEW sau {} lần gửi không có câu trả lời — "
-                    + "cần người đối chiếu sổ cái", txn.getId(), saga.getAttemptCount());
+            log.error("Saga: giao dịch {} chuyển MANUAL_REVIEW sau {} lần gửi không có câu trả lời ở bước {} — "
+                    + "cần người đối chiếu", txn.getId(), saga.getAttemptCount(), saga.getCurrentStep());
             return;
         }
 
         UUID newEventId = UUID.randomUUID();
-        commandSender.sendTransfer(txn.getId(), txn.getFromWallet(), txn.getToWallet(),
-                txn.getAmountMinor(), txn.getCurrency(), newEventId);
+        resend(saga, txn, newEventId);
         // Giãn dần: lần thử thứ n chờ n lần hạn chót — ledger đang quá tải thì không dội thêm
         long nextDeadline = deadline.toSeconds() * (saga.getAttemptCount() + 1L);
         sagaRepository.recordRetry(txn.getId(), newEventId, nextDeadline);
         retries.increment();
-        log.warn("Saga: giao dịch {} quá hạn chưa có câu trả lời — gửi lại lần {} (eventId {})",
-                txn.getId(), saga.getAttemptCount() + 1, newEventId);
+        log.warn("Saga: giao dịch {} quá hạn chưa có câu trả lời ở bước {} — gửi lại lần {} (eventId {})",
+                txn.getId(), saga.getCurrentStep(), saga.getAttemptCount() + 1, newEventId);
+    }
+
+    /**
+     * Gửi lại lệnh của ĐÚNG bước saga đang đứng. Gửi nhầm lệnh là hỏng nặng: một lệnh nạp còn đang chờ
+     * người dùng trả tiền mà bị gửi lệnh ghi sổ thì ví được cộng số tiền chưa ai trả.
+     *
+     * <p>Cả hai lệnh đều an toàn khi gửi lại: ledger idempotent theo {@code transactionId} (một bút
+     * toán duy nhất), bank-adapter idempotent theo {@code (tenant, transactionId)} (một phiên thanh
+     * toán duy nhất, và phát lại câu trả lời hiện tại — ADR-016).
+     */
+    private void resend(SagaState saga, Transaction txn, UUID eventId) {
+        if (SagaService.STEP_BANK_CHARGE.equals(saga.getCurrentStep())) {
+            bankCommandSender.sendCharge(txn.getId(), txn.getToWallet(), txn.getAmountMinor(),
+                    txn.getCurrency(), null, eventId);
+            return;
+        }
+        switch (txn.getType()) {
+            case TRANSFER -> commandSender.sendTransfer(txn.getId(), txn.getFromWallet(), txn.getToWallet(),
+                    txn.getAmountMinor(), txn.getCurrency(), eventId);
+            case TOPUP -> commandSender.sendTopup(txn.getId(), txn.getToWallet(), txn.getAmountMinor(),
+                    txn.getCurrency(), eventId);
+            // WITHDRAW/REVERSAL chưa có luồng nào tạo ra saga — gặp là bug, và bug trên đường tiền thì
+            // dừng lại chứ không đoán một lệnh để gửi.
+            default -> throw new IllegalStateException(
+                    "Không biết gửi lại lệnh nào cho giao dịch loại " + txn.getType());
+        }
     }
 }
