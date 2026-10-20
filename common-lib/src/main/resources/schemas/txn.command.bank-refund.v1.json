@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://walletflow.dev/schemas/txn.command.bank-refund.v1.json",
+  "title": "BankRefund v1 — lệnh hoàn tiền cho một lần thu đã thành công (bù trừ saga nạp tiền)",
+  "description": "Topic txn.command.bank-refund.v1. Producer: transaction-service (bù trừ saga top-up, 2.4b). Consumer: bank-adapter. Chỉ hoàn TRỌN số đã thu: walletId/amountMinor/currency phải khớp lần thu của transactionId, khác đi là bug producer -> DLT. Idempotent theo (tenant, transactionId): gửi lại chỉ có MỘT lần hoàn ở provider và luôn nhận lại câu trả lời hiện tại (bank.event.completed/failed.v1, operation=REFUND). Luật tiến hoá: chỉ THÊM field optional.",
+  "type": "object",
+  "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
+  "properties": {
+    "eventId": { "$ref": "#/$defs/uuid" },
+    "eventType": { "const": "BankRefund" },
+    "version": { "type": "integer", "minimum": 1 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "tenantId": { "$ref": "#/$defs/uuid" },
+    "traceId": { "type": ["string", "null"] },
+    "payload": {
+      "type": "object",
+      "required": ["transactionId", "walletId", "amountMinor", "currency", "reasonCode"],
+      "properties": {
+        "transactionId": { "$ref": "#/$defs/uuid" },
+        "walletId": { "$ref": "#/$defs/uuid" },
+        "amountMinor": { "type": "integer", "exclusiveMinimum": 0 },
+        "currency": { "enum": ["VND", "USD"] },
+        "reasonCode": {
+          "description": "Vì sao phải hoàn — mã ổn định (mã từ chối của ledger, BANK_RESULT_CONFLICT...). Chỉ để đối soát; bank-adapter không rẽ nhánh theo nó.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+  }
+}

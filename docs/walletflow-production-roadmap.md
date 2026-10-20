@@ -787,8 +787,10 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.3a Webhook ingestion — nhận & xác thực, chống phát lại ([ADR-018](adr/ADR-018-webhook-ingestion.md)) | ✅ | #31 |
 | fix — lệnh thu trùng đồng thời nổ `23505` ở khoá unique thứ hai (master đỏ sau #31) | ✅ | #32 |
 | 2.3b Webhook ingestion — worker xử lý bất đồng bộ + trang quay về ([ADR-018](adr/ADR-018-webhook-ingestion.md) *Amendments*) | ✅ | #33 |
-| 2.4a Saga top-up — nhận lệnh nạp, ghi sổ sau khi provider xác nhận ([ADR-019](adr/ADR-019-topup-saga.md)) | 🟡 `feat/phase-2-topup-saga` | |
-| 2.4b Saga top-up — bù trừ: hoàn tiền tự động khi ledger từ chối ([ADR-019](adr/ADR-019-topup-saga.md)) | ⬜ | |
+| 2.4a Saga top-up — nhận lệnh nạp, ghi sổ sau khi provider xác nhận ([ADR-019](adr/ADR-019-topup-saga.md)) | ✅ | #34 |
+| 2.4b (PR1) Hàng rào ledger — lệnh nạp bị từ chối thì từ chối vĩnh viễn + lệnh hoàn `txn.command.bank-refund.v1` ở bank-adapter ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | 🟡 `feat/phase-2-topup-refund-infra` | |
+| 2.4b (PR2) Saga top-up — bù trừ: `POSTING → REFUNDING → FAILED` khi ledger từ chối / `BANK_RESULT_CONFLICT` ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | ⬜ chờ PR1 lên mọi instance | |
+| 2.4c VNPay refund thật (`vnp_Command=refund`) — tới lúc đó VNPay trả `REFUND_UNSUPPORTED` → chờ người | ⬜ | |
 | 2.5 Admin API & manual review | ⬜ | |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 
@@ -877,7 +879,8 @@ fail → không ghi đè, bật metric cần-người-xem (bảng `MANUAL_REVIEW
 > `getStatus`), **không** phải webhook — webhook chỉ kích hoạt việc hỏi lại (ADR-016 §1).
 > Ledger từ chối lệnh nạp ⇒ `MANUAL_REVIEW`, không phải `FAILED`: tiền đã thu của người dùng rồi.
 
-**Top-up** (nạp): `PENDING → AWAITING_PAYMENT → (webhook) → POSTING → COMPLETED`
+**Top-up** (nạp): `PENDING → AWAITING_PAYMENT → (bank.event.completed) → POSTING → COMPLETED`;
+bù trừ (2.4b, [ADR-020](adr/ADR-020-topup-compensation-refund.md)): `POSTING → (ledger từ chối) → REFUNDING → FAILED`
 - Tiền chỉ vào ví **sau khi** ledger ghi xong, không phải khi nhận webhook.
 
 **Withdraw** (rút): `PENDING → HOLDING → PAYOUT_SENT → (webhook) → SETTLING → COMPLETED`

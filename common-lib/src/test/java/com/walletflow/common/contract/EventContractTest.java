@@ -9,6 +9,7 @@ import com.walletflow.common.event.BankChargeCommand;
 import com.walletflow.common.event.BankChargePendingEvent;
 import com.walletflow.common.event.BankCompletedEvent;
 import com.walletflow.common.event.BankFailedEvent;
+import com.walletflow.common.event.BankRefundCommand;
 import com.walletflow.common.event.EAccountStatus;
 import com.walletflow.common.event.EBankOperation;
 import com.walletflow.common.event.EJournalType;
@@ -126,7 +127,18 @@ class EventContractTest {
                 Arguments.of(WalletTopics.EVT_BANK_FAILED, "BankFailed",
                         // Provider từ chối ngay lúc tạo phiên: chưa có mã phía provider
                         new BankFailedEvent(UUID.randomUUID(), EBankOperation.CHARGE, wallet, "mock",
-                                null, "DECLINED")));
+                                null, "DECLINED")),
+                Arguments.of(WalletTopics.CMD_BANK_REFUND, "BankRefund",
+                        // 2.4b: bù trừ saga nạp tiền — hoàn trọn lần thu khi ledger từ chối ghi sổ
+                        new BankRefundCommand(UUID.randomUUID(), wallet, 500_000, ECurrency.VND,
+                                "ACCOUNT_CLOSED")),
+                Arguments.of(WalletTopics.EVT_BANK_COMPLETED, "BankCompleted",
+                        // Kết quả của lần HOÀN đi chung topic với lần thu, phân biệt bằng operation
+                        new BankCompletedEvent(UUID.randomUUID(), EBankOperation.REFUND, wallet, "mock",
+                                "MOCK-RF-1", 500_000, ECurrency.VND)),
+                Arguments.of(WalletTopics.EVT_BANK_FAILED, "BankFailed",
+                        new BankFailedEvent(UUID.randomUUID(), EBankOperation.REFUND, wallet, "vnpay",
+                                null, "REFUND_UNSUPPORTED")));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -181,6 +193,14 @@ class EventContractTest {
         assertThat(commandWithIp.clientIp()).isEqualTo("203.0.113.7");
         assertThat(commandWithIp.amountMinor()).isEqualTo(500_000);
         assertThat(commandWithIp.currency()).isEqualTo(ECurrency.VND);
+
+        // 2.4b: lệnh hoàn tiền v1
+        String refund = fixture("txn.command.bank-refund.v1.json");
+        EventSchemas.assertValid(WalletTopics.CMD_BANK_REFUND, refund);
+        BankRefundCommand refundCommand = READER.read(refund, BankRefundCommand.class).payload();
+        assertThat(refundCommand.amountMinor()).isEqualTo(500_000);
+        assertThat(refundCommand.currency()).isEqualTo(ECurrency.VND);
+        assertThat(refundCommand.reasonCode()).isEqualTo("ACCOUNT_CLOSED");
     }
 
     @Test
@@ -244,6 +264,28 @@ class EventContractTest {
         assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
                 charge.replace("\"currency\": \"VND\"", "\"currency\": \"VND\", \"clientIp\": \"203.0.113.7\"")))
                 .as("đối chứng: clientIp hợp lệ được chấp nhận").isEmpty();
+    }
+
+    @Test
+    @DisplayName("Schema từ chối lệnh hoàn tiền: số tiền 0/âm, thiếu ví, thiếu lý do hoàn")
+    void schema_tu_choi_lenh_hoan_tien_sai() throws IOException {
+        String refund = fixture("txn.command.bank-refund.v1.json");
+
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"amountMinor\": 500000", "\"amountMinor\": 0")))
+                .as("hoàn 0 đồng là vô nghĩa").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"amountMinor\": 500000", "\"amountMinor\": -500000")))
+                .as("hoàn số âm là thu thêm — sai loại thao tác").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"walletId\"", "\"walletIdX\"")))
+                .as("không có ví thì không khớp được với lần thu").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"reasonCode\"", "\"reasonCodeX\"")))
+                .as("hoàn tiền không lý do thì đối soát không truy được vì sao tiền rời đi").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"BankRefund\"", "\"BankCharge\"")))
+                .as("nhầm loại lệnh trên topic hoàn tiền").isNotEmpty();
     }
 
     @Test

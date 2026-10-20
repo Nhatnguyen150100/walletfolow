@@ -104,6 +104,50 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
                        @Param("rawRequest") String rawRequest);
 
     /**
+     * Giành quyền HOÀN cho một giao dịch (2.4b) — cùng ngữ nghĩa với {@link #insertIfAbsent}, kể cả lý do
+     * {@code ON CONFLICT DO NOTHING} không chỉ định khoá. Câu riêng vì hàng REFUND bắt buộc trỏ về lần thu nó hoàn
+     * ({@code ck_provider_txn_refund_of}); để câu của lần thu không phải biết tới cột đó.
+     *
+     * @return 1 nếu vừa tạo, 0 nếu đã có
+     */
+    @Modifying
+    @Query(value = """
+            INSERT INTO provider_transactions
+                   (id, tenant_id, transaction_id, operation, provider, provider_account, idempotency_key,
+                    wallet_id, amount_minor, currency, status, raw_request, refund_of, created_at, updated_at)
+            VALUES (:id, :tenantId, :transactionId, 'REFUND', :provider, :providerAccount, :idempotencyKey,
+                    :walletId, :amountMinor, :currency, 'NEW', CAST(:rawRequest AS jsonb), :refundOf, now(), now())
+            ON CONFLICT DO NOTHING
+            """, nativeQuery = true)
+    int insertRefundIfAbsent(@Param("id") UUID id,
+                             @Param("tenantId") UUID tenantId,
+                             @Param("transactionId") UUID transactionId,
+                             @Param("provider") String provider,
+                             @Param("providerAccount") String providerAccount,
+                             @Param("idempotencyKey") String idempotencyKey,
+                             @Param("walletId") UUID walletId,
+                             @Param("amountMinor") long amountMinor,
+                             @Param("currency") String currency,
+                             @Param("rawRequest") String rawRequest,
+                             @Param("refundOf") UUID refundOf);
+
+    /**
+     * NEW -> SUCCEEDED cho lần HOÀN: provider trả lời hoàn xong ngay trong lời gọi (không có PENDING). Mã tham chiếu
+     * là của LẦN HOÀN, không phải của lần thu.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE provider_transactions
+               SET status = 'SUCCEEDED', provider_ref = :refundRef, raw_response = CAST(:rawResponse AS jsonb),
+                   updated_at = now()
+             WHERE tenant_id = :tenantId AND id = :id AND operation = 'REFUND' AND status = 'NEW'
+            """, nativeQuery = true)
+    int markRefunded(@Param("tenantId") UUID tenantId,
+                     @Param("id") UUID id,
+                     @Param("refundRef") String refundRef,
+                     @Param("rawResponse") String rawResponse);
+
+    /**
      * NEW -> PENDING: provider đã tạo phiên. Lần hỏi lại trạng thái đầu tiên sau {@code recheckSeconds}; bộ
      * đếm backoff bắt đầu từ 0. Mốc tạo phiên và hạn phiên lấy từ câu trả lời của provider.
      */

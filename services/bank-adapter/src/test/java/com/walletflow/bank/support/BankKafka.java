@@ -55,20 +55,29 @@ public final class BankKafka {
      * (theo thứ tự đọc). Dùng khi cần chứng minh "phát lại cùng eventId".
      */
     public List<ConsumerRecord<String, String>> awaitMatching(String topic, String marker, int count) {
+        return awaitMatching(topic, value -> value.contains(marker), marker, count);
+    }
+
+    /**
+     * Như trên nhưng lọc bằng điều kiện tuỳ ý — cần khi một topic chở nhiều loại message của CÙNG giao dịch
+     * (completed của lần thu và của lần hoàn đều chứa transactionId).
+     */
+    public List<ConsumerRecord<String, String>> awaitMatching(String topic, java.util.function.Predicate<String> filter,
+                                                              String description, int count) {
         List<ConsumerRecord<String, String>> found = new java.util.ArrayList<>();
         try (KafkaConsumer<String, String> consumer = consumer()) {
             consumer.subscribe(List.of(topic));
             long deadline = System.nanoTime() + TIMEOUT.toNanos();
             while (System.nanoTime() < deadline && found.size() < count) {
                 for (ConsumerRecord<String, String> record : consumer.poll(Duration.ofMillis(500))) {
-                    if (record.value().contains(marker)) {
+                    if (filter.test(record.value())) {
                         found.add(record);
                     }
                 }
             }
         }
         if (found.size() < count) {
-            throw new AssertionError("Chờ " + count + " message chứa '" + marker + "' trên " + topic
+            throw new AssertionError("Chờ " + count + " message chứa '" + description + "' trên " + topic
                     + " trong " + TIMEOUT + " nhưng chỉ thấy " + found.size());
         }
         return found;

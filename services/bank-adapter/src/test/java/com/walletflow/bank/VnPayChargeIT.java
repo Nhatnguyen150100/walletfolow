@@ -885,6 +885,45 @@ class VnPayChargeIT {
     }
 
     // ------------------------------------------------------------------
+    // Hoàn tiền (2.4b): VNPay chưa hỗ trợ hoàn tự động tới 2.4c
+    // ------------------------------------------------------------------
+    @Test
+    @DisplayName("⭐ Hoàn lần thu VNPay đã SUCCEEDED: hàng REFUND FAILED(REFUND_UNSUPPORTED), một event failed(REFUND) đúng schema, mạch KHÔNG mở, không có request nào tới VNPay")
+    void hoan_lan_thu_vnpay_bi_tu_choi_khong_cham_vnpay() throws Exception {
+        BankChargeCommand charge = BankFixtures.freshCharge(150_000);
+        db.insertRow(tenant, charge.transactionId(), charge.walletId(), 150_000, "vnpay", "SUCCEEDED",
+                "VNPREF" + UUID.randomUUID().toString().replace("-", ""), null);
+        db.setProviderAccount(charge.transactionId(), TMN_CODE);
+
+        bus.send(WalletTopics.CMD_BANK_REFUND, charge.walletId().toString(),
+                BankFixtures.refundEnvelopeJson(objectMapper, tenant, BankFixtures.refundOf(charge)));
+
+        ConsumerRecord<String, String> record = bus.awaitMatching(WalletTopics.EVT_BANK_FAILED, json -> {
+            try {
+                JsonNode payload = objectMapper.readTree(json).path("payload");
+                return charge.transactionId().toString().equals(payload.path("transactionId").asText())
+                        && "REFUND".equals(payload.path("operation").asText());
+            } catch (Exception notJson) {
+                return false;
+            }
+        }, "failed REFUND của " + charge.transactionId(), 1).get(0);
+        EventSchemas.assertValid(WalletTopics.EVT_BANK_FAILED, record.value());
+        JsonNode payload = objectMapper.readTree(record.value()).path("payload");
+        assertThat(payload.path("failureCode").asText()).isEqualTo("REFUND_UNSUPPORTED");
+        assertThat(payload.hasNonNull("providerRef")).isFalse();
+
+        Map<String, Object> refundRow = db.row(tenant, charge.transactionId(), "REFUND");
+        assertThat(refundRow.get("status")).isEqualTo("FAILED");
+        assertThat(refundRow.get("failure_code")).isEqualTo("REFUND_UNSUPPORTED");
+        assertThat(db.outboxEventIds(charge.transactionId(), WalletTopics.EVT_BANK_FAILED, "REFUND")).hasSize(1);
+        assertThat(db.outboxOfOperation(charge.transactionId(), WalletTopics.EVT_BANK_COMPLETED, "REFUND")).isEmpty();
+        assertThat(resilientProvider.circuitBreaker().getState())
+                .as("từ chối dứt khoát không phải lỗi kỹ thuật: mở mạch sẽ chặn querydr của mọi lần thu đang chờ")
+                .isEqualTo(io.github.resilience4j.circuitbreaker.CircuitBreaker.State.CLOSED);
+        assertThat(fake.requests()).as("không có gì được gửi tới VNPay để hoàn").isEmpty();
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
     private void sendCommand(BankChargeCommand command) {

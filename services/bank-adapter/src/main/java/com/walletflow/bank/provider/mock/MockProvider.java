@@ -67,7 +67,8 @@ public class MockProvider implements PaymentProvider {
      */
     private final String webhookSecret;
 
-    private final ConcurrentMap<String, RefundResult.Refunded> refundsByKey = new ConcurrentHashMap<>();
+    /** Câu trả lời CUỐI theo khoá hoàn — cả hoàn xong lẫn từ chối: cùng khoá thì cùng kết quả (PaymentProvider). */
+    private final ConcurrentMap<String, RefundResult> refundsByKey = new ConcurrentHashMap<>();
     private final AtomicInteger chargeCalls = new AtomicInteger();
     private final AtomicInteger failNextCalls = new AtomicInteger();
     private final AtomicInteger loseNextChargeResponses = new AtomicInteger();
@@ -145,7 +146,7 @@ public class MockProvider implements PaymentProvider {
     @Override
     public synchronized RefundResult refund(RefundRequest request) {
         simulateNetwork("refund");
-        RefundResult.Refunded existing = refundsByKey.get(request.idempotencyKey());
+        RefundResult existing = refundsByKey.get(request.idempotencyKey());
         if (existing != null) {
             return existing;
         }
@@ -155,12 +156,12 @@ public class MockProvider implements PaymentProvider {
         }
         autoSettle(session);
         if (request.amountMinor() <= 0) {
-            return new RefundResult.Declined("INVALID_AMOUNT", "{\"result\":\"DECLINED\",\"code\":\"INVALID_AMOUNT\"}");
+            return decline(request, "INVALID_AMOUNT");
         }
         // Tiền: phép tính có kiểm tràn (CLAUDE.md) — mock cũng nằm trong src/main
         long refundable = Math.subtractExact(session.capturedMinor, session.refundedMinor);
         if (session.state != EProviderState.SUCCEEDED || request.amountMinor() > refundable) {
-            return new RefundResult.Declined("NOT_REFUNDABLE", "{\"result\":\"DECLINED\",\"code\":\"NOT_REFUNDABLE\"}");
+            return decline(request, "NOT_REFUNDABLE");
         }
         session.refundedMinor = Math.addExact(session.refundedMinor, request.amountMinor());
         String refundRef = "MOCK-RF-" + UUID.randomUUID();
@@ -168,6 +169,18 @@ public class MockProvider implements PaymentProvider {
                 "{\"result\":\"REFUNDED\",\"ref\":\"" + refundRef + "\"}");
         refundsByKey.put(request.idempotencyKey(), refunded);
         return refunded;
+    }
+
+    /**
+     * Từ chối cũng được nhớ theo khoá: provider thật trả lời lần hoàn đã từ chối bằng đúng lời từ chối đó. Không nhớ
+     * thì gửi lại cùng khoá sau khi phiên đổi trạng thái có thể ra "hoàn xong" — hai câu trả lời trái nhau cho MỘT
+     * lần hoàn.
+     */
+    private RefundResult decline(RefundRequest request, String code) {
+        RefundResult declined = new RefundResult.Declined(code,
+                "{\"result\":\"DECLINED\",\"code\":\"" + code + "\"}");
+        refundsByKey.put(request.idempotencyKey(), declined);
+        return declined;
     }
 
     // ------------------------------------------------------------------

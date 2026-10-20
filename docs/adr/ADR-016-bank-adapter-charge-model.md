@@ -161,7 +161,8 @@ Chốt ngày 2026-10-18:
 - `MockProvider` giữ phiên trong bộ nhớ. Khởi động lại thì lần thu đang chờ sẽ bị hỏi lại mãi (cảnh báo
   `BankStatusCheckFailing`). Chỉ là máy dev.
 - Chưa có `REFUND` qua Kafka: interface và Mock đã có, lệnh/hàng `REFUND` thêm ở 2.4 (mở rộng CHECK
-  `operation` bằng migration).
+  `operation` bằng migration). → *Đã có ở 2.4b: `txn.command.bank-refund.v1`, bank-adapter V6
+  ([ADR-020](ADR-020-topup-compensation-refund.md)).*
 
 ## Alternatives rejected
 
