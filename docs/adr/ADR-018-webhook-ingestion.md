@@ -1,6 +1,7 @@
 # ADR-018 — Nhận webhook/IPN: chữ ký là ranh giới tin cậy, webhook là gợi ý
 
 **Trạng thái:** Accepted · **Ngày:** 2026-10-19 · **Milestone:** Phase 2 — 2.3a
+· *Amendments 2026-10-20 (2.3b): worker xử lý + trang quay về — xem cuối file*
 
 ## Context
 
@@ -103,11 +104,7 @@ mọi webhook. Không bao giờ là một khoá mặc định ai cũng đoán đ
 
 ### Còn mở — biết và chấp nhận trong 2.3a
 
-- **Worker xử lý `webhook_events` chưa có**: hàng được ghi nhưng chưa ai đọc, nên gauge
-  `walletflow.bank.webhook.unprocessed` sẽ chỉ tăng. Trong 2.3a kết quả **vẫn chỉ tới qua job đối chiếu như
-  2.2** — webhook chưa rút ngắn được gì. Hệ quả vận hành: **chưa đăng ký URL IPN với VNPay cho tới 2.3b**;
-  đăng ký sớm thì ta trả `RspCode=00` ("đừng gửi lại") cho sự kiện không ai xử lý. Tiền vẫn an toàn nhờ job
-  đối chiếu, nhưng đó là mất một lớp lưới mà không ai thấy.
+- ~~**Worker xử lý `webhook_events` chưa có**~~ — **đã làm ở 2.3b**, xem *Amendments* cuối file.
 - **Rate limit theo IP sau LB gộp chung một khoá.** `ipKeyResolver` dùng `getRemoteAddress()` và gateway
   chưa có `XForwardedRemoteAddressResolver`; đặt sau ingress thì toàn bộ traffic webhook chung một bucket
   20/40, nên ai cũng làm IPN thật của VNPay bị 429. Đây là điểm yếu CÓ SẴN (route `/api/auth/**` cũng vậy)
@@ -115,8 +112,8 @@ mọi webhook. Không bao giờ là một khoá mặc định ai cũng đoán đ
   riêng về số proxy tin cậy (`trustAll()` thì ai cũng giả được IP và rate limit thành đồ trang trí).
 - **Phát lại một IPN THẬT của chính ref đó** vẫn qua được: không có đối chiếu `vnp_RequestId`/mốc tươi. Chỉ
   TLS chặn — cùng rủi ro còn lại đã ghi ở ADR-017.
-- Return URL (người dùng quay về) chưa có.
-- Chưa có alert cho tồn đọng — gauge đã có, ngưỡng alert để 2.3b đặt khi biết nhịp thật.
+- ~~Return URL (người dùng quay về) chưa có.~~ — **đã làm ở 2.3b**.
+- ~~Chưa có alert cho tồn đọng~~ — **đã đặt ở 2.3b** (`BankWebhookBacklog`).
 
 ## Alternatives rejected
 
@@ -128,6 +125,90 @@ mọi webhook. Không bao giờ là một khoá mặc định ai cũng đoán đ
   sau bị bỏ im lặng.
 - **Tin `tenant_id` từ payload webhook:** bên ngoài tự khai tenant là đọc/ghi được sổ của người khác (ADR-010).
 - **Endpoint webhook đi qua JWT:** provider không có token của ta; không có cách nào cấp.
+
+## Amendments — 2026-10-20 (2.3b: worker xử lý + trang quay về)
+
+### A. Worker chỉ làm một việc: tra tenant rồi bảo adapter đi hỏi provider
+
+`WebhookWorker` lấy lô `webhook_events` chưa xử lý (`FOR UPDATE SKIP LOCKED`, `ORDER BY next_attempt_at`),
+mỗi hàng: tra `provider_ref` → `provider_transactions` ra tenant → `TenantContext.runWith` →
+`ChargeStatusService.refresh` (hàng PENDING) hoặc `confirmExpired` (hàng đã `FAILED(EXPIRED)`) → đóng
+`processed_at`.
+
+**Webhook THÊM một lần nhìn, không bao giờ lấy đi một lần nhìn đã lên lịch.** Với hàng đã
+`FAILED(EXPIRED)`, worker gọi `detectLateMoney` chứ không `confirmExpired`: lượt hỏi xác nhận theo lịch ở
+T+`expired-confirm-after` (ADR-017) là thứ che độ trễ chốt sổ của ngân hàng, và theo hợp đồng 2.2c thì một
+câu trả lời — kể cả "chưa thu" — đóng nó lại vĩnh viễn. Nếu webhook dùng chung đường đó thì một IPN tới vài
+phút sau khi hết hạn, lúc provider đương nhiên còn nói "chưa thu", sẽ **xoá mất lượt hỏi ở T+1h** và tiền về
+sau đó không còn ai phát hiện — một lỗ hổng mà chính người dùng kích hoạt được bằng cách phát lại return URL
+của mình vào `/webhooks/`. `detectLateMoney` hỏi và kêu y hệt nhưng không chạm `next_check_at`. Hợp đồng
+"hỏi đúng một lần" của ADR-017 giữ nguyên, không sửa gì ở đường theo lịch.
+
+**Nó không đọc kết quả trong payload.** §2 ở trên là chỗ dễ vi phạm nhất và giờ có test giữ:
+`WebhookWorkerIT.webhook_noi_thanh_cong_ma_provider_noi_chua_thi_khong_ghi_tien` — IPN ký đúng nói
+`SUCCEEDED`, provider vẫn nói chưa thu, không một đồng nào được ghi. Mutation check: thay bước hỏi lại bằng
+`markSucceeded` thì test đỏ.
+
+Hệ quả: **webhook và job đối chiếu cùng hỏi provider về một hàng là bình thường**. Mọi chuyển trạng thái là
+UPDATE có điều kiện nên chỉ luồng thắng phát event. Job đối chiếu vẫn là lưới an toàn; worker chỉ làm kết
+quả tới nhanh hơn (nhịp 2s so với 30s+ của job).
+
+### B. Lịch thử lại là trạng thái của hàng, không phải của process
+
+V5 thêm `attempts` + `next_attempt_at` + `outcome`. Lùi lịch NGAY khi lấy lô, trước khi gọi provider — cùng
+lý lẽ với `deferChecks` của lần thu: provider chết (hay process chết) thì hàng vẫn đã được lùi, nên nó không
+bị thử lại mỗi lượt quét và **không chặn những webhook tới sau nó**. Thiếu điều này, đúng lúc provider chập
+chờn — tức lúc tồn đọng lớn nhất — một hàng hỏng sẽ ngồi mãi ở đầu lô.
+
+Bốn kết cục đóng hàng (`outcome`):
+- `RESOLVED` — đã hỏi xong, dù câu trả lời là gì.
+- `UNRESOLVED_REF` — chữ ký đúng nhưng mã tham chiếu không thuộc hệ thống. **Không phải ca đua**: hàng
+  `provider_transactions` luôn tồn tại TRƯỚC khi người dùng được gửi sang provider, nên provider không thể
+  biết một mã ta chưa ghi. Thử lại mãi sẽ không bao giờ ra, nên đóng ngay. Counter
+  `walletflow.bank.webhook.unresolved` + alert: tới được đây nghĩa là ai đó **ký được bằng khoá của ta** —
+  hoặc hai môi trường dùng chung `VNPAY_TMN_CODE`, hoặc khoá đã lộ.
+- `FOREIGN_ACCOUNT` — lần thu thuộc **tài khoản merchant** khác tài khoản đang chạy (sau khi xoay
+  `VNPAY_TMN_CODE`). Chỉ tài khoản đã tạo phiên mới tra được phiên đó, nên đây là **lỗi nghiệp vụ**: thử lại
+  bao nhiêu lần cũng thế. Đóng ngay, counter riêng. Để nó rơi vào vòng retry rồi thành `ABANDONED` là bắn
+  alert "provider không trả lời" cho một ca đổi cấu hình — người trực sẽ đi truy một sự cố không tồn tại
+  (bất biến 7: phân loại lỗi TRƯỚC khi xử lý).
+- `ABANDONED` — hết `max-attempts` lượt mà chưa hỏi được. Counter + alert; cần đối soát tay. Cùng lý lẽ trần
+  với `expired_unconfirmed` (ADR-017): không có trần thì hàng ở lại tồn đọng mãi và dìm chết gauge.
+
+`abandonExhausted` chạy SAU cả lô và chỉ chạm hàng còn `processed_at IS NULL`, nên webhook xử lý xong đúng ở
+lượt chót không bị đánh nhầm là bỏ cuộc — ca biên thật, có test.
+
+### C. Trang quay về: `GET /payments/return/{provider}`, CHỈ ĐỌC
+
+Công khai như `/webhooks/**` (thêm vào `PUBLIC_PREFIXES` + route riêng, rate limit theo IP rộng hơn vì F5 là
+chuyện thường). Chữ ký kiểm bằng chính `verifyWebhook` — một đường kiểm duy nhất, hai bản sao sẽ lệch và chỗ
+lệch là một đường lách.
+
+**Tham số redirect không bao giờ là kết quả**: nó đi qua trình duyệt người dùng, và ngay cả redirect thật
+cũng chỉ nói "người dùng đã rời trang thanh toán". Endpoint trả trạng thái **đang ghi nhận trong DB**;
+`PENDING` là câu trả lời bình thường và đúng. Việc ghi duy nhất là `expediteCheck` — kéo `next_check_at` về
+`now()`, không đụng `check_attempts`, không đổi trạng thái. Tín hiệu về **thời điểm** thì tin được, về **kết
+quả** thì không.
+
+Khác `WebhookController` hai điểm: lỗi trả RFC 7807 (client là frontend của ta, không phải VNPay), và
+**không ghi `webhook_events`** — mở trang không phải là một thông báo của provider.
+
+`expediteCheck` lọc theo `(tenant_id, id)` của hàng vừa tra được, không theo `(provider, provider_ref)`: đây
+là đường GHI duy nhất từ một endpoint công khai, và bất biến "mọi query lọc tenant" (ADR-010) tồn tại đúng
+để chỗ này không âm thầm thành ghi chéo tenant vào ngày ai đó nới khoá unique trên `provider_ref`. Query
+DUY NHẤT không lọc tenant vẫn là `findByProviderAndProviderRefAndOperation` — nó *chính là* bước suy ra
+tenant, và ràng thêm `operation = CHARGE` để IPN của lần hoàn tiền (2.4) không bị dẫn vào đường của lần thu.
+
+### D. Vận hành
+
+- **Giờ mới được đăng ký URL IPN với VNPay** (2.3a cấm vì chưa ai đọc hàng).
+- Alert mới: `BankWebhookBacklog` (gauge `unprocessed` > 20 trong 10′), `BankWebhookAbandoned`,
+  `BankWebhookUnresolvedRef`, `BankWebhookForeignAccount`.
+- **`XForwardedRemoteAddressResolver` giờ là điều kiện CẦN trước khi mở ra Internet thật**, không còn là nợ
+  kỹ thuật có sẵn như ghi ở 2.3a: `/payments/return/**` là endpoint công khai đầu tiên có đường GHI (dù chỉ
+  là kéo lịch). Rate limit theo IP sau LB gộp chung một bucket thì nó không hạn chế được ai cả.
+- `VNPAY_RETURN_URL` nên trỏ tới `<gateway>/payments/return/vnpay` nếu frontend muốn dùng câu trả lời JSON
+  này; trỏ thẳng vào trang frontend cũng được — adapter không phụ thuộc vào việc nó được gọi.
 
 ## Liên quan
 

@@ -25,6 +25,44 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
             UUID tenantId, UUID transactionId, EBankOperation operation);
 
     /**
+     * Tra lần thu từ mã tham chiếu của provider — đường DUY NHẤT suy ra tenant của một webhook, vì webhook
+     * tới từ Internet và tenant do bên ngoài gửi thì không bao giờ được tin (ADR-018 §6).
+     *
+     * <p>Đây là query DUY NHẤT trên bảng này không lọc tenant, và là ngoại lệ có chủ ý: nó CHÍNH LÀ bước suy
+     * ra tenant. {@code uk_provider_txn_provider_ref} là UNIQUE {@code (provider, provider_ref)} nên cặp này
+     * xác định đúng một hàng. Caller phải đặt {@code TenantContext} theo tenant ĐỌC ĐƯỢC từ hàng trước khi
+     * làm bất cứ việc gì tiếp theo; mọi query sau đó lọc tenant như thường.
+     *
+     * <p>Ràng {@code operation} để một IPN của lần HOÀN TIỀN (2.4) không bị dẫn vào đường của lần thu — cùng
+     * một {@code provider_ref} có thể xuất hiện ở nhiều thao tác.
+     */
+    Optional<ProviderTransaction> findByProviderAndProviderRefAndOperation(
+            String provider, String providerRef, EBankOperation operation);
+
+    /**
+     * Kéo lần hỏi lại kế tiếp về ngay bây giờ. Dùng khi có tín hiệu người dùng vừa trả tiền xong (trang
+     * quay về, 2.3b): nhịp backoff lúc đó có thể đang ở 10 phút, chờ hết nhịp là bắt người dùng nhìn màn
+     * hình "đang xử lý" thêm 10 phút cho một thứ đã xong.
+     *
+     * <p>Chỉ là GỢI Ý về thời điểm hỏi — không đổi trạng thái, không đổi {@code check_attempts}, nên gọi
+     * bao nhiêu lần cũng vô hại và không bao giờ tự nó ghi tiền (ADR-016 §1).
+     *
+     * <p>Lọc tenant dù caller đã cầm sẵn hàng: đây là đường ghi từ một endpoint CÔNG KHAI, và bất biến
+     * "mọi query lọc theo tenant" (ADR-010) tồn tại đúng để chỗ như thế này không trở thành ghi chéo tenant
+     * vào ngày ai đó nới khoá unique trên {@code provider_ref}.
+     *
+     * @return 1 nếu vừa kéo lịch, 0 nếu hàng không còn PENDING (đã chốt rồi) hoặc đã tới hạn sẵn
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE provider_transactions
+               SET next_check_at = now(), updated_at = now()
+             WHERE tenant_id = :tenantId AND id = :id AND status = 'PENDING'
+               AND next_check_at > now()
+            """, nativeQuery = true)
+    int expediteCheck(@Param("tenantId") UUID tenantId, @Param("id") UUID id);
+
+    /**
      * Giành quyền thu cho một giao dịch. Hàng đã có (lệnh gửi lại, hai consumer đua nhau) thì không đụng
      * gì — Postgres bắt câu INSERT thứ hai chờ ở unique key tới khi câu thứ nhất commit, nên không bao giờ
      * có hai hàng, và không có lần nào vỡ unique key thành lỗi.

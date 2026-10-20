@@ -77,6 +77,20 @@ walletflow:
       # 5 lượt thì cửa sổ phát hiện tiền về muộn kéo tới ~T+31h. Phải rộng hơn nhịp PENDING rất nhiều: tiền
       # về muộn là do ngân hàng chốt sổ chậm, thường tính bằng giờ tới T+1, không phải bằng phút.
       max-confirm-recheck-after: PT16H
+    # Worker xử lý webhook đã nhận (2.3b, ADR-018 §4). Webhook chỉ KÍCH HOẠT việc hỏi lại provider; kết quả
+    # vẫn chỉ chốt bằng getStatus, nên worker này không bao giờ tự ghi tiền.
+    webhook:
+      # Nhanh hơn nhịp job đối chiếu: lý do duy nhất webhook tồn tại là để kết quả tới sớm hơn lưới an toàn
+      interval-ms: 2000
+      # Nhịp thử lại giãn cấp số khi provider không trả lời: 10s, 20s, 40s... trần 5m. Phải NGẮN hơn nhịp
+      # của job đối chiếu — webhook là đường nhanh; chờ lâu hơn lưới an toàn thì nó vô nghĩa.
+      retry-after: PT10S
+      max-retry-after: PT5M
+      batch-size: 50
+      # Trần số lượt thử một webhook. Hết lượt thì đóng ABANDONED và cộng counter
+      # walletflow.bank.webhook.abandoned — ca cần người đối soát. Không có trần thì một hàng không bao giờ
+      # xử lý được sẽ ở lại tồn đọng mãi và dìm chết tín hiệu của gauge unprocessed.
+      max-attempts: 10
     # Chỉ có tác dụng khi provider = vnpay. Mọi biến VNPAY_* BẮT BUỘC, không có mặc định — kể cả URL: URL
     # sandbox lọt lên môi trường thật là "thu" tiền giả mà cộng tiền thật (profile prod từ chối sandbox).
     vnpay:

@@ -1,4 +1,4 @@
-# Runbook — `PaymentProviderDown` / `BankStatusCheckFailing` / `ProviderAmountMismatch` / `PendingChargeOverdue` / `ExpiredChargeNeedsReview` / `ExpiredChargeUnconfirmed`
+# Runbook — `PaymentProviderDown` / `BankStatusCheckFailing` / `ProviderAmountMismatch` / `PendingChargeOverdue` / `ExpiredChargeNeedsReview` / `ExpiredChargeUnconfirmed` / `BankWebhookBacklog` / `BankWebhookAbandoned` / `BankWebhookForeignAccount` / `BankWebhookUnresolvedRef`
 
 > **`PaymentProviderDown` — mức page.** Circuit breaker của bank-adapter đang mở: cổng thanh toán lỗi
 > liên tục (timeout, 5xx, mất kết nối) nên adapter ngừng gọi ra ngoài.
@@ -149,6 +149,72 @@ SELECT id, tenant_id, transaction_id, provider_ref, amount_minor, provider_creat
 > hàng trước khi đổi tài khoản (mục trên) — chưa có alert. Nếu vừa đổi tài khoản, phải tự rà bằng tay:
 > `SELECT * FROM provider_transactions WHERE provider_account <> '<tmn hiện tại>' AND status IN ('PENDING','FAILED');`
 
+## `BankWebhookBacklog` — mức ticket
+
+Webhook đã nhận mà `WebhookWorker` chưa xử lý (`walletflow_bank_webhook_unprocessed` > 20 trong 10 phút).
+Nhớ: ta **đã trả `RspCode=00`** cho provider, tức "đã ghi nhận, đừng gửi lại" — hàng tồn ở đây là những tin
+báo sẽ **không bao giờ được gửi lại**.
+
+```sql
+SELECT provider, count(*), min(received_at), max(attempts)
+  FROM webhook_events WHERE processed_at IS NULL GROUP BY provider;
+```
+
+- Tiền vẫn an toàn: job đối chiếu (`PendingChargeReconciler`) vẫn chốt mọi lần thu. Cái mất là **tốc độ** —
+  người dùng chờ lâu hơn. Đừng xử lý như sự cố mất tiền.
+- `max(attempts) = 0` ⇒ worker **không chạy**: kiểm `walletflow.bank.webhook.enabled`, log khởi động, và
+  thread pool `spring.task.scheduling.pool.size` (job đối chiếu chiếm hết thread thì worker đói).
+- `attempts` tăng đều mà không đóng ⇒ provider không trả lời: xem `BankStatusCheckFailing` /
+  `PaymentProviderDown` bên trên, cùng nguyên nhân.
+- Hàng của **provider cũ** không bao giờ được nhặt (`lockDueUnprocessed` lọc theo provider đang chạy) — nếu
+  vừa đổi `BANK_PROVIDER`, tồn đọng này là hàng chết, đóng tay:
+  `UPDATE webhook_events SET processed_at = now(), outcome = 'ABANDONED' WHERE provider = '<provider cũ>' AND processed_at IS NULL;`
+
+## `BankWebhookAbandoned` — mức ticket
+
+Webhook dùng hết `walletflow.bank.webhook.max-attempts` lượt mà chưa hỏi được provider lần nào. Adapter đã
+thôi thử — không có gì tự giải quyết nữa.
+
+```sql
+SELECT id, provider_ref, received_at, attempts, raw_payload
+  FROM webhook_events WHERE outcome = 'ABANDONED' ORDER BY received_at DESC;
+```
+
+- Tra `provider_ref` sang `provider_transactions`. Hàng đã có kết quả cuối ⇒ job đối chiếu đã làm thay, đóng
+  ticket. Hàng còn `PENDING` ⇒ xử lý như `PendingChargeOverdue`.
+- Muốn thử lại sau khi provider hồi: `UPDATE webhook_events SET processed_at = NULL, outcome = NULL,
+  attempts = 0, next_attempt_at = now() WHERE id = '<id>';` — an toàn vì worker không bao giờ tự ghi tiền,
+  nó chỉ hỏi lại provider.
+
+## `BankWebhookForeignAccount` — mức ticket
+
+Webhook của một lần thu thuộc **tài khoản merchant cũ** (`provider_account` khác `VNPAY_TMN_CODE` đang
+chạy). Worker đóng ngay với `outcome = 'FOREIGN_ACCOUNT'` thay vì thử lại: chỉ tài khoản đã tạo phiên mới
+tra được phiên đó.
+
+```sql
+SELECT p.id, p.provider_account, p.status, p.amount_minor, w.received_at
+  FROM webhook_events w JOIN provider_transactions p ON p.provider_ref = w.provider_ref
+ WHERE w.outcome = 'FOREIGN_ACCOUNT' ORDER BY w.received_at DESC;
+```
+
+Đây là dấu hiệu một lần xoay `VNPAY_TMN_CODE` **còn bỏ dở** — xem "Trước khi đổi tài khoản merchant" bên
+trên. Những lần thu này không có đường tự chốt nào nữa (job đối chiếu cũng lọc theo tài khoản): phải đối
+soát tay với sao kê của **tài khoản cũ**.
+
+## `BankWebhookUnresolvedRef` — mức ticket
+
+Webhook có **chữ ký hợp lệ** nhưng `provider_ref` không có trong `provider_transactions`. Khác hẳn counter
+`webhook.received{outcome=rejected}` (người lạ gõ cửa — chuyện thường ở endpoint công khai): tới được đây
+nghĩa là ai đó **ký được bằng khoá của ta**.
+
+Không phải ca đua: hàng `provider_transactions` luôn tồn tại trước khi người dùng được gửi sang provider.
+
+1. Có môi trường nào khác (staging, máy dev) dùng chung `VNPAY_TMN_CODE` / `VNPAY_HASH_SECRET` không? Đây là
+   nguyên nhân thường gặp nhất — tách tài khoản merchant ra.
+2. Nếu không: coi như **khoá đã lộ**. Xoay `VNPAY_HASH_SECRET` (hoặc `BANK_MOCK_WEBHOOK_SECRET`) theo
+   `docs/runbooks/` quy trình bí mật, và rà `raw_payload` của các hàng `UNRESOLVED_REF` xem kẻ gửi biết gì.
+
 ## Liên quan
-ADR-016, ADR-017, `ResilientPaymentProvider`, `ChargeService`, `ChargeStatusService`, `PendingChargeReconciler`,
-`VnPayProvider`, `dlt-not-empty.md`
+ADR-016, ADR-017, ADR-018, `ResilientPaymentProvider`, `ChargeService`, `ChargeStatusService`,
+`PendingChargeReconciler`, `WebhookWorker`, `WebhookProcessor`, `VnPayProvider`, `dlt-not-empty.md`

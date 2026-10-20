@@ -215,6 +215,67 @@ groups:
             trong provider_transactions, đối soát với sao kê provider — KHÔNG sửa tay status.
           runbook: docs/runbooks/payment-provider-down.md
 
+      # Webhook đã nhận mà worker chưa xử lý (2.3b). Ta đã trả "00 — đừng gửi lại nữa" cho provider, nên
+      # hàng tồn ở đây là những tin báo KHÔNG AI ĐỌC và sẽ không bao giờ được gửi lại. Tiền vẫn an toàn nhờ
+      # job đối chiếu, nhưng đường nhanh đã chết mà không ai thấy. 10 phút: worker chạy mỗi 2s nên một tồn
+      # đọng thật sự phải tụt trong vài giây; còn đứng sau 10 phút là worker không chạy hoặc không qua được.
+      - alert: BankWebhookBacklog
+        expr: max by (job) (walletflow_bank_webhook_unprocessed) > 20
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} webhook chưa xử lý ở {{ $labels.job }}"
+          description: >-
+            Worker webhook không tiêu hoá kịp hoặc không chạy. Kiểm walletflow_bank_webhook_failures_total và
+            log của WebhookWorker; hàng nằm ở webhook_events có processed_at IS NULL.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Webhook dùng hết lượt thử mà chưa xử lý được: thôi thử, nên không có gì tự giải quyết nữa (cùng lý lẽ
+      # counter-chứ-không-gauge với ExpiredChargeUnconfirmed).
+      - alert: BankWebhookAbandoned
+        expr: increase(walletflow_bank_webhook_abandoned_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} webhook bị bỏ sau khi hết lượt thử ở {{ $labels.job }}"
+          description: >-
+            Provider đã báo kết quả mà adapter không hỏi lại được lần nào. Tìm hàng outcome = 'ABANDONED'
+            trong webhook_events, tra provider_ref sang provider_transactions và đối soát tay.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Webhook của lần thu thuộc TÀI KHOẢN MERCHANT cũ: chỉ tài khoản đã tạo phiên mới tra được phiên đó,
+      # nên những webhook này không bao giờ xử lý được. Dấu hiệu của một lần xoay VNPAY_TMN_CODE còn bỏ dở.
+      - alert: BankWebhookForeignAccount
+        expr: increase(walletflow_bank_webhook_foreign_account_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} webhook thuộc tài khoản merchant cũ ở {{ $labels.job }}"
+          description: >-
+            Có lần thu chưa chốt của tài khoản merchant trước khi xoay VNPAY_TMN_CODE. Rà
+            provider_transactions theo provider_account và đối soát tay — xem mục "Trước khi đổi tài khoản
+            merchant" trong runbook.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Webhook có CHỮ KÝ HỢP LỆ nhưng mã tham chiếu không thuộc hệ thống này. Khác hẳn counter
+      # webhook.received{outcome=rejected} (người lạ gõ cửa, chuyện thường ở endpoint công khai): tới được
+      # đây nghĩa là ai đó ký được bằng khoá của ta — hoặc hai môi trường đang dùng chung tài khoản merchant,
+      # hoặc khoá đã lộ. Cả hai đều phải biết ngay.
+      - alert: BankWebhookUnresolvedRef
+        expr: increase(walletflow_bank_webhook_unresolved_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} webhook ký đúng nhưng mã tham chiếu lạ ở {{ $labels.job }}"
+          description: >-
+            Kiểm xem có môi trường nào khác dùng chung VNPAY_TMN_CODE không. Nếu không có, coi như khoá
+            VNPAY_HASH_SECRET đã lộ và xoay khoá.
+          runbook: docs/runbooks/payment-provider-down.md
+
   - name: walletflow-availability
     interval: 30s
     rules:

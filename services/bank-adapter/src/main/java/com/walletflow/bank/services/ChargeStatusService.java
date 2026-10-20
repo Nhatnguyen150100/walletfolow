@@ -108,20 +108,51 @@ public class ChargeStatusService {
     }
 
     /**
-     * Hỏi XÁC NHẬN một lần thu đã FAILED(EXPIRED): tiền có về muộn không (ADR-017). Chỉ phát hiện — trạng thái
-     * không bao giờ bị đổi tự động: event {@code failed} đã phát, saga đã kết thúc; sửa là việc của người (2.5)
-     * với bằng chứng trong {@code raw_response} của provider.
+     * Hỏi XÁC NHẬN THEO LỊCH một lần thu đã FAILED(EXPIRED): tiền có về muộn không (ADR-017). Chỉ phát hiện —
+     * trạng thái không bao giờ bị đổi tự động: event {@code failed} đã phát, saga đã kết thúc; sửa là việc của
+     * người (2.5) với bằng chứng trong {@code raw_response} của provider.
+     *
+     * <p>Có câu trả lời là THÔI hỏi (hợp đồng của ADR-017: hỏi đúng một lần). Lượt hỏi do tín hiệu bên ngoài
+     * kích hoạt phải dùng {@link #detectLateMoney}, không dùng hàm này.</p>
      *
      * <p>Provider báo đã thu ({@code SUCCEEDED}) hoặc trạng thái lơ lửng ({@code UNRESOLVED}) → metric
      * {@code walletflow.bank.expired_needs_review} + log lỗi (alert page). Provider không trả lời → nổ ra, lần sau
      * hỏi lại (hàng đã được lùi hạn khi lấy lô).
      */
     public void confirmExpired(ProviderTransaction txn) {
+        if (!askAboutLateMoney(txn)) {
+            return;
+        }
+        transactionTemplate.executeWithoutResult(tx -> repository.finishExpiredConfirmation(txn.getTenantId(),
+                txn.getId()));
+    }
+
+    /**
+     * Hỏi tiền có về muộn không vì vừa có TÍN HIỆU (webhook, 2.3b) chứ không phải vì tới lịch — nên
+     * <b>KHÔNG</b> tiêu lượt hỏi xác nhận đã đặt.
+     *
+     * <p>Vì sao phải tách khỏi {@link #confirmExpired}: lượt hỏi theo lịch được đặt ở T+{@code
+     * expired-confirm-after} đúng để che độ trễ chốt sổ của ngân hàng, và một câu trả lời "chưa thu" sẽ đóng
+     * nó lại vĩnh viễn (ADR-017). Nếu webhook dùng chung đường đó, một IPN tới vài phút sau khi hết hạn —
+     * lúc ngân hàng còn chưa chốt sổ nên provider đương nhiên nói "chưa thu" — sẽ xoá mất lượt hỏi ở T+1h,
+     * và tiền về sau đó không còn ai phát hiện. Webhook chỉ được THÊM một lần nhìn, không bao giờ lấy đi một
+     * lần nhìn đã lên lịch.
+     */
+    public void detectLateMoney(ProviderTransaction txn) {
+        askAboutLateMoney(txn);
+    }
+
+    /**
+     * Phần dùng chung: hỏi provider về một lần thu đã {@code FAILED(EXPIRED)} và kêu nếu tiền đã về.
+     *
+     * @return {@code false} nếu hàng không phải ca cần hỏi (đã bị bỏ qua)
+     */
+    private boolean askAboutLateMoney(ProviderTransaction txn) {
         if (!txn.getTenantId().equals(TenantContext.require())) {
             throw new IllegalStateException("Lần thu " + txn.getId() + " không thuộc tenant hiện tại");
         }
         if (txn.getStatus() != EProviderTxnStatus.FAILED || !EXPIRED_CODE.equals(txn.getFailureCode())) {
-            return;
+            return false;
         }
         requireSameOrigin(txn);
         ProviderStatus status = provider.getStatus(txn.getProviderRef(), txn.getProviderCreatedAt());
@@ -132,8 +163,7 @@ public class ChargeStatusService {
                     txn.getId(), txn.getTransactionId(), status.state(), status.capturedAmountMinor(),
                     status.capturedCurrency());
         }
-        transactionTemplate.executeWithoutResult(tx -> repository.finishExpiredConfirmation(txn.getTenantId(),
-                txn.getId()));
+        return true;
     }
 
     /**
