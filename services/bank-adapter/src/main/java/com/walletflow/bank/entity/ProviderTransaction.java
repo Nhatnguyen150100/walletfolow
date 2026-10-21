@@ -2,6 +2,7 @@ package com.walletflow.bank.entity;
 
 import com.walletflow.bank.enums.EProviderTxnStatus;
 import com.walletflow.common.event.BankChargeCommand;
+import com.walletflow.common.event.BankRefundCommand;
 import com.walletflow.common.event.EBankOperation;
 import com.walletflow.common.money.ECurrency;
 import jakarta.persistence.Column;
@@ -97,12 +98,26 @@ public class ProviderTransaction {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /** Lần thu mà hàng REFUND này hoàn (V6); NULL với hàng CHARGE. */
+    @Column(name = "refund_of")
+    private UUID refundOf;
+
     /**
      * Lệnh gửi lại có đúng là cùng một lần thu không. Cùng {@code transactionId} mà khác ví, số tiền hay
      * loại tiền thì không phải "gửi lại" mà là bug phía producer — thu theo lệnh mới là thu sai số,
      * thu theo hàng cũ là lờ đi một lệnh.
      */
     public boolean sameChargeAs(BankChargeCommand command) {
+        return walletId.equals(command.walletId())
+                && amountMinor == command.amountMinor()
+                && currency == command.currency();
+    }
+
+    /**
+     * Lệnh hoàn có đúng là hoàn TRỌN lần thu này không (gọi trên hàng CHARGE). Chỉ hoàn trọn: hoàn theo con số
+     * của lệnh khi nó lệch số đã thu là trả người dùng số tiền họ chưa từng trả, hoặc giữ lại một phần tiền của họ.
+     */
+    public boolean coversRefund(BankRefundCommand command) {
         return walletId.equals(command.walletId())
                 && amountMinor == command.amountMinor()
                 && currency == command.currency();

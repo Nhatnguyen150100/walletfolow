@@ -6,6 +6,7 @@ import com.walletflow.bank.provider.ChargeResult;
 import com.walletflow.bank.provider.ProviderStatus;
 import com.walletflow.bank.provider.ProviderUnavailableException;
 import com.walletflow.bank.provider.RefundRequest;
+import com.walletflow.bank.provider.RefundResult;
 import com.walletflow.bank.provider.VerifiedWebhook;
 import com.walletflow.bank.support.FakeVnPayServer;
 import com.walletflow.common.money.ECurrency;
@@ -187,10 +188,15 @@ class VnPayProviderTest {
     }
 
     @Test
-    @DisplayName("Hoàn tiền chưa được hỗ trợ: UnsupportedOperationException, không âm thầm 'thành công'")
+    @DisplayName("Hoàn tiền chưa được hỗ trợ: từ chối dứt khoát REFUND_UNSUPPORTED, không bao giờ 'đã hoàn', không gọi mạng")
     void hoan_tien_chua_ho_tro() {
-        assertThatThrownBy(() -> provider.refund(new RefundRequest(KEY, TXN_REF, 1_000, ECurrency.VND)))
-                .isInstanceOf(UnsupportedOperationException.class);
+        // provider dựng với RestClient không trỏ tới máy nào: gọi mạng thì nổ, nên trả về được tức là không gọi
+        RefundResult result = provider.refund(new RefundRequest(KEY, TXN_REF, 1_000, ECurrency.VND));
+
+        assertThat(result)
+                .as("từ chối (2.4b) để saga chuyển người hoàn tay — ném lỗi là thử lại vô ích rồi DLT và mở breaker")
+                .isInstanceOfSatisfying(RefundResult.Declined.class,
+                        declined -> assertThat(declined.failureCode()).isEqualTo(VnPayProvider.REFUND_UNSUPPORTED));
     }
 
     @Test

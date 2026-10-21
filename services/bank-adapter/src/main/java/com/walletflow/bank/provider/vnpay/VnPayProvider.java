@@ -72,6 +72,8 @@ public class VnPayProvider implements PaymentProvider {
     static final long MAX_AMOUNT_MINOR = 9_999_999_999L;
     /** {@code vnp_TransactionType} của giao dịch thanh toán (02/03 là hoàn tiền toàn phần/một phần). */
     static final String PAYMENT_TRANSACTION_TYPE = "01";
+    /** Mã từ chối hoàn tiền tới khi có 2.4c (gọi {@code vnp_Command=refund}). */
+    public static final String REFUND_UNSUPPORTED = "REFUND_UNSUPPORTED";
     /** Khuôn {@code vnp_TxnRef} theo tài liệu VNPay: Alphanumeric, tối đa 100 ký tự. */
     private static final Pattern VALID_TXN_REF = Pattern.compile("[A-Za-z0-9]{1,100}");
 
@@ -181,10 +183,17 @@ public class VnPayProvider implements PaymentProvider {
         return interpret(answer, raw);
     }
 
-    /** Hoàn tiền thuộc saga top-up (2.4) — chưa có luồng nào gọi tới. */
+    /**
+     * Gọi API hoàn tiền thật của VNPay ({@code vnp_Command=refund}) là việc của 2.4c. Tới lúc đó trả lời TỪ CHỐI
+     * DỨT KHOÁT, không ném lỗi: một exception ở đây bị lớp resilience coi là lỗi kỹ thuật → Kafka thử lại → DLT,
+     * và còn được tính là lỗi của circuit breaker — mở mạch thì chặn luôn {@code querydr} của mọi lần thu đang chờ.
+     * Từ chối thì saga nhận {@code bank.event.failed} (REFUND) và chuyển người hoàn tay qua portal VNPay
+     * (runbook {@code topup-stuck.md}). Không gọi mạng: không có gì được gửi tới VNPay.
+     */
     @Override
     public RefundResult refund(RefundRequest request) {
-        throw new UnsupportedOperationException("VNPay refund chưa được hỗ trợ (roadmap 2.4)");
+        return new RefundResult.Declined(REFUND_UNSUPPORTED,
+                "{\"source\":\"bank-adapter\",\"reason\":\"" + REFUND_UNSUPPORTED + "\"}");
     }
 
     /**

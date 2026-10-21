@@ -15,8 +15,11 @@ này nghĩa là ngân hàng **đã** trừ họ. Mỗi phút ở đây là một
 **Hai nguồn phải khớp trước khi quyết:** sổ cái của ta (`ledger`) và cổng thanh toán (`provider`).
 Không quyết dựa trên một nguồn.
 
-**Chưa có hoàn tiền tự động** (2.4b). Mọi ca ở đây kết thúc bằng một thao tác tay: hoặc ghi sổ được,
-hoặc hoàn tiền qua cổng của provider.
+**Chưa có hoàn tiền tự động** — đang làm ở 2.4b ([ADR-020](../adr/ADR-020-topup-compensation-refund.md)):
+PR1 đã có hàng rào ở ledger và lệnh hoàn ở bank-adapter, nhưng saga chưa gửi lệnh hoàn (PR2). Tới lúc đó mọi
+ca ở đây kết thúc bằng một thao tác tay: hoặc ghi sổ được (chỉ khi ledger chưa dựng hàng rào — mục A), hoặc
+hoàn tiền qua cổng của provider. Với VNPay, hoàn tự động chưa có cả sau PR2 (2.4c): bank-adapter trả
+`REFUND_UNSUPPORTED` và ca đó vẫn chờ người hoàn tay qua portal.
 
 ## Chẩn đoán — 3 phút
 
@@ -35,7 +38,7 @@ docker exec wf-postgres psql -U walletflow -d bankdb -c "
 
 # 3. Ledger đã ghi bút toán cho giao dịch này chưa — câu hỏi quyết định
 docker exec wf-postgres psql -U walletflow -d ledgerdb -c "
-  SELECT id, type, status, created_at FROM journal_entries WHERE transaction_id = '<id>';"
+  SELECT id, tenant_id, type, created_at FROM journal_entries WHERE transaction_id = '<id>';"
 ```
 
 `failure_code` nói ca nào:
@@ -53,7 +56,24 @@ Nguyên nhân gần như luôn là trạng thái tài khoản: ví bị đóng g
 
 1. Xác nhận tiền đã thu thật: bước 2 ở trên phải cho `status = 'SUCCEEDED'`, và đối chiếu với cổng
    thanh toán (portal của provider) theo `provider_ref`. **Không tin một nguồn.**
-2. Hỏi nghiệp vụ: ví có mở lại được không?
+2. **Bước 3 chẩn đoán trước tiên**: có bút toán `TOPUP` cho giao dịch này không?
+   - **Có** → tiền ĐÃ vào ví. **Không hoàn tiền**, kể cả khi bước dưới thấy hàng rào: trong lúc rolling deploy
+     lên ledger V6, một instance cũ (không khoá, không kiểm hàng rào) vẫn có thể ghi sổ bản gửi lại. Đây là
+     ca lệch, không phải ca mất tiền — xử lý như mục B (mở issue), rồi đóng giao dịch theo mục D ở bước
+     `POSTING` để saga nhận lại `LedgerPosted`.
+   - **Không** → sang bước tiếp.
+3. Kiểm ledger đã dựng **hàng rào** cho giao dịch này chưa (ADR-020, từ ledger V6):
+   ```bash
+   docker exec wf-postgres psql -U walletflow -d ledgerdb -c "
+     SELECT tenant_id, reason_code, reason, rejected_at FROM rejected_topups WHERE transaction_id = '<id>';"
+   ```
+   - **Có hàng** (và bước 2 không có bút toán) → giao dịch này **không bao giờ ghi sổ được nữa**, kể cả sau
+     khi mở lại ví: ledger từ chối lại với đúng mã cũ. Đây là chủ ý — lời từ chối đó cho phép hoàn tiền, và
+     ghi sổ sau khi đã hoàn là cho người dùng nhận tiền hai lần. Hàng không xoá được (trigger append-only),
+     **đừng tìm cách gỡ**. Chỉ còn một đường: **hoàn tiền tay** (bên dưới); người dùng nạp lại bằng giao dịch
+     mới.
+   - **Không có hàng** (lời từ chối trước khi lên V6) → hỏi nghiệp vụ như cũ ở bước 4.
+4. Hỏi nghiệp vụ: ví có mở lại được không? (chỉ khi KHÔNG có hàng rào)
    - **Mở lại được** → mở ví, rồi mở lại saga theo mục D. Lệnh ghi sổ được gửi lại với cùng
      `transactionId`, ledger ghi đúng MỘT bút toán.
    - **Không mở lại được** (đóng vĩnh viễn, KYC) → **hoàn tiền tay** qua portal của provider theo

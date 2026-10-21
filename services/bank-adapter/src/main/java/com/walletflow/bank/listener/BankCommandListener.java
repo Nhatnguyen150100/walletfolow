@@ -1,7 +1,9 @@
 package com.walletflow.bank.listener;
 
 import com.walletflow.bank.services.ChargeService;
+import com.walletflow.bank.services.RefundService;
 import com.walletflow.common.event.BankChargeCommand;
+import com.walletflow.common.event.BankRefundCommand;
 import com.walletflow.common.event.EnvelopeReader;
 import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.event.WalletTopics;
@@ -31,6 +33,7 @@ public class BankCommandListener {
 
     private final EnvelopeReader envelopeReader;
     private final ChargeService chargeService;
+    private final RefundService refundService;
 
     @KafkaListener(topics = WalletTopics.CMD_BANK_CHARGE)
     public void onCharge(String message) {
@@ -42,6 +45,25 @@ public class BankCommandListener {
                 chargeService.charge(envelope.payload());
             } catch (AppException invalid) {
                 throw new PoisonMessageException("Lệnh thu tiền không hợp lệ (eventId=" + envelope.eventId()
+                        + "): " + invalid.getErrorCode() + " - " + invalid.getMessage(), invalid);
+            }
+        });
+    }
+
+    /**
+     * Bù trừ của saga nạp tiền (2.4b, ADR-020). Cùng ba đường lỗi như {@link #onCharge}: provider từ chối hoàn là
+     * câu trả lời ({@code bank.event.failed}, operation REFUND); lệnh lệch lần thu là bug producer → DLT; lỗi kỹ
+     * thuật → thử lại → DLT — timeout không có nghĩa là chưa hoàn.
+     */
+    @KafkaListener(topics = WalletTopics.CMD_BANK_REFUND)
+    public void onRefund(String message) {
+        EventEnvelope<BankRefundCommand> envelope = envelopeReader.read(message, BankRefundCommand.class);
+
+        TenantContext.runWith(envelope.tenantId(), () -> {
+            try {
+                refundService.refund(envelope.payload());
+            } catch (AppException invalid) {
+                throw new PoisonMessageException("Lệnh hoàn tiền không hợp lệ (eventId=" + envelope.eventId()
                         + "): " + invalid.getErrorCode() + " - " + invalid.getMessage(), invalid);
             }
         });

@@ -2,6 +2,7 @@ package com.walletflow.ledger.services;
 
 import com.walletflow.common.dedup.EventDeduplicator;
 import com.walletflow.common.event.AccountOpenedEvent;
+import com.walletflow.common.event.EJournalType;
 import com.walletflow.common.event.OpenAccountCommand;
 import com.walletflow.ledger.entity.Account;
 import com.walletflow.common.event.WalletTopics;
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -87,6 +89,17 @@ public class LedgerCommandHandler {
     public void reject(UUID eventId, PostJournalCommand command, AppException rejection) {
         deduplicator.markProcessed(eventId, CONSUMER);
 
+        AppException outcome = rejection;
+        if (command.type() == EJournalType.TOPUP && command.transactionId() != null) {
+            // Lời từ chối lệnh nạp kích hoạt hoàn tiền (2.4b) — nên nó phải là lời cuối cùng: dựng hàng rào
+            // cùng transaction với event, hoặc không phát gì nếu giao dịch thực ra đã được ghi sổ (ADR-020).
+            Optional<AppException> fenced = ledgerService.fenceRejectedTopup(command, rejection);
+            if (fenced.isEmpty()) {
+                return;
+            }
+            outcome = fenced.get();
+        }
+
         outboxPublisher.publish(
                 WalletTopics.EVT_LEDGER_REJECTED,
                 rejectionPartitionKey(command),
@@ -95,8 +108,8 @@ public class LedgerCommandHandler {
                 new LedgerRejectedEvent(
                         command.transactionId(),
                         command.type(),
-                        rejection.getErrorCode(),
-                        rejection.getMessage()));
+                        outcome.getErrorCode(),
+                        outcome.getMessage()));
     }
 
     /**

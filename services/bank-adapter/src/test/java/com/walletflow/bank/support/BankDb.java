@@ -95,6 +95,48 @@ public final class BankDb {
                 tenantId, transactionId);
     }
 
+    /** Hàng của MỘT thao tác (CHARGE/REFUND) — {@link #row} sẽ nổ khi giao dịch đã có cả lần hoàn. */
+    public Map<String, Object> row(UUID tenantId, UUID transactionId, String operation) {
+        return jdbc.queryForMap(
+                "SELECT * FROM provider_transactions WHERE tenant_id = ? AND transaction_id = ? AND operation = ?",
+                tenantId, transactionId, operation);
+    }
+
+    public String status(UUID tenantId, UUID transactionId, String operation) {
+        return (String) row(tenantId, transactionId, operation).get("status");
+    }
+
+    public int rowCount(UUID tenantId, UUID transactionId, String operation) {
+        return jdbc.queryForObject("SELECT count(*) FROM provider_transactions "
+                        + "WHERE tenant_id = ? AND transaction_id = ? AND operation = ?",
+                Integer.class, tenantId, transactionId, operation);
+    }
+
+    /** Số hàng REFUND của giao dịch ở MỌI tenant — để chứng minh một lệnh hoàn sai không để lại gì. */
+    public int refundRowCountAnyTenant(UUID transactionId) {
+        return jdbc.queryForObject(
+                "SELECT count(*) FROM provider_transactions WHERE transaction_id = ? AND operation = 'REFUND'",
+                Integer.class, transactionId);
+    }
+
+    /**
+     * Event của một giao dịch trên một topic, chỉ lấy loại có {@code payload.operation = operation} — topic
+     * completed/failed dùng chung cho thu và hoàn nên đếm theo topic thôi sẽ lẫn.
+     */
+    public List<Map<String, Object>> outboxOfOperation(UUID transactionId, String topic, String operation) {
+        return jdbc.queryForList(
+                "SELECT event_id, tenant_id, published, msg_key, payload FROM outbox_event "
+                        + "WHERE topic = ? AND payload LIKE ? AND payload::jsonb -> 'payload' ->> 'operation' = ? "
+                        + "ORDER BY created_at",
+                topic, "%" + transactionId + "%", operation);
+    }
+
+    public List<UUID> outboxEventIds(UUID transactionId, String topic, String operation) {
+        return outboxOfOperation(transactionId, topic, operation).stream()
+                .map(row -> (UUID) row.get("event_id"))
+                .toList();
+    }
+
     public String status(UUID tenantId, UUID transactionId) {
         return (String) row(tenantId, transactionId).get("status");
     }

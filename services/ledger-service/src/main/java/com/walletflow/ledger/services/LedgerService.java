@@ -1,6 +1,7 @@
 package com.walletflow.ledger.services;
 
 import com.walletflow.common.exception.AccountNotActiveException;
+import com.walletflow.common.exception.AppException;
 import com.walletflow.common.exception.BadRequestException;
 import com.walletflow.common.exception.ConflictException;
 import com.walletflow.common.exception.InsufficientFundsException;
@@ -14,14 +15,17 @@ import com.walletflow.ledger.dto.ResolvedLeg;
 import com.walletflow.ledger.entity.Account;
 import com.walletflow.ledger.entity.JournalEntry;
 import com.walletflow.ledger.entity.Posting;
+import com.walletflow.ledger.entity.RejectedTopup;
 import com.walletflow.common.event.EJournalType;
 import com.walletflow.ledger.enums.ETypeAccount;
 import com.walletflow.ledger.repositories.AccountRepository;
 import com.walletflow.ledger.repositories.JournalEntryRepository;
 import com.walletflow.ledger.repositories.PostingRepository;
+import com.walletflow.ledger.repositories.RejectedTopupRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
@@ -45,6 +49,7 @@ public class LedgerService {
     private final AccountRepository accountRepository;
     private final JournalEntryRepository journalEntryRepository;
     private final PostingRepository postingRepository;
+    private final RejectedTopupRepository rejectedTopupRepository;
 
     /**
      * Ghi bút toán, hoặc trả về bút toán đã ghi nếu lệnh này đã được xử lý trước đó.
@@ -76,6 +81,9 @@ public class LedgerService {
         UUID tenantId = TenantContext.require();
 
         validateShape(command);
+        if (command.type() == EJournalType.TOPUP) {
+            lockTopup(tenantId, command.transactionId());
+        }
         validateReference(tenantId, command);
 
         Optional<JournalEntry> alreadyPosted = findExisting(tenantId, command);
@@ -83,6 +91,17 @@ public class LedgerService {
             log.info("Ledger: lệnh trùng cho transaction {} ({}) -> trả về bút toán đã ghi {}",
                     command.transactionId(), command.type(), alreadyPosted.get().getId());
             return alreadyPosted.get();
+        }
+
+        if (command.type() == EJournalType.TOPUP) {
+            // Hàng rào (ADR-020): đã từ chối lệnh nạp này một lần thì saga có thể đã hoàn tiền về thẻ. Ghi sổ
+            // bây giờ — dù tài khoản đã được mở lại — là cho người dùng nhận tiền hai lần.
+            Optional<RejectedTopup> fenced = rejectedTopupRepository.find(tenantId, command.transactionId());
+            if (fenced.isPresent()) {
+                log.warn("Ledger: lệnh nạp {} đã bị từ chối trước đó ({}) -> từ chối lại, không ghi sổ",
+                        command.transactionId(), fenced.get().getReasonCode());
+                throw new ConflictException(fenced.get().getReasonCode(), fenced.get().getReason());
+            }
         }
 
         List<ResolvedLeg> resolvedLegs = resolveAccounts(tenantId, command);
@@ -149,6 +168,45 @@ public class LedgerService {
         }
 
         return new JournalView(legs, debitedWallet != null ? debitedWallet : anyWallet);
+    }
+
+    /**
+     * Dựng hàng rào cho một lệnh NẠP vừa bị từ chối (ADR-020) và trả về lời từ chối phải phát đi.
+     *
+     * <p>Chạy trong transaction của đường từ chối ({@code MANDATORY}), dưới cùng khoá theo giao dịch với
+     * {@link #postJournal}, nên hai câu hỏi dưới đây có câu trả lời dứt khoát:
+     * <ul>
+     *   <li><b>Đã có bút toán nạp chưa?</b> Có — một bản gửi lại khác đã ghi sổ thành công (consumer khác, lúc
+     *       rebalance). Khi đó lời từ chối này là CŨ: không dựng hàng rào, không phát gì. Phát nó ra là bảo saga
+     *       hoàn tiền cho một giao dịch mà tiền ĐÃ vào ví.</li>
+     *   <li><b>Đã có hàng rào chưa?</b> Có — lần từ chối lại: giữ mã của LẦN ĐẦU, để event từ chối (eventId tất
+     *       định theo giao dịch) luôn mang cùng nội dung.</li>
+     * </ul>
+     *
+     * @return lời từ chối cần phát (mã của lần đầu), hoặc rỗng nếu giao dịch đã được ghi sổ
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Optional<AppException> fenceRejectedTopup(PostJournalCommand command, AppException rejection) {
+        UUID tenantId = TenantContext.require();
+        lockTopup(tenantId, command.transactionId());
+
+        if (findExisting(tenantId, command).isPresent()) {
+            log.warn("Ledger: bỏ lời từ chối cũ cho lệnh nạp {} ({}) — giao dịch đã được ghi sổ",
+                    command.transactionId(), rejection.getErrorCode());
+            return Optional.empty();
+        }
+
+        String reason = rejection.getMessage() != null ? rejection.getMessage() : rejection.getErrorCode();
+        rejectedTopupRepository.insertIfAbsent(tenantId, command.transactionId(), rejection.getErrorCode(), reason);
+        RejectedTopup fence = rejectedTopupRepository.find(tenantId, command.transactionId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "Vừa dựng hàng rào mà không đọc lại được cho lệnh nạp " + command.transactionId()));
+        return Optional.of(new ConflictException(fence.getReasonCode(), fence.getReason()));
+    }
+
+    /** Khoá theo giao dịch nạp — điểm gặp giữa đường ghi sổ và đường dựng hàng rào (ADR-020). */
+    private void lockTopup(UUID tenantId, UUID transactionId) {
+        rejectedTopupRepository.lock("ledger-topup:" + tenantId + ":" + transactionId);
     }
 
     private Optional<JournalEntry> findExisting(UUID tenantId, PostJournalCommand command) {

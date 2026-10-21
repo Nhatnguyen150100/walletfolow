@@ -2,6 +2,7 @@ package com.walletflow.bank.support;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.walletflow.common.event.BankChargeCommand;
+import com.walletflow.common.event.BankRefundCommand;
 import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.money.ECurrency;
 
@@ -27,6 +28,22 @@ public final class BankFixtures {
         try {
             return objectMapper.writeValueAsString(EventEnvelope.of(
                     UUID.randomUUID(), "BankCharge", tenantId, null, command, Instant.now()));
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Lệnh hoàn TRỌN đúng lần thu {@code charge} — đúng như saga bù trừ gửi. */
+    public static BankRefundCommand refundOf(BankChargeCommand charge) {
+        return new BankRefundCommand(charge.transactionId(), charge.walletId(), charge.amountMinor(),
+                charge.currency(), "ACCOUNT_CLOSED");
+    }
+
+    /** Mỗi lần gọi sinh một eventId mới — "gửi lại" của saga luôn mang eventId khác. */
+    public static String refundEnvelopeJson(ObjectMapper objectMapper, UUID tenantId, BankRefundCommand command) {
+        try {
+            return objectMapper.writeValueAsString(EventEnvelope.of(
+                    UUID.randomUUID(), "BankRefund", tenantId, null, command, Instant.now()));
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
