@@ -1,0 +1,146 @@
+server:
+  port: 8085
+
+spring:
+  application:
+    name: bank-adapter
+  config:
+    import: optional:configserver:${CONFIG_SERVER_URL:http://localhost:8888}
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/railsdb
+    username: ${DB_USER:walletflow}
+    password: ${DB_PASS:walletflow}
+  jpa:
+    hibernate:
+      ddl-auto: validate      # Flyway quản schema; Hibernate chỉ validate
+    open-in-view: false
+    properties:
+      hibernate.format_sql: true
+  flyway:
+    enabled: true
+    # railsdb chưa từng được dùng trước service này — không có schema cũ nào cần baseline.
+    baseline-on-migrate: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    consumer:
+      group-id: bank-adapter
+      auto-offset-reset: earliest
+  task:
+    scheduling:
+      pool:
+        # Mặc định Spring chỉ có MỘT thread cho mọi @Scheduled. Job đối chiếu gọi provider (mỗi lời gọi tới
+        # resilience.timeout) mà chiếm thread đó thì outbox relay đứng theo — người dùng không nhận được URL
+        # thanh toán và kết quả thu tiền trễ đúng lúc provider đang chậm.
+        size: 4
+
+walletflow:
+  bank:
+    # BẮT BUỘC, không có mặc định: `mock` (máy dev/test) | `vnpay` (ADR-017). Thiếu biến thì service KHÔNG
+    # khởi động. Một mặc định ở đây là cách MockProvider lọt lên môi trường thật và "thu" tiền giả —
+    # tức cộng tiền thật vào ví mà không ai trả (ADR-016).
+    provider: ${BANK_PROVIDER}
+    # Bọc mọi lời gọi ra provider (ResilientPaymentProvider)
+    resilience:
+      timeout: 5s
+      # Bulkhead: provider chậm chỉ chiếm được chừng này thread, không kéo cả consumer Kafka theo
+      max-threads: 8
+      queue-capacity: 16
+      # Circuit breaker: >= 50% của 20 lời gọi gần nhất lỗi -> mở 30s, không gọi ra ngoài nữa
+      failure-rate-threshold: 50
+      sliding-window-size: 20
+      minimum-calls: 10
+      open-wait: 30s
+    # Phiên thanh toán (ADR-017, chốt 2026-10-18)
+    session:
+      # Hạn phiên gửi cho provider (VNPay: vnp_ExpireDate) — quá mốc này provider không nhận tiền nữa
+      ttl: PT15M
+      # Quá hạn + grace mà provider vẫn khẳng định CHƯA thu -> FAILED(EXPIRED). Grace che độ trễ giữa lúc ngân
+      # hàng trừ tiền và lúc provider ghi nhận; chỉ câu trả lời của provider mới kết thúc được lần thu.
+      expiry-grace: PT15M
+      # Sau khi đã báo EXPIRED, hỏi provider THÊM MỘT lần sau chừng này: tiền về muộn (ngân hàng chậm) thì
+      # metric expired_needs_review + alert page. Chỉ phát hiện, không bao giờ tự đổi trạng thái.
+      expired-confirm-after: PT1H
+    # Job đối chiếu: hỏi lại provider cho các lần thu đang PENDING (webhook chỉ là gợi ý, 2.3)
+    status-check:
+      interval-ms: 10000
+      # Nhịp hỏi lại giãn cấp số: 30s, 1m, 2m, 4m, 8m, rồi mỗi 10m — phiên bỏ dở, hàng lệch số tiền,
+      # hàng lơ lửng không dội provider đều đặn mãi
+      recheck-after: PT30S
+      max-recheck-after: PT10M
+      batch-size: 50
+      # Trần số lần hỏi XÁC NHẬN sau khi đã EXPIRED. Hết lượt thì thôi hỏi và cộng counter
+      # walletflow.bank.expired_unconfirmed — ca phải đối soát tay với sao kê provider. Không có trần thì
+      # một hàng provider không bao giờ trả lời được sẽ bị hỏi lại mãi mãi, mà nó đã FAILED nên
+      # countOverdue không đếm và không alert nào kêu.
+      max-confirm-attempts: 5
+      # Nhịp hỏi xác nhận giãn cấp số từ session.expired-confirm-after (1h): 1h, 2h, 4h, 8h, 16h — với trần
+      # 5 lượt thì cửa sổ phát hiện tiền về muộn kéo tới ~T+31h. Phải rộng hơn nhịp PENDING rất nhiều: tiền
+      # về muộn là do ngân hàng chốt sổ chậm, thường tính bằng giờ tới T+1, không phải bằng phút.
+      max-confirm-recheck-after: PT16H
+    # Worker xử lý webhook đã nhận (2.3b, ADR-018 §4). Webhook chỉ KÍCH HOẠT việc hỏi lại provider; kết quả
+    # vẫn chỉ chốt bằng getStatus, nên worker này không bao giờ tự ghi tiền.
+    webhook:
+      # Nhanh hơn nhịp job đối chiếu: lý do duy nhất webhook tồn tại là để kết quả tới sớm hơn lưới an toàn
+      interval-ms: 2000
+      # Nhịp thử lại giãn cấp số khi provider không trả lời: 10s, 20s, 40s... trần 5m. Phải NGẮN hơn nhịp
+      # của job đối chiếu — webhook là đường nhanh; chờ lâu hơn lưới an toàn thì nó vô nghĩa.
+      retry-after: PT10S
+      max-retry-after: PT5M
+      batch-size: 50
+      # Trần số lượt thử một webhook. Hết lượt thì đóng ABANDONED và cộng counter
+      # walletflow.bank.webhook.abandoned — ca cần người đối soát. Không có trần thì một hàng không bao giờ
+      # xử lý được sẽ ở lại tồn đọng mãi và dìm chết tín hiệu của gauge unprocessed.
+      max-attempts: 10
+    # Chỉ có tác dụng khi provider = vnpay. Mọi biến VNPAY_* BẮT BUỘC, không có mặc định — kể cả URL: URL
+    # sandbox lọt lên môi trường thật là "thu" tiền giả mà cộng tiền thật (profile prod từ chối sandbox).
+    vnpay:
+      tmn-code: ${VNPAY_TMN_CODE}
+      hash-secret: ${VNPAY_HASH_SECRET}
+      pay-url: ${VNPAY_PAY_URL}
+      api-url: ${VNPAY_API_URL}
+      # Trang người dùng quay về sau khi trả tiền — chỉ hiển thị, kết quả chỉ chốt qua querydr (ADR-016)
+      return-url: ${VNPAY_RETURN_URL}
+      # IP máy chủ gửi kèm querydr, và thay IP người dùng khi lệnh thu không mang IP
+      server-ip: ${VNPAY_SERVER_IP}
+      locale: vn
+      order-type: other
+      # Phải NGẮN hơn resilience.timeout (kiểm lúc khởi động)
+      connect-timeout: 2s
+      read-timeout: 3s
+    # Chỉ có tác dụng khi provider = mock
+    mock:
+      # Xác nhận THỨ HAI để chạy mock (cùng với provider=mock). Mặc định false: một biến gõ nhầm ở môi
+      # trường thật chưa đủ để bật provider giả — chỉ stack dev/E2E đặt BANK_MOCK_ALLOWED=true.
+      allowed: ${BANK_MOCK_ALLOWED:false}
+      payment-base-url: http://localhost:8085/mock-pay
+      latency: 0ms
+      # Tỉ lệ lỗi kỹ thuật ngẫu nhiên (0.0 - 1.0) — để chaos test cục bộ
+      failure-rate: 0.0
+      # Số tiền (minor) vượt ngưỡng này bị từ chối nghiệp vụ; 0 = không từ chối
+      decline-above-minor: 0
+      # Phiên tự "được trả" sau chừng này — thay cho người dùng bấm thanh toán trên máy dev
+      auto-settle-after: PT10S
+      settle-outcome: SUCCEEDED
+      # Khoá ký webhook của mock (/webhooks/mock). KHÔNG có mặc định (CLAUDE.md §6): thiếu thì webhook của
+      # mock TẮT HẲN — mọi request bị 401 — chứ không bao giờ mở bằng một khoá ai cũng đoán được.
+      # Chỉ đặt ở máy dev và test. Xem ADR-018 §7.
+      webhook-secret: ${BANK_MOCK_WEBHOOK_SECRET:}
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URL:http://localhost:8761/eureka/}
+  instance:
+    prefer-ip-address: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4318/v1/traces}

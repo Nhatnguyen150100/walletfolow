@@ -89,6 +89,66 @@ groups:
             trước khi làm bất cứ điều gì — KHÔNG gửi lại lệnh bằng tay với transactionId mới.
           runbook: docs/runbooks/saga-stuck.md
 
+      # -------------------------------------------------------------
+      # 🔴 Lệnh nạp đã THU ĐƯỢC TIỀN nhưng không vào được ví (roadmap 2.4a, ADR-019)
+      # -------------------------------------------------------------
+      # Nặng hơn SagaManualReview: ở đó tiền CÓ THỂ chưa đi, ở đây ngân hàng CHẮC CHẮN đã trừ người
+      # dùng — lệnh ghi sổ chỉ được gửi sau khi provider xác nhận. Mỗi ca còn lại ở đây là một thao tác
+      # tay và mỗi phút là một phút khách mất tiền mà không có gì. Từ 2.4b (ADR-020), hai ca biết chắc
+      # đã thu tiền được hoàn tự động và KHÔNG tăng counter này — nên alert chỉ kêu cho ca cần người.
+      - alert: TopupManualReview
+        expr: increase(walletflow_topup_manual_review_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $value }} lệnh nạp đã thu tiền nhưng không vào được ví ở {{ $labels.job }}"
+          description: >-
+            Đối chiếu CẢ HAI nguồn (sổ cái và cổng thanh toán) theo provider_ref trước khi quyết.
+            failure_code trong bảng transactions nói ca nào — xem bảng phân loại trong runbook.
+          runbook: docs/runbooks/topup-stuck.md
+
+      # bank-adapter nói hai điều trái nhau về cùng một lần thu, hoặc xác nhận lệch với lệnh đã gửi.
+      # Là BUG, không phải sự cố vận hành — nhưng tiền của khách đi trước, sửa code sau.
+      - alert: TopupResultConflict
+        expr: increase(walletflow_topup_result_conflict_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lần kết quả thu tiền mâu thuẫn ở {{ $labels.job }}"
+          runbook: docs/runbooks/topup-stuck.md
+
+      # Hoàn tiền tự động KHÔNG thành công (2.4b, ADR-020): tiền của người dùng vẫn ở chỗ provider và
+      # máy đã hết đường tự gỡ. Nặng ngang TopupManualReview — khác ở chỗ ta biết chính xác phải làm gì
+      # (hoàn tay qua portal), nên runbook mục E là một quy trình chứ không phải một cuộc điều tra.
+      - alert: TopupRefundFailed
+        expr: increase(walletflow_topup_refund_failed_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $value }} lệnh nạp KHÔNG hoàn được tiền ở {{ $labels.job }}"
+          description: >-
+            Hàng REFUND đã FAILED ở bank-adapter là vĩnh viễn — đừng gửi lại lệnh hoàn, nó chỉ phát lại
+            lời từ chối cũ. Hoàn tay qua portal theo provider_ref của lần THU (runbook mục E).
+          runbook: docs/runbooks/topup-stuck.md
+
+      # Hoàn tiền tự động là ca hệ thống TỰ xử lý được, nên một lần lẻ không đánh thức ai. Nhưng tần
+      # suất tăng đột biến nghĩa là ledger đang từ chối hàng loạt (ví bị đóng hàng loạt? tài khoản
+      # EXTERNAL_BANK bị đóng băng?) — thứ phải nhìn thấy trước khi khách hàng kêu.
+      - alert: TopupRefundRateHigh
+        expr: increase(walletflow_topup_refund_started_total[15m]) > 5
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lệnh nạp phải hoàn tiền trong 15 phút ở {{ $labels.job }}"
+          description: >-
+            Nhìn failure_code của các giao dịch REFUNDING: cùng một mã của ledger cho nhiều giao dịch
+            là nguyên nhân hệ thống, không phải chuyện riêng của một ví.
+          runbook: docs/runbooks/topup-stuck.md
+
       # Gửi lại nhiều = ledger chậm hoặc message đang mất ở đâu đó — báo trước khi thành MANUAL_REVIEW
       - alert: SagaRetriesHigh
         expr: increase(walletflow_saga_retries_total[15m]) > 10
@@ -122,6 +182,159 @@ groups:
             Người dùng nhận thông báo thất bại rồi sau đó thông báo thành công. Tiền đúng theo sổ
             cái; cần liên hệ người dùng nếu họ đã thao tác dựa trên thông báo thất bại.
           runbook: docs/runbooks/saga-stuck.md
+
+      # -------------------------------------------------------------
+      # 🔴 Cổng thanh toán không trả lời — circuit breaker của bank-adapter đang mở (ADR-016)
+      # -------------------------------------------------------------
+      # Không mất tiền (lệnh thu chờ thử lại rồi vào DLT, không bao giờ bị đổi thành "thất bại"), nhưng
+      # MỌI lần nạp tiền đang đứng, và người đã trả tiền chưa được xác nhận.
+      # Tính cả HALF_OPEN: khi provider chết, mạch đi vòng OPEN -> HALF_OPEN (vài giây thử) -> OPEN. Chỉ đếm
+      # OPEN thì một lần scrape rơi vào HALF_OPEN là đặt lại `for` và alert không bao giờ kêu. Tổng về 0
+      # ngay khi mạch đóng lại, nên một lần mở chớp nhoáng (< 2 phút) không page.
+      - alert: PaymentProviderDown
+        expr: sum by (job, name) (resilience4j_circuitbreaker_state{state=~"open|half_open"}) == 1
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "Circuit breaker {{ $labels.name }} của {{ $labels.job }} đang mở"
+          description: >-
+            Provider lỗi liên tục nên bank-adapter ngừng gọi ra ngoài. Kiểm trang trạng thái của provider
+            và DLT txn.command.bank-charge.v1 — KHÔNG đánh dấu thất bại bằng tay cho lần thu nào.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Job đối chiếu không hỏi được provider — lần thu đang chờ chưa được chốt kết quả
+      - alert: BankStatusCheckFailing
+        expr: increase(walletflow_bank_status_check_failures_total[30m]) > 10
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lần hỏi lại trạng thái thu tiền thất bại trong 30 phút ở {{ $labels.job }}"
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Provider báo đã thu một số KHÁC số yêu cầu — adapter không báo thành công, lần thu đứng ở PENDING
+      - alert: ProviderAmountMismatch
+        expr: increase(walletflow_bank_amount_mismatch_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "Provider thu lệch số tiền ở {{ $labels.job }}"
+          description: >-
+            Người dùng đã trả tiền nhưng số provider thu khác số yêu cầu. Ví CHƯA được cộng. Đối chiếu với
+            provider trước khi làm gì — không sửa tay status sang SUCCEEDED.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Lần thu đã quá hạn phiên + grace mà vẫn PENDING (ADR-017). Lẽ ra đã kết thúc (thành công, hoặc
+      # EXPIRED khi provider khẳng định chưa thu) — còn lại tức là provider không trả lời được, báo trạng
+      # thái lơ lửng (đảo giao dịch, nghi gian lận), lệch số tiền, hoặc thuộc provider cũ. 30 phút để một
+      # lần provider chập chờn không mở ticket.
+      - alert: PendingChargeOverdue
+        expr: max by (job) (walletflow_bank_pending_overdue) > 0
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lần thu quá hạn mà chưa kết luận được ở {{ $labels.job }}"
+          description: >-
+            Tiền của người dùng có thể đã bị trừ. Tìm hàng PENDING có expires_at quá hạn trong
+            provider_transactions và đối chiếu với trang quản trị của provider — KHÔNG sửa tay status.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Lần thu đã báo EXPIRED nhưng lần hỏi xác nhận sau đó thấy provider báo đã thu / lơ lửng (ADR-017):
+      # người dùng có thể đã mất tiền mà ví không được cộng. Adapter KHÔNG tự sửa trạng thái.
+      - alert: ExpiredChargeNeedsReview
+        expr: increase(walletflow_bank_expired_needs_review_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "Lần thu đã báo hết hạn nhưng provider báo có tiền ở {{ $labels.job }}"
+          description: >-
+            Event bank.event.failed (EXPIRED) đã phát cho một lần thu mà provider nay báo đã thu hoặc trạng
+            thái lơ lửng. Đối chiếu với provider, xử lý thủ công — KHÔNG sửa tay status.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Lần thu đã báo EXPIRED nhưng dùng HẾT lượt hỏi xác nhận mà provider chưa bao giờ trả lời được
+      # (ADR-017). Khác ExpiredChargeNeedsReview: ở đó ta BIẾT provider nói có tiền; ở đây ta KHÔNG BIẾT gì
+      # cả — và đã thôi hỏi, nên không có gì tự giải quyết nữa. Chỉ đối soát tay với sao kê mới kết luận được.
+      # Counter chứ không gauge: một gauge đếm trạng thái tích luỹ sẽ kêu mãi không tắt được (không có luồng
+      # nào đưa hàng đã hết lượt ra khỏi điều kiện đếm), rồi bị mute — và ca thật sau đó không ai nhìn.
+      - alert: ExpiredChargeUnconfirmed
+        expr: increase(walletflow_bank_expired_unconfirmed_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lần thu hết hạn không xác nhận được ở {{ $labels.job }}"
+          description: >-
+            Adapter đã phát bank.event.failed (EXPIRED) rồi hỏi lại provider hết số lượt cho phép mà không
+            lần nào có câu trả lời đọc được. Nếu thực tế tiền ĐÃ về thì người dùng mất tiền mà ví không được
+            cộng. Tìm hàng FAILED/EXPIRED có next_check_at IS NULL và confirm_attempts >= max-confirm-attempts
+            trong provider_transactions, đối soát với sao kê provider — KHÔNG sửa tay status.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Webhook đã nhận mà worker chưa xử lý (2.3b). Ta đã trả "00 — đừng gửi lại nữa" cho provider, nên
+      # hàng tồn ở đây là những tin báo KHÔNG AI ĐỌC và sẽ không bao giờ được gửi lại. Tiền vẫn an toàn nhờ
+      # job đối chiếu, nhưng đường nhanh đã chết mà không ai thấy. 10 phút: worker chạy mỗi 2s nên một tồn
+      # đọng thật sự phải tụt trong vài giây; còn đứng sau 10 phút là worker không chạy hoặc không qua được.
+      - alert: BankWebhookBacklog
+        expr: max by (job) (walletflow_bank_webhook_unprocessed) > 20
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} webhook chưa xử lý ở {{ $labels.job }}"
+          description: >-
+            Worker webhook không tiêu hoá kịp hoặc không chạy. Kiểm walletflow_bank_webhook_failures_total và
+            log của WebhookWorker; hàng nằm ở webhook_events có processed_at IS NULL.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Webhook dùng hết lượt thử mà chưa xử lý được: thôi thử, nên không có gì tự giải quyết nữa (cùng lý lẽ
+      # counter-chứ-không-gauge với ExpiredChargeUnconfirmed).
+      - alert: BankWebhookAbandoned
+        expr: increase(walletflow_bank_webhook_abandoned_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} webhook bị bỏ sau khi hết lượt thử ở {{ $labels.job }}"
+          description: >-
+            Provider đã báo kết quả mà adapter không hỏi lại được lần nào. Tìm hàng outcome = 'ABANDONED'
+            trong webhook_events, tra provider_ref sang provider_transactions và đối soát tay.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Webhook của lần thu thuộc TÀI KHOẢN MERCHANT cũ: chỉ tài khoản đã tạo phiên mới tra được phiên đó,
+      # nên những webhook này không bao giờ xử lý được. Dấu hiệu của một lần xoay VNPAY_TMN_CODE còn bỏ dở.
+      - alert: BankWebhookForeignAccount
+        expr: increase(walletflow_bank_webhook_foreign_account_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} webhook thuộc tài khoản merchant cũ ở {{ $labels.job }}"
+          description: >-
+            Có lần thu chưa chốt của tài khoản merchant trước khi xoay VNPAY_TMN_CODE. Rà
+            provider_transactions theo provider_account và đối soát tay — xem mục "Trước khi đổi tài khoản
+            merchant" trong runbook.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Webhook có CHỮ KÝ HỢP LỆ nhưng mã tham chiếu không thuộc hệ thống này. Khác hẳn counter
+      # webhook.received{outcome=rejected} (người lạ gõ cửa, chuyện thường ở endpoint công khai): tới được
+      # đây nghĩa là ai đó ký được bằng khoá của ta — hoặc hai môi trường đang dùng chung tài khoản merchant,
+      # hoặc khoá đã lộ. Cả hai đều phải biết ngay.
+      - alert: BankWebhookUnresolvedRef
+        expr: increase(walletflow_bank_webhook_unresolved_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} webhook ký đúng nhưng mã tham chiếu lạ ở {{ $labels.job }}"
+          description: >-
+            Kiểm xem có môi trường nào khác dùng chung VNPAY_TMN_CODE không. Nếu không có, coi như khoá
+            VNPAY_HASH_SECRET đã lộ và xoay khoá.
+          runbook: docs/runbooks/payment-provider-down.md
 
   - name: walletflow-availability
     interval: 30s

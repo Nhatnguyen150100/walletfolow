@@ -2,6 +2,7 @@ package com.walletflow.transaction;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.money.ECurrency;
 import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.common.wallet.EWalletStatus;
@@ -121,6 +122,37 @@ class IdempotencyIT {
         assertThat(postJournalCommands()).as("đúng một lệnh ghi sổ = tiền chỉ bị trừ một lần").isEqualTo(1);
         assertThat(count("transactions")).isEqualTo(1);
         assertThat(count("saga_state")).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("⭐ Nạp tiền gửi lại cùng key: cùng câu trả lời TỪNG BYTE, đúng MỘT lệnh thu tiền")
+    void gui_lai_lenh_nap_khong_tao_phien_thu_thu_hai() {
+        Map<String, Object> body = TransferApi.topupBody(aliceWallet, 500_000);
+
+        ResponseEntity<String> first = TransferApi.topup(http, TENANT, alice, "topup-1", body);
+        ResponseEntity<String> again = TransferApi.topup(http, TENANT, alice, "topup-1", body);
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        assertThat(again.getBody()).isEqualTo(first.getBody());
+        assertThat(again.getHeaders().getFirst("Idempotent-Replayed")).isEqualTo("true");
+        assertThat(commands(WalletTopics.CMD_BANK_CHARGE))
+                .as("lệnh thu thứ hai là một lần người dùng bị trừ tiền thứ hai ở ngân hàng")
+                .hasSize(1);
+        assertThat(commands(WalletTopics.CMD_POST_JOURNAL))
+                .as("nhận lệnh nạp KHÔNG được ghi sổ — chưa ai trả đồng nào")
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("Cùng key dùng cho lệnh chuyển rồi lệnh nạp: 422, không lặng lẽ phát lại câu trả lời cũ")
+    void cung_key_cho_hai_loai_lenh_bi_tu_choi() {
+        TransferApi.transfer(http, TENANT, alice, "k-chung", TransferApi.body(aliceWallet, bobWallet, 50_000));
+
+        ResponseEntity<String> topup =
+                TransferApi.topup(http, TENANT, alice, "k-chung", TransferApi.topupBody(aliceWallet, 50_000));
+
+        assertThat(topup.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(commands(WalletTopics.CMD_BANK_CHARGE)).isEmpty();
     }
 
     @Test
@@ -286,6 +318,10 @@ class IdempotencyIT {
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private List<String> commands(String topic) {
+        return jdbcTemplate.queryForList("SELECT payload FROM outbox_event WHERE topic = ?", String.class, topic);
     }
 
     private long postJournalCommands() {

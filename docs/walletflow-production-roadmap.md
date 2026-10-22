@@ -777,6 +777,32 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 > Tương ứng M4 của master plan, cộng phần webhook (master plan chưa đề cập nhưng là **phần khó
 > nhất trong thực tế**).
 
+### Trạng thái Phase 2 (cập nhật 2026-10-22)
+
+| Mục | Trạng thái | PR |
+|---|---|---|
+| 2.2a bank-adapter — `PaymentProvider` + `MockProvider`, thu tiền idempotent, Resilience4j ([ADR-016](adr/ADR-016-bank-adapter-charge-model.md)) | ✅ | #28 |
+| 2.2b bank-adapter — VNPay sandbox, hạn phiên PENDING (15′ + grace 15′), backoff cấp số, masking log ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md)) | ✅ | #29 |
+| 2.2c bank-adapter — siết kiểm câu trả lời `querydr` fail-closed + trần hỏi xác nhận sau EXPIRED ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendments*) | ✅ | #30 |
+| 2.3a Webhook ingestion — nhận & xác thực, chống phát lại ([ADR-018](adr/ADR-018-webhook-ingestion.md)) | ✅ | #31 |
+| fix — lệnh thu trùng đồng thời nổ `23505` ở khoá unique thứ hai (master đỏ sau #31) | ✅ | #32 |
+| 2.3b Webhook ingestion — worker xử lý bất đồng bộ + trang quay về ([ADR-018](adr/ADR-018-webhook-ingestion.md) *Amendments*) | ✅ | #33 |
+| 2.4a Saga top-up — nhận lệnh nạp, ghi sổ sau khi provider xác nhận ([ADR-019](adr/ADR-019-topup-saga.md)) | ✅ | #34 |
+| 2.4b (PR1) Hàng rào ledger — lệnh nạp bị từ chối thì từ chối vĩnh viễn + lệnh hoàn `txn.command.bank-refund.v1` ở bank-adapter ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | ✅ | #35 |
+| 2.4b (PR2) Saga top-up — bù trừ: `POSTING → REFUNDING → FAILED` khi ledger từ chối / `BANK_RESULT_CONFLICT`, sau cờ `TOPUP_REFUND_ENABLED` ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | 🟡 `feat/phase-2-topup-compensation` | |
+| 2.4c VNPay refund thật (`vnp_Command=refund`) — tới lúc đó VNPay trả `REFUND_UNSUPPORTED` → chờ người | ⬜ | |
+| 2.5 Admin API & manual review | ⬜ | |
+| 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
+
+Đường găng nạp tiền: **2.2a → 2.2b → 2.3 → 2.4 (top-up)**. DoD ô "rút tiền" chưa đạt được khi 2.1 còn bị
+chặn. 2.4 tách hai PR: **2.4a** nối đủ đường nạp (mọi ca mất tiền dừng ở `MANUAL_REVIEW` —
+[runbook](runbooks/topup-stuck.md)), **2.4b** thay chỗ chờ người đó bằng hoàn tiền tự động.
+
+Sau 2.4b, hoàn tiền tự động nằm sau cờ `TOPUP_REFUND_ENABLED` (mặc định **tắt**): chỉ bật khi mọi instance
+ledger đã lên V6 và mọi instance transaction-service đã lên V4 ([ADR-020](adr/ADR-020-topup-compensation-refund.md) §5).
+Cờ còn tắt thì hành vi y hệt 2.4a. Những ca "không biết chắc đã thu bao nhiêu" (`BANK_AMOUNT_MISMATCH`,
+`BANK_NO_RESPONSE`, `SAGA_STATE_DESYNC`) vẫn chờ người kể cả khi cờ bật, và VNPay chưa hoàn được tới 2.4c.
+
 ## 2.1 — Mô hình HOLD / available balance (GAP-A2) · 3 ngày 🔴
 
 Không có cái này thì không được mở luồng rút tiền. Trong lúc chờ ngân hàng xác nhận payout,
@@ -804,6 +830,16 @@ mà nguyên tắc §5.1 cấm.
 fail → tiền quay về đủ; `SUM = 0` đúng ở cả ba trạng thái.
 
 ## 2.2 — bank-adapter (:8085) với kiến trúc provider · 5 ngày
+
+> **Tách 2 PR, mô hình thu đã chốt ở [ADR-016](adr/ADR-016-bank-adapter-charge-model.md):**
+> - Thu tiền theo luồng chuyển hướng + xác nhận bất đồng bộ.
+> - Kết quả cuối chỉ phát sau khi adapter tự `getStatus`.
+> - Idempotent theo `(tenant, transactionId, operation)`, khoá gửi provider tất định.
+> - Lệnh gửi lại thì phát lại câu trả lời.
+>
+> **2.2a:** khung service, `MockProvider`, Resilience4j, job đối chiếu. **2.2b:** VNPay sandbox, masking log,
+> hạn phiên + backoff cho lần thu PENDING ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md)).
+> `payout` chưa có trong interface: phục vụ luồng rút, đang bị chặn.
 
 - Interface `PaymentProvider`: `charge(ChargeRequest) → ChargeResult`,
   `payout(PayoutRequest) → PayoutResult`, `getStatus(providerRef)`, `refund(providerRef)`.
@@ -836,12 +872,20 @@ Cổng thanh toán báo kết quả bằng webhook — và webhook thì **trùng
 - Nguyên tắc vàng: **webhook là gợi ý, không phải sự thật**. Với giao dịch quan trọng, luôn
   `getStatus(providerRef)` để xác nhận lại trước khi ghi sổ.
 
-**Test chứng minh:** `WebhookIT` — chữ ký sai bị từ chối; webhook trùng chỉ ghi sổ một lần; webhook
-success đến sau khi đã đánh fail → đi vào `MANUAL_REVIEW` chứ không âm thầm ghi đè.
+**Test chứng minh:** `WebhookIT` — chữ ký sai bị từ chối; webhook trùng chỉ ghi sổ một lần. `WebhookWorkerIT`
+(2.3b) — webhook nói "đã thu" mà provider nói chưa thì KHÔNG ghi tiền; webhook success đến sau khi đã đánh
+fail → không ghi đè, bật metric cần-người-xem (bảng `MANUAL_REVIEW` để 2.5, xem ADR-018 *Amendments*).
+`PaymentReturnIT` (2.3b) — tham số redirect không bao giờ là kết quả.
 
 ## 2.4 — Saga top-up & withdraw có bù trừ · 5 ngày
 
-**Top-up** (nạp): `PENDING → AWAITING_PAYMENT → (webhook) → POSTING → COMPLETED`
+> **Hình dạng thật sau 2.4a** ([ADR-019](adr/ADR-019-topup-saga.md)): `PROCESSING → AWAITING_PAYMENT →
+> POSTING → COMPLETED`. Bước mở đường tới ledger là `bank.event.completed.v1` (bank-adapter đã tự
+> `getStatus`), **không** phải webhook — webhook chỉ kích hoạt việc hỏi lại (ADR-016 §1).
+> Ledger từ chối lệnh nạp ⇒ `MANUAL_REVIEW`, không phải `FAILED`: tiền đã thu của người dùng rồi.
+
+**Top-up** (nạp): `PENDING → AWAITING_PAYMENT → (bank.event.completed) → POSTING → COMPLETED`;
+bù trừ (2.4b, [ADR-020](adr/ADR-020-topup-compensation-refund.md)): `POSTING → (ledger từ chối) → REFUNDING → FAILED`
 - Tiền chỉ vào ví **sau khi** ledger ghi xong, không phải khi nhận webhook.
 
 **Withdraw** (rút): `PENDING → HOLDING → PAYOUT_SENT → (webhook) → SETTLING → COMPLETED`
@@ -850,11 +894,13 @@ success đến sau khi đã đánh fail → đi vào `MANUAL_REVIEW` chứ khôn
   alert nghiêm trọng (đây là lúc có người phải thức dậy).
 
 **Test chứng minh:**
-1. `TopupCompensationIT` — charge OK nhưng ledger từ chối → refund tự động chạy, ví không tăng.
+1. `TopupCompensationIT` (2.4b ✅) — charge OK nhưng ledger từ chối → refund tự động chạy, ví không tăng.
+   Gộp luôn ca `CompensationFailureIT` dưới đây (provider từ chối hoàn → `MANUAL_REVIEW` + counter) vì
+   hai nhóm ca dùng chung một bối cảnh Spring, và ca "ledger ghi sổ trong khi đang hoàn" → gọi người.
 2. `WithdrawCompensationIT` — HOLD xong, payout fail → tiền quay về ví đúng bằng số đã giữ.
 3. `ChaosProviderIT` (Toxiproxy) — provider timeout/chập chờn → circuit breaker mở, saga không treo,
    không mất tiền.
-4. `CompensationFailureIT` — refund fail liên tục → `MANUAL_REVIEW` + alert bắn.
+4. ~~`CompensationFailureIT`~~ — đã nằm trong `TopupCompensationIT` (xem mục 1).
 
 ## 2.5 — Admin API & manual review · 3 ngày
 
@@ -872,6 +918,14 @@ success đến sau khi đã đánh fail → đi vào `MANUAL_REVIEW` chứ khôn
 - [ ] Webhook trùng/muộn/sai chữ ký đều xử lý đúng
 - [ ] Chaos test: provider chết 5 phút → không mất tiền, không saga treo
 - [ ] Không có thao tác đụng tiền nào không để lại audit
+
+### Nợ mang sang (phát hiện khi làm Phase 2)
+
+- **`SagaRepository.recordRetry` / `postpone` / `close` lọc theo mỗi `transaction_id`, không có `tenant_id`**
+  — lệch chuẩn ADR-010 ("mọi query lọc theo tenant"). Không khai thác được hôm nay (`transaction_id` là
+  UUID sinh phía ta và người gọi đều đã đọc hàng dưới khoá theo tenant), nên không chặn merge; nhưng nó là
+  đúng loại giả định lặng lẽ sai đi khi có người thêm một đường gọi mới. Sửa cùng lúc cả ba, có test
+  cross-tenant — ghép vào 2.5 hoặc một PR vệ sinh riêng.
 
 ---
 

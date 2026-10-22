@@ -18,6 +18,7 @@ cd "$(dirname "$0")/../.."
 source scripts/e2e/lib.sh
 
 ensure_jwt_keys
+ensure_bank_provider
 
 BUILD_FLAG=()
 if [[ "${LOAD_BUILD:-0}" == 1 ]]; then BUILD_FLAG=(--build); fi
@@ -25,9 +26,9 @@ if [[ "${LOAD_BUILD:-0}" == 1 ]]; then BUILD_FLAG=(--build); fi
 log "Khởi động stack cấu hình production + prometheus (project wf-e2e)"
 docker compose -p wf-e2e -f docker-compose.yml up -d "${BUILD_FLAG[@]}" \
   postgres redis kafka discovery-server config-server \
-  auth-service ledger-service wallet-service transaction-service api-gateway prometheus
+  auth-service ledger-service wallet-service transaction-service bank-adapter api-gateway prometheus
 
-for c in wf-ledger wf-wallet wf-transaction; do
+for c in wf-ledger wf-wallet wf-transaction wf-bank-adapter; do
   wait_healthy "$c" 420
 done
 gateway_up() { TOKEN='' status_is 200 GET /actuator/health; }

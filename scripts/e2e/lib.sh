@@ -140,6 +140,13 @@ ensure_jwt_keys() {
   export JWT_PRIVATE_KEY JWT_PUBLIC_KEY
 }
 
+# docker-compose.yml bắt buộc BANK_PROVIDER (`:?`) — compose nội suy cả file, kể cả khi không bật
+# bank-adapter. Stack E2E/load luôn dùng provider giả: không có cổng thanh toán thật nào trên runner.
+ensure_bank_provider() {
+  export BANK_PROVIDER="${BANK_PROVIDER:-mock}"
+  export BANK_MOCK_ALLOWED="${BANK_MOCK_ALLOWED:-true}"
+}
+
 container_healthy() {
   [[ "$(docker inspect -f '{{.State.Health.Status}}' "$1" 2>/dev/null)" == "healthy" ]]
 }

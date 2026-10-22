@@ -5,7 +5,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.walletflow.common.event.AccountOpenedEvent;
+import com.walletflow.common.event.BankChargeCommand;
+import com.walletflow.common.event.BankChargePendingEvent;
+import com.walletflow.common.event.BankCompletedEvent;
+import com.walletflow.common.event.BankFailedEvent;
+import com.walletflow.common.event.BankRefundCommand;
 import com.walletflow.common.event.EAccountStatus;
+import com.walletflow.common.event.EBankOperation;
 import com.walletflow.common.event.EJournalType;
 import com.walletflow.common.event.EnvelopeReader;
 import com.walletflow.common.event.EventEnvelope;
@@ -89,7 +95,50 @@ class EventContractTest {
                 Arguments.of(WalletTopics.EVT_TXN_FAILED, "TransactionFailed",
                         new TransactionFailedEvent(UUID.randomUUID(), EJournalType.TRANSFER,
                                 UUID.randomUUID(), wallet, UUID.randomUUID(), 1_000, ECurrency.VND,
-                                "INSUFFICIENT_FUNDS")));
+                                "INSUFFICIENT_FUNDS")),
+                Arguments.of(WalletTopics.EVT_TXN_COMPLETED, "TransactionCompleted",
+                        // 2.4a: lệnh NẠP không có ví nguồn — tiền đến từ ngân hàng (ADR-019)
+                        new TransactionCompletedEvent(UUID.randomUUID(), EJournalType.TOPUP,
+                                UUID.randomUUID(), null, wallet, 500_000, ECurrency.VND,
+                                UUID.randomUUID())),
+                Arguments.of(WalletTopics.EVT_TXN_FAILED, "TransactionFailed",
+                        new TransactionFailedEvent(UUID.randomUUID(), EJournalType.TOPUP,
+                                UUID.randomUUID(), null, wallet, 500_000, ECurrency.VND,
+                                "PAYMENT_EXPIRED")),
+                Arguments.of(WalletTopics.CMD_POST_JOURNAL, "PostJournal",
+                        // Lệnh ghi sổ của một lần nạp: tiền rời EXTERNAL_BANK và vào ví
+                        new PostJournalCommand(UUID.randomUUID(), EJournalType.TOPUP, null,
+                                ECurrency.VND, legs)),
+                Arguments.of(WalletTopics.CMD_BANK_CHARGE, "BankCharge",
+                        new BankChargeCommand(UUID.randomUUID(), wallet, 500_000, ECurrency.VND)),
+                Arguments.of(WalletTopics.CMD_BANK_CHARGE, "BankCharge",
+                        // 2.2b: IP người dùng cho cổng thanh toán (field optional)
+                        new BankChargeCommand(UUID.randomUUID(), wallet, 500_000, ECurrency.VND,
+                                "2001:db8:85a3::8a2e:370:7334")),
+                Arguments.of(WalletTopics.EVT_BANK_CHARGE_PENDING, "BankChargePending",
+                        new BankChargePendingEvent(UUID.randomUUID(), wallet, "mock", "MOCK-1",
+                                "https://sandbox.example/pay/MOCK-1")),
+                Arguments.of(WalletTopics.EVT_BANK_COMPLETED, "BankCompleted",
+                        new BankCompletedEvent(UUID.randomUUID(), EBankOperation.CHARGE, wallet, "mock",
+                                "MOCK-1", 500_000, ECurrency.VND)),
+                Arguments.of(WalletTopics.EVT_BANK_FAILED, "BankFailed",
+                        new BankFailedEvent(UUID.randomUUID(), EBankOperation.CHARGE, wallet, "mock",
+                                "MOCK-1", "DECLINED")),
+                Arguments.of(WalletTopics.EVT_BANK_FAILED, "BankFailed",
+                        // Provider từ chối ngay lúc tạo phiên: chưa có mã phía provider
+                        new BankFailedEvent(UUID.randomUUID(), EBankOperation.CHARGE, wallet, "mock",
+                                null, "DECLINED")),
+                Arguments.of(WalletTopics.CMD_BANK_REFUND, "BankRefund",
+                        // 2.4b: bù trừ saga nạp tiền — hoàn trọn lần thu khi ledger từ chối ghi sổ
+                        new BankRefundCommand(UUID.randomUUID(), wallet, 500_000, ECurrency.VND,
+                                "ACCOUNT_CLOSED")),
+                Arguments.of(WalletTopics.EVT_BANK_COMPLETED, "BankCompleted",
+                        // Kết quả của lần HOÀN đi chung topic với lần thu, phân biệt bằng operation
+                        new BankCompletedEvent(UUID.randomUUID(), EBankOperation.REFUND, wallet, "mock",
+                                "MOCK-RF-1", 500_000, ECurrency.VND)),
+                Arguments.of(WalletTopics.EVT_BANK_FAILED, "BankFailed",
+                        new BankFailedEvent(UUID.randomUUID(), EBankOperation.REFUND, wallet, "vnpay",
+                                null, "REFUND_UNSUPPORTED")));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -117,6 +166,41 @@ class EventContractTest {
         String opened = fixture("ledger.event.account-opened.v1.json");
         EventSchemas.assertValid(WalletTopics.EVT_ACCOUNT_OPENED, opened);
         assertThat(READER.read(opened, AccountOpenedEvent.class).payload().statusVersion()).isEqualTo(2);
+
+        String charge = fixture("txn.command.bank-charge.v1.json");
+        EventSchemas.assertValid(WalletTopics.CMD_BANK_CHARGE, charge);
+        BankChargeCommand command = READER.read(charge, BankChargeCommand.class).payload();
+        assertThat(command.amountMinor()).isEqualTo(500_000);
+        assertThat(command.currency()).isEqualTo(ECurrency.VND);
+        assertThat(command.clientIp())
+                .as("lệnh v1 trước 2.2b không có IP: vẫn đọc được, IP là null (adapter dùng IP máy chủ)")
+                .isNull();
+
+        // Kết quả của một lệnh NẠP: ví nguồn là null trên dây (2.4a, ADR-019 §7). Fixture này khoá
+        // đúng hình dạng JSON mà notification-service sẽ phải đọc được — nó PHẢI coi fromWalletId là
+        // nullable ngay từ bản đầu, không được map vào một trường không-null.
+        String topup = fixture("txn.event.completed.v1-topup.json");
+        EventSchemas.assertValid(WalletTopics.EVT_TXN_COMPLETED, topup);
+        TransactionCompletedEvent completed = READER.read(topup, TransactionCompletedEvent.class).payload();
+        assertThat(completed.fromWalletId()).isNull();
+        assertThat(completed.type()).isEqualTo(EJournalType.TOPUP);
+        assertThat(completed.amountMinor()).isEqualTo(500_000);
+
+        // Lệnh v1 sau 2.2b mang IP người dùng (field optional, không đổi version)
+        String withIp = fixture("txn.command.bank-charge.v1-with-client-ip.json");
+        EventSchemas.assertValid(WalletTopics.CMD_BANK_CHARGE, withIp);
+        BankChargeCommand commandWithIp = READER.read(withIp, BankChargeCommand.class).payload();
+        assertThat(commandWithIp.clientIp()).isEqualTo("203.0.113.7");
+        assertThat(commandWithIp.amountMinor()).isEqualTo(500_000);
+        assertThat(commandWithIp.currency()).isEqualTo(ECurrency.VND);
+
+        // 2.4b: lệnh hoàn tiền v1
+        String refund = fixture("txn.command.bank-refund.v1.json");
+        EventSchemas.assertValid(WalletTopics.CMD_BANK_REFUND, refund);
+        BankRefundCommand refundCommand = READER.read(refund, BankRefundCommand.class).payload();
+        assertThat(refundCommand.amountMinor()).isEqualTo(500_000);
+        assertThat(refundCommand.currency()).isEqualTo(ECurrency.VND);
+        assertThat(refundCommand.reasonCode()).isEqualTo("ACCOUNT_CLOSED");
     }
 
     @Test
@@ -155,6 +239,75 @@ class EventContractTest {
         assertThat(EventSchemas.validate(WalletTopics.EVT_ACCOUNT_OPENED,
                 opened.replace("\"FROZEN\"", "\"SUSPENDED\"")))
                 .as("trạng thái ngoài enum").isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("Schema từ chối lệnh thu tiền: số tiền 0/âm, thiếu ví, loại tiền lạ")
+    void schema_tu_choi_lenh_thu_tien_sai() throws IOException {
+        String charge = fixture("txn.command.bank-charge.v1.json");
+
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"amountMinor\": 500000", "\"amountMinor\": 0")))
+                .as("thu 0 đồng là vô nghĩa").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"amountMinor\": 500000", "\"amountMinor\": -500000")))
+                .as("thu số âm là chi tiền ra — sai loại thao tác").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"walletId\"", "\"walletIdX\"")))
+                .as("không có ví thì thu xong không biết cộng vào đâu").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"VND\"", "\"BTC\"")))
+                .as("loại tiền ngoài enum").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"currency\": \"VND\"", "\"currency\": \"VND\", \"clientIp\": \"" + "1".repeat(46) + "\"")))
+                .as("clientIp dài hơn IPv6 dạng chữ (45) là rác, không phải IP").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_CHARGE,
+                charge.replace("\"currency\": \"VND\"", "\"currency\": \"VND\", \"clientIp\": \"203.0.113.7\"")))
+                .as("đối chứng: clientIp hợp lệ được chấp nhận").isEmpty();
+    }
+
+    @Test
+    @DisplayName("Schema từ chối lệnh hoàn tiền: số tiền 0/âm, thiếu ví, thiếu lý do hoàn")
+    void schema_tu_choi_lenh_hoan_tien_sai() throws IOException {
+        String refund = fixture("txn.command.bank-refund.v1.json");
+
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"amountMinor\": 500000", "\"amountMinor\": 0")))
+                .as("hoàn 0 đồng là vô nghĩa").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"amountMinor\": 500000", "\"amountMinor\": -500000")))
+                .as("hoàn số âm là thu thêm — sai loại thao tác").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"walletId\"", "\"walletIdX\"")))
+                .as("không có ví thì không khớp được với lần thu").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"reasonCode\"", "\"reasonCodeX\"")))
+                .as("hoàn tiền không lý do thì đối soát không truy được vì sao tiền rời đi").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.CMD_BANK_REFUND,
+                refund.replace("\"BankRefund\"", "\"BankCharge\"")))
+                .as("nhầm loại lệnh trên topic hoàn tiền").isNotEmpty();
+    }
+
+    @Test
+    @DisplayName("Schema kết quả giao dịch: ví nguồn được phép null (nạp tiền) nhưng KHÔNG được vắng mặt")
+    void schema_vi_nguon_null_duoc_vang_mat_thi_khong() throws Exception {
+        UUID wallet = UUID.randomUUID();
+        String topup = MAPPER.writeValueAsString(EventEnvelope.of(UUID.randomUUID(), "TransactionCompleted",
+                TENANT, null, new TransactionCompletedEvent(UUID.randomUUID(), EJournalType.TOPUP,
+                        UUID.randomUUID(), null, wallet, 500_000, ECurrency.VND, UUID.randomUUID()),
+                Instant.now()));
+
+        assertThat(EventSchemas.validate(WalletTopics.EVT_TXN_COMPLETED, topup))
+                .as("nạp tiền không có ví nguồn — null là câu trả lời đúng, không phải thiếu dữ liệu")
+                .isEmpty();
+        // Nới ở 2.4a chỉ nới GIÁ TRỊ, không nới sự CÓ MẶT: một producer quên hẳn field vẫn phải bị bắt,
+        // nếu không thì "null" (biết là nạp tiền) và "không gửi" (bug) trở thành một thứ.
+        assertThat(EventSchemas.validate(WalletTopics.EVT_TXN_COMPLETED,
+                topup.replace("\"fromWalletId\"", "\"fromWalletIdX\"")))
+                .as("vắng mặt fromWalletId vẫn là message hỏng").isNotEmpty();
+        assertThat(EventSchemas.validate(WalletTopics.EVT_TXN_COMPLETED,
+                topup.replace("\"fromWalletId\":null", "\"fromWalletId\":\"khong-phai-uuid\"")))
+                .as("có giá trị thì phải là UUID").isNotEmpty();
     }
 
     private static String fixture(String name) throws IOException {

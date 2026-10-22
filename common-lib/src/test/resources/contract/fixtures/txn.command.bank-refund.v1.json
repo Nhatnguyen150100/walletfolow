@@ -1,0 +1,15 @@
+{
+  "eventId": "5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+  "eventType": "BankRefund",
+  "version": 1,
+  "occurredAt": "2026-10-20T10:15:00Z",
+  "tenantId": "00000000-0000-0000-0000-000000000001",
+  "traceId": null,
+  "payload": {
+    "transactionId": "3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0c",
+    "walletId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "amountMinor": 500000,
+    "currency": "VND",
+    "reasonCode": "ACCOUNT_CLOSED"
+  }
+}

@@ -1,11 +1,13 @@
 package com.walletflow.transaction;
 
+import com.walletflow.common.event.EJournalType;
 import com.walletflow.common.event.EnvelopeReader;
 import com.walletflow.common.event.EventEnvelope;
 import com.walletflow.common.event.PostJournalCommand;
 import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.tenant.TenantContext;
 import com.walletflow.transaction.services.StuckSagaScanner;
+import com.walletflow.transaction.services.TopupService;
 import com.walletflow.transaction.services.TransferService;
 import com.walletflow.transaction.support.FakeWalletDirectory;
 import com.walletflow.transaction.support.FakeWalletDirectoryConfig;
@@ -78,6 +80,8 @@ class StuckSagaIT {
 
     @Autowired
     TransferService transferService;
+    @Autowired
+    TopupService topupService;
     @Autowired
     StuckSagaScanner scanner;
     @Autowired
@@ -301,6 +305,147 @@ class StuckSagaIT {
     }
 
     @Test
+    @DisplayName("⭐ Lệnh nạp quá hạn ở bước thu tiền: gửi lại lệnh THU, KHÔNG phải lệnh ghi sổ")
+    void lenh_nap_qua_han_thi_gui_lai_lenh_thu() {
+        Accepted txn = acceptTopup();
+        makeOverdue(txn);
+
+        assertThat(scanner.scan()).isEqualTo(1);
+
+        assertThat(outbox(WalletTopics.CMD_BANK_CHARGE, txn))
+                .as("bank-adapter idempotent theo (tenant, transactionId): gửi lại chỉ phát lại câu trả lời")
+                .hasSize(2);
+        assertThat(commands(txn))
+                .as("gửi lệnh ghi sổ cho một lệnh nạp chưa ai trả tiền là cộng tiền từ không khí vào ví")
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("⭐ Lệnh nạp đang chờ người dùng trả tiền (AWAITING_PAYMENT): saga KHÔNG bị đóng nhầm")
+    void khong_dong_nham_saga_nap_dang_cho_tra_tien() {
+        Accepted txn = acceptTopup();
+        jdbcTemplate.update("UPDATE transactions SET status = 'AWAITING_PAYMENT' WHERE id = ?", txn.transactionId());
+        makeOverdue(txn);
+
+        scanner.scan();
+
+        assertThat(saga(txn).get("step_status"))
+                .as("đóng saga ở đây là bỏ rơi một lệnh nạp còn sống: không ai gửi lại, không ai báo lỗi")
+                .isEqualTo("SENT");
+        assertThat(outbox(WalletTopics.CMD_BANK_CHARGE, txn)).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("Lệnh nạp quá hạn ở bước ghi sổ: gửi lại lệnh ghi sổ TOPUP với vế EXTERNAL_BANK")
+    void lenh_nap_qua_han_o_buoc_ghi_so() {
+        Accepted txn = acceptTopup();
+        jdbcTemplate.update("UPDATE transactions SET status = 'POSTING' WHERE id = ?", txn.transactionId());
+        jdbcTemplate.update("UPDATE saga_state SET current_step = 'POST_JOURNAL' WHERE transaction_id = ?",
+                txn.transactionId());
+        makeOverdue(txn);
+
+        scanner.scan();
+
+        List<EventEnvelope<PostJournalCommand>> journals = commands(txn);
+        assertThat(journals).hasSize(1);
+        assertThat(journals.get(0).payload().type()).isEqualTo(EJournalType.TOPUP);
+        assertThat(journals.get(0).payload().legs()).extracting("accountRef")
+                .containsExactly("EXTERNAL_BANK", txn.to().toString());
+        assertThat(outbox(WalletTopics.CMD_BANK_CHARGE, txn))
+                .as("đã qua bước thu tiền — gửi lại lệnh thu là tạo thêm một phiên thanh toán").hasSize(1);
+    }
+
+    @Test
+    @DisplayName("⭐ Lệnh nạp quá hạn ở bước HOÀN TIỀN: gửi lại lệnh hoàn, KHÔNG phải lệnh ghi sổ")
+    void lenh_hoan_qua_han_thi_gui_lai_lenh_hoan() {
+        Accepted txn = refunding();
+
+        assertThat(scanner.scan()).isEqualTo(1);
+
+        assertThat(outbox(WalletTopics.CMD_BANK_REFUND, txn))
+                .as("compensation phải đi tới cùng: lệnh hoàn mất trên đường thì tiền của người dùng ở lại "
+                        + "chỗ provider trong im lặng")
+                .hasSize(1);
+        assertThat(commands(txn))
+                .as("⚠ gửi lệnh GHI SỔ cho một lệnh nạp đang hoàn tiền là vừa trả tiền về thẻ vừa cộng ví")
+                .isEmpty();
+        assertThat(saga(txn).get("step_status")).isEqualTo("SENT");
+    }
+
+    @Test
+    @DisplayName("⭐ Hết lượt ở bước hoàn tiền: MANUAL_REVIEW với mã riêng của ca 'đã thu tiền mà chưa hoàn được'")
+    void het_luot_o_buoc_hoan_thi_chuyen_nguoi_xu_ly() {
+        Accepted txn = refunding();
+        jdbcTemplate.update("UPDATE saga_state SET attempt_count = 3 WHERE transaction_id = ?",
+                txn.transactionId());
+        double before = counter("walletflow.saga.manual_review");
+        double refundFailuresBefore = counter("walletflow.topup.refund_failed");
+
+        assertThat(scanner.scan()).isEqualTo(1);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM transactions WHERE id = ?",
+                String.class, txn.transactionId())).isEqualTo("MANUAL_REVIEW");
+        assertThat(jdbcTemplate.queryForObject("SELECT failure_code FROM transactions WHERE id = ?",
+                String.class, txn.transactionId()))
+                .as("runbook xử lý ca này khác hẳn một lần THU không trả lời — ở đây tiền đã rời tài khoản "
+                        + "người dùng rồi")
+                .isEqualTo("REFUND_NO_RESPONSE");
+        assertThat(jdbcTemplate.queryForObject("SELECT failure_reason FROM transactions WHERE id = ?",
+                String.class, txn.transactionId()))
+                .as("failure_code bị ghi đè, nên mã nguyên nhân gốc phải còn lại ở đây — mục E của "
+                        + "runbook cần nó để quyết, nếu không nó chỉ còn trong log")
+                .contains("ACCOUNT_CLOSED");
+        assertThat(counter("walletflow.saga.manual_review")).isEqualTo(before + 1);
+        assertThat(counter("walletflow.topup.refund_failed"))
+                .as("tiền của người dùng vẫn ở chỗ provider — đúng định nghĩa của alert TopupRefundFailed, "
+                        + "mà runbook mục E xếp ca này nằm dưới")
+                .isEqualTo(refundFailuresBefore + 1);
+    }
+
+    @Test
+    @DisplayName("⭐ Giao dịch REFUNDING mà saga đứng ở bước ghi sổ: KHÔNG gửi lệnh nào, chuyển người xử lý")
+    void refunding_ma_saga_lech_buoc_thi_khong_gui_gi() {
+        Accepted txn = refunding();
+        // Người vận hành mở lại ca theo runbook mục D và đặt nhầm bước (POST_JOURNAL thay vì BANK_REFUND).
+        jdbcTemplate.update("UPDATE saga_state SET current_step = 'POST_JOURNAL' WHERE transaction_id = ?",
+                txn.transactionId());
+        double retriesBefore = counter("walletflow.saga.retries");
+
+        assertThat(scanner.scan()).isEqualTo(1);
+
+        assertThat(commands(txn))
+                .as("⚠ gửi lệnh GHI SỔ cho một giao dịch đang hoàn tiền là cộng ví số tiền vừa trả về thẻ")
+                .isEmpty();
+        assertThat(outbox(WalletTopics.CMD_BANK_REFUND, txn))
+                .as("cũng không gửi lệnh hoàn: hai hàng đang lệch nhau thì không đoán bước nào đúng")
+                .isEmpty();
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM transactions WHERE id = ?",
+                String.class, txn.transactionId())).isEqualTo("MANUAL_REVIEW");
+        assertThat(jdbcTemplate.queryForObject("SELECT failure_code FROM transactions WHERE id = ?",
+                String.class, txn.transactionId())).isEqualTo("SAGA_STATE_DESYNC");
+        assertThat(counter("walletflow.saga.retries"))
+                .as("không gửi gì thì không được đếm một lần gửi lại — counter này nuôi alert "
+                        + "SagaRetriesHigh, và log cũng không được nói 'đã gửi lại' ngay dưới 'KHÔNG gửi'")
+                .isEqualTo(retriesBefore);
+    }
+
+    @Test
+    @DisplayName("⭐ Saga ở bước HOÀN mà giao dịch chưa REFUNDING: cũng không gửi lệnh hoàn")
+    void saga_o_buoc_hoan_ma_giao_dich_chua_refunding_thi_khong_gui_gi() {
+        Accepted txn = refunding();
+        // Chiều ngược lại của ca trên — cùng nguyên nhân (sửa tay), và gửi lệnh HOÀN cho một giao dịch
+        // đang chờ ghi sổ là trả lại tiền của một lần nạp sắp thành công.
+        jdbcTemplate.update("UPDATE transactions SET status = 'POSTING' WHERE id = ?", txn.transactionId());
+
+        assertThat(scanner.scan()).isEqualTo(1);
+
+        assertThat(outbox(WalletTopics.CMD_BANK_REFUND, txn)).isEmpty();
+        assertThat(commands(txn)).isEmpty();
+        assertThat(jdbcTemplate.queryForObject("SELECT failure_code FROM transactions WHERE id = ?",
+                String.class, txn.transactionId())).isEqualTo("SAGA_STATE_DESYNC");
+    }
+
+    @Test
     @DisplayName("Counter của saga tồn tại ở 0 ngay từ khởi động — nếu không, alert increase() bỏ lỡ lần đầu tiên")
     void counter_ton_tai_tu_khoi_dong() {
         // status_conflict không bao giờ được tăng trong lớp test này: nó tồn tại chỉ khi được đăng ký
@@ -316,6 +461,32 @@ class StuckSagaIT {
     // ------------------------------------------------------------------
     private Accepted accept(UUID tenant) {
         return SagaFixture.accept(transferService, wallets, tenant, 40_000);
+    }
+
+    private Accepted acceptTopup() {
+        return SagaFixture.acceptTopup(topupService, wallets, TENANT, 40_000);
+    }
+
+    /**
+     * Lệnh nạp đang ở bước bù trừ (2.4b): đã thu được tiền, ledger từ chối, lệnh hoàn đã gửi. Dựng
+     * bằng SQL thay vì đi qua {@code SagaService} để lớp test này không phải bật cờ hoàn tiền — thứ
+     * đang được kiểm ở đây là job quét gửi lại lệnh NÀO, không phải đường vào bước hoàn.
+     */
+    private Accepted refunding() {
+        Accepted txn = acceptTopup();
+        jdbcTemplate.update("UPDATE transactions SET status = 'REFUNDING', failure_code = 'ACCOUNT_CLOSED' "
+                + "WHERE id = ?", txn.transactionId());
+        jdbcTemplate.update("UPDATE saga_state SET current_step = 'BANK_REFUND' WHERE transaction_id = ?",
+                txn.transactionId());
+        jdbcTemplate.update("DELETE FROM outbox_event WHERE payload LIKE ?", "%" + txn.transactionId() + "%");
+        makeOverdue(txn);
+        return txn;
+    }
+
+    private List<String> outbox(String topic, Accepted txn) {
+        return jdbcTemplate.queryForList(
+                "SELECT payload FROM outbox_event WHERE topic = ? AND payload LIKE ? ORDER BY created_at",
+                String.class, topic, "%" + txn.transactionId() + "%");
     }
 
     private void makeOverdue(Accepted txn) {
