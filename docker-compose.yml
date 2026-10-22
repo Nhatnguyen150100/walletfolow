@@ -224,6 +224,9 @@ services:
       <<: *common-env
       # API nội bộ của wallet-service — kiểm ví nguồn/ví nhận trước khi nhận lệnh
       WALLET_URL: http://wallet-service:8082
+      # Hoàn tiền tự động cho lệnh nạp đã thu được tiền mà không ghi sổ được (ADR-020). Mặc định TẮT:
+      # chỉ an toàn khi mọi instance ledger đã lên V6 (hàng rào rejected_topups) — xem .env.example.
+      TOPUP_REFUND_ENABLED: ${TOPUP_REFUND_ENABLED:-false}
     depends_on:
       postgres:
         condition: service_healthy

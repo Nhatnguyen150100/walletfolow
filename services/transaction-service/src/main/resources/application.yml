@@ -50,6 +50,12 @@ walletflow:
       # Chờ NGƯỜI DÙNG trả tiền, tính từ lúc có trang thanh toán. Phải phủ hạn phiên 15' + grace 15'
       # của bank-adapter (ADR-017), nếu không job quét coi một lệnh nạp khoẻ mạnh là treo.
       payment-deadline: PT45M
+      # Hoàn tiền TỰ ĐỘNG khi đã thu được tiền mà không ghi sổ được (2.4b, ADR-020). Mặc định TẮT và
+      # chỉ được bật sau khi: (1) mọi instance ledger đã lên V6 — hàng rào rejected_topups khiến lời
+      # từ chối là lời cuối cùng; (2) mọi instance transaction-service đã lên V4 + bản app này. Bật
+      # sớm hơn thì một bản gửi lại của lệnh ghi sổ vẫn có thể được ghi SAU khi ta đã hoàn tiền: ví
+      # được cộng và tiền cũng đã về thẻ. Tắt thì hai ca đó dừng ở MANUAL_REVIEW như 2.4a.
+      refund-enabled: ${TOPUP_REFUND_ENABLED:false}
 
 eureka:
   client:

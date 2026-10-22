@@ -217,6 +217,22 @@ class TopupSagaIT {
     }
 
     @Test
+    @DisplayName("⭐ Cờ hoàn tiền TẮT (mặc định): không lệnh hoàn nào được gửi")
+    void co_hoan_tien_tat_thi_khong_gui_lenh_hoan() {
+        Accepted txn = acceptTopup();
+        onChargePending(txn);
+        onBankCompleted(txn);
+
+        TenantContext.runWith(TENANT, () -> sagaService.onRejected(SagaFixture.topupRejected(txn, "ACCOUNT_CLOSED")));
+
+        assertThat(outbox(WalletTopics.CMD_BANK_REFUND, txn))
+                .as("hoàn tiền tự động chỉ an toàn khi MỌI instance ledger đã có hàng rào V6 (ADR-020 §5) "
+                        + "— cờ là thứ cưỡng chế điều đó, nên nó phải thật sự chặn được lệnh")
+                .isEmpty();
+        assertThat(status(txn)).isEqualTo("MANUAL_REVIEW");
+    }
+
+    @Test
     @DisplayName("⭐ Xác nhận thu tiền LỆCH số tiền so với lệnh đã gửi: không ghi sổ, chuyển người xử lý")
     void xac_nhan_lech_so_tien_thi_khong_ghi_so() {
         Accepted txn = acceptTopup();

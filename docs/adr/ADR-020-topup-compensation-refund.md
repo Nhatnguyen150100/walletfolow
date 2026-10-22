@@ -2,6 +2,7 @@
 
 **Trạng thái:** Accepted · **Ngày:** 2026-10-20 · **Milestone:** Phase 2 — 2.4b
 (PR1: hàng rào ledger + lệnh hoàn ở bank-adapter · PR2: saga bù trừ ở transaction-service)
+· *Amendments 2026-10-22 (PR2): hàng rào thứ hai ở phía saga — xem cuối file*
 
 ## Context
 
@@ -120,3 +121,46 @@ resilience coi là lỗi kỹ thuật: thử lại vô ích → DLT, và tính l
 - **Hàng rào ở transaction-service** (saga tự nhớ "đã hoàn" và bỏ qua `LedgerPosted` tới sau): quá muộn — khi
   `LedgerPosted` tới thì ví đã được cộng. Chỉ ledger chặn được việc ghi sổ.
 - **Áp hàng rào cho mọi loại bút toán:** đổi ngữ nghĩa chuyển tiền (ADR-014) mà không có lý do về tiền.
+
+---
+
+## Amendments — 2026-10-22 (PR2)
+
+Khảo sát lúc làm PR2, và review độc lập của nó, lộ ra hai điều mà bản gốc của ADR này nói chưa đủ.
+
+### A1. "Đã vào đường hoàn tiền" phải là một dấu BỀN, không phải một trạng thái
+
+Bản gốc ngầm giả định hàng rào ở ledger là đủ để không bao giờ vừa hoàn vừa cộng ví. Nó không đủ, vì nó chỉ
+chặn được phía ledger: một instance ledger chưa lên V6, một bản gửi lại nằm sẵn trên topic, hay một DLT vừa
+được giải phóng vẫn đưa `LedgerPosted` tới saga. Và lúc đó saga thường **không còn** ở `REFUNDING` — hoàn
+xong là `FAILED`, hoàn hỏng là `MANUAL_REVIEW`. Mọi hàng rào treo trên trạng thái `REFUNDING` biến mất đúng
+lúc nó cần nhất; `case FAILED` của `onPosted` thì cho "ledger thắng" (đúng với chuyển tiền) và giao dịch
+thành `COMPLETED` — ví được cộng, tiền đã về thẻ, và hệ thống báo **thành công** nên không ai nhìn lại.
+
+Nên PR2 thêm một hàng rào thứ hai ở phía saga: `saga_state.current_step = 'BANK_REFUND'`. `close()` chỉ đổi
+`step_status`, nên một khi saga đã bước sang bước hoàn thì dấu đó ở lại **vĩnh viễn**. Nó được kiểm trước
+máy trạng thái ở `onPosted` (⇒ `REFUND_POSTED_CONFLICT`, không bao giờ `COMPLETED`), ở `onBankCompleted`
+nhánh `FAILED` (bản lặp của lời xác nhận thu tiền sau khi đã hoàn xong là chuyện thường ngày — không phải
+"hai kết quả trái nhau"), và ở job quét (giao dịch `REFUNDING` mà saga đứng ở bước khác ⇒ không gửi lệnh
+nào). Cặp hàng rào này đối xứng nhau: ledger chặn "ghi sổ sau khi đã từ chối", saga chặn "báo thành công
+sau khi đã trả tiền lại".
+
+Việc này **không** mâu thuẫn với mục "Hàng rào ở transaction-service" trong *Alternatives rejected*: ở đó
+nó bị loại với tư cách hàng rào **thay thế** cho hàng rào ledger (quá muộn — khi `LedgerPosted` tới thì ví
+đã được cộng). Ở đây nó là lớp thứ hai, và việc nó chỉ kịp gọi người chứ không ngăn được bút toán chính là
+lý do lớp thứ nhất vẫn phải nằm ở ledger.
+
+### A2. Nhánh `BANK_RESULT_CONFLICT` hôm nay là phòng thủ, chưa có đường thật dẫn tới
+
+ADR này mô tả ca "provider xác nhận đã thu sau khi giao dịch đã đóng thất bại". Đọc lại bank-adapter thì
+hôm nay **chưa có đường tự động nào tạo ra nó**: `BankEventPublisher` chỉ phát `bank.event.completed` khi
+hàng `provider_transactions` đang `SUCCEEDED`, còn `ChargeStatusService.confirmExpired` cố ý không bao giờ
+tự lật một lần thu `FAILED(EXPIRED)` sang `SUCCEEDED` (ADR-017). Tiền về muộn là ca phải có người quyết.
+
+Hệ quả cần nhớ:
+- Nhánh `FAILED ──bank-completed──▶ REFUNDING` là **phòng thủ**, không phải đường chạy hằng ngày. Giữ vì
+  nó rẻ và vì khi có đường thật (2.5 nối ca "tiền về muộn") thì nó đã đúng sẵn.
+- Khi nối đường đó, nhớ `RefundService` từ chối lệnh hoàn nếu lần thu chưa `SUCCEEDED` (→ DLT). Mở ca "tiền
+  về muộn" mà không sửa trạng thái lần thu thì saga nằm `REFUNDING` tới khi job quét bỏ cuộc.
+- `REFUND_NO_RESPONSE` (gửi hết lượt không hồi âm) tăng **cùng** counter `walletflow.topup.refund_failed`
+  với lời từ chối của provider: với người trực thì cả hai là một việc — tiền ở chỗ provider, máy hết đường.

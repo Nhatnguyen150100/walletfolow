@@ -93,8 +93,9 @@ groups:
       # 🔴 Lệnh nạp đã THU ĐƯỢC TIỀN nhưng không vào được ví (roadmap 2.4a, ADR-019)
       # -------------------------------------------------------------
       # Nặng hơn SagaManualReview: ở đó tiền CÓ THỂ chưa đi, ở đây ngân hàng CHẮC CHẮN đã trừ người
-      # dùng — lệnh ghi sổ chỉ được gửi sau khi provider xác nhận. Chưa có hoàn tiền tự động (2.4b),
-      # nên mỗi ca là một thao tác tay và mỗi phút là một phút khách mất tiền mà không có gì.
+      # dùng — lệnh ghi sổ chỉ được gửi sau khi provider xác nhận. Mỗi ca còn lại ở đây là một thao tác
+      # tay và mỗi phút là một phút khách mất tiền mà không có gì. Từ 2.4b (ADR-020), hai ca biết chắc
+      # đã thu tiền được hoàn tự động và KHÔNG tăng counter này — nên alert chỉ kêu cho ca cần người.
       - alert: TopupManualReview
         expr: increase(walletflow_topup_manual_review_total[10m]) > 0
         for: 0m
@@ -116,6 +117,36 @@ groups:
           severity: ticket
         annotations:
           summary: "{{ $value }} lần kết quả thu tiền mâu thuẫn ở {{ $labels.job }}"
+          runbook: docs/runbooks/topup-stuck.md
+
+      # Hoàn tiền tự động KHÔNG thành công (2.4b, ADR-020): tiền của người dùng vẫn ở chỗ provider và
+      # máy đã hết đường tự gỡ. Nặng ngang TopupManualReview — khác ở chỗ ta biết chính xác phải làm gì
+      # (hoàn tay qua portal), nên runbook mục E là một quy trình chứ không phải một cuộc điều tra.
+      - alert: TopupRefundFailed
+        expr: increase(walletflow_topup_refund_failed_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $value }} lệnh nạp KHÔNG hoàn được tiền ở {{ $labels.job }}"
+          description: >-
+            Hàng REFUND đã FAILED ở bank-adapter là vĩnh viễn — đừng gửi lại lệnh hoàn, nó chỉ phát lại
+            lời từ chối cũ. Hoàn tay qua portal theo provider_ref của lần THU (runbook mục E).
+          runbook: docs/runbooks/topup-stuck.md
+
+      # Hoàn tiền tự động là ca hệ thống TỰ xử lý được, nên một lần lẻ không đánh thức ai. Nhưng tần
+      # suất tăng đột biến nghĩa là ledger đang từ chối hàng loạt (ví bị đóng hàng loạt? tài khoản
+      # EXTERNAL_BANK bị đóng băng?) — thứ phải nhìn thấy trước khi khách hàng kêu.
+      - alert: TopupRefundRateHigh
+        expr: increase(walletflow_topup_refund_started_total[15m]) > 5
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} lệnh nạp phải hoàn tiền trong 15 phút ở {{ $labels.job }}"
+          description: >-
+            Nhìn failure_code của các giao dịch REFUNDING: cùng một mã của ledger cho nhiều giao dịch
+            là nguyên nhân hệ thống, không phải chuyện riêng của một ví.
           runbook: docs/runbooks/topup-stuck.md
 
       # Gửi lại nhiều = ledger chậm hoặc message đang mất ở đâu đó — báo trước khi thành MANUAL_REVIEW
