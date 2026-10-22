@@ -46,6 +46,7 @@
     <module>services/ledger-service</module>
     <module>services/wallet-service</module>
     <module>services/transaction-service</module>
+    <module>services/bank-adapter</module>
   </modules>
 
   <dependencyManagement>

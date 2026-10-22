@@ -28,16 +28,33 @@ public final class TransferApi {
         return body;
     }
 
+    public static Map<String, Object> topupBody(UUID wallet, long amount) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("walletId", wallet.toString());
+        body.put("amountMinor", amount);
+        body.put("currency", "VND");
+        return body;
+    }
+
+    public static ResponseEntity<String> topup(TestRestTemplate http, UUID tenant, UUID user,
+                                               String key, Map<String, Object> body) {
+        return post(http, "/api/v1/transactions/topup", tenant, user, key, body);
+    }
+
     /** Trả body dạng chuỗi THÔ — test idempotency so sánh từng byte. */
     public static ResponseEntity<String> transfer(TestRestTemplate http, UUID tenant, UUID user,
                                                   String key, Map<String, Object> body) {
+        return post(http, "/api/v1/transactions/transfer", tenant, user, key, body);
+    }
+
+    private static ResponseEntity<String> post(TestRestTemplate http, String path, UUID tenant, UUID user,
+                                               String key, Map<String, Object> body) {
         HttpHeaders headers = identity(tenant, user);
         headers.setContentType(MediaType.APPLICATION_JSON);
         if (key != null) {
             headers.set("Idempotency-Key", key);
         }
-        return http.exchange("/api/v1/transactions/transfer", HttpMethod.POST,
-                new HttpEntity<>(body, headers), String.class);
+        return http.exchange(path, HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
     }
 
     public static ResponseEntity<JsonNode> get(TestRestTemplate http, UUID tenant, UUID user, String txnId) {

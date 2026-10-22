@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://walletflow.dev/schemas/txn.event.completed.v1.json",
   "title": "TransactionCompleted v1 — giao dịch đã hoàn tất",
-  "description": "Topic txn.event.completed.v1. Producer: transaction-service. Consumer: notification-service. Phát đúng một lần cho mỗi lần chuyển sang COMPLETED; eventId tất định theo transactionId. Luật tiến hoá: chỉ THÊM field optional.",
+  "description": "Topic txn.event.completed.v1. Producer: transaction-service. Consumer: notification-service. Phát đúng một lần cho mỗi lần chuyển sang COMPLETED; eventId tất định theo transactionId. fromWalletId null ở TOPUP: tiền đến từ ngân hàng, không từ ví nào (nới ở 2.4a, ADR-019 — field vẫn BẮT BUỘC có mặt). Luật tiến hoá: chỉ THÊM field optional.",
   "type": "object",
   "required": ["eventId", "eventType", "version", "occurredAt", "tenantId", "payload"],
   "properties": {
@@ -19,7 +19,7 @@
         "transactionId": { "$ref": "#/$defs/uuid" },
         "type": { "enum": ["TRANSFER", "TOPUP", "WITHDRAW", "REVERSAL"] },
         "initiatedBy": { "$ref": "#/$defs/uuid" },
-        "fromWalletId": { "$ref": "#/$defs/uuid" },
+        "fromWalletId": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
         "toWalletId": { "$ref": "#/$defs/uuid" },
         "amountMinor": { "type": "integer", "exclusiveMinimum": 0 },
         "currency": { "enum": ["VND", "USD"] },

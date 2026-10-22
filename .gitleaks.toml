@@ -1,0 +1,34 @@
+# Cấu hình gitleaks cho WalletFlow.
+#
+# Job "Secret scan" (.github/workflows/ci.yml) tồn tại vì dự án này TỪNG commit secret JWT thật
+# vào application.yml và docker-compose.yml. Bộ luật mặc định được giữ NGUYÊN VẸN — file này chỉ
+# miễn trừ đúng từng chuỗi giả đã biết, không bao giờ miễn trừ cả một thư mục.
+#
+# Vì sao không miễn trừ theo đường dẫn (ví dụ `**/src/test/**`): miễn trừ theo path tắt MỌI luật
+# trong thư mục đó, nên một khoá AWS thật dán nhầm vào test sẽ lọt qua im lặng. Miễn trừ theo giá
+# trị thì phạm vi đúng bằng chuỗi được liệt kê, không rộng hơn một ký tự.
+#
+# Thêm mục mới vào đây chỉ khi đã tự tay xác minh chuỗi đó là fixture bịa, không mở được gì.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fixture test bịa — bị luật mặc định nhận nhầm là secret"
+
+# `regexTarget = "secret"`: so khớp với phần gitleaks coi là bí mật, không phải cả dòng. Nhờ vậy
+# một dòng khác trong cùng file mang secret thật vẫn bị bắt.
+regexTarget = "secret"
+
+regexes = [
+  # UUID ví dụ chuẩn của RFC 4122, dùng làm idempotency key trong test. Luật `generic-api-key`
+  # thấy chuỗi dài gán vào hằng tên KEY nên báo nhầm.
+  # services/bank-adapter/src/test/java/com/walletflow/bank/provider/vnpay/VnPayProviderTest.java
+  '''123e4567-e89b-12d3-a456-426614174000''',
+
+  # JWT bịa cho test masking: header giải ra {"alg":"RS256"}, payload {"sub":"user-1"}, chữ ký là
+  # base64 của chuỗi "signature-here". Không ký bằng khoá nào, không verify được ở đâu. Test này
+  # bắt buộc phải mang một chuỗi TRÔNG GIỐNG JWT thật thì mới chứng minh được masker che đúng.
+  # common-lib/src/test/java/com/walletflow/common/logging/SensitiveDataMaskerTest.java
+  '''eyJhbGciOiJSUzI1NiJ9\.eyJzdWIiOiJ1c2VyLTEifQ\.c2lnbmF0dXJlLWhlcmU''',
+]

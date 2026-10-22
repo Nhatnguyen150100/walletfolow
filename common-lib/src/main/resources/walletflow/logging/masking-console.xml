@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Appender CONSOLE của Spring Boot nhưng message và stack trace đã CHE dữ liệu nhạy cảm (ADR-017):
+  chữ ký/hash secret của cổng thanh toán, mật khẩu, token, số thẻ.
+
+  Cách dùng — logback-spring.xml của service:
+      <configuration>
+          <include resource="walletflow/logging/masking-console.xml"/>
+          <root level="INFO"><appender-ref ref="CONSOLE"/></root>
+      </configuration>
+
+  Pattern là NGUYÊN VĂN mặc định của Spring Boot 3.5 (defaults.xml) — thời gian, mức, PID, tên ứng dụng,
+  thread, traceId/spanId qua LOG_CORRELATION_PATTERN, logger — chỉ thay %m -> %maskedMsg và phần exception
+  (${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}) -> %maskedEx. Nâng Boot thì so lại với defaults.xml mới.
+-->
+<included>
+    <conversionRule conversionWord="maskedMsg" class="com.walletflow.common.logging.MaskingMessageConverter"/>
+    <conversionRule conversionWord="maskedEx" class="com.walletflow.common.logging.MaskingThrowableConverter"/>
+
+    <!-- Phải đặt TRƯỚC defaults.xml: nó chỉ dùng giá trị mặc định khi CONSOLE_LOG_PATTERN chưa có -->
+    <property name="CONSOLE_LOG_PATTERN"
+              value="%clr(%d{${LOG_DATEFORMAT_PATTERN:-yyyy-MM-dd'T'HH:mm:ss.SSSXXX}}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}){} %clr(${PID:-}){magenta} %clr(--- %esb(){APPLICATION_NAME}%esb{APPLICATION_GROUP}[%15.15t] ${LOG_CORRELATION_PATTERN:-}){faint}%clr(%-40.40logger{39}){cyan} %clr(:){faint} %maskedMsg%n%maskedEx"/>
+
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+</included>

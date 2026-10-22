@@ -8,6 +8,7 @@ import com.walletflow.common.event.LedgerPostedEvent;
 import com.walletflow.common.event.PostJournalCommand;
 import com.walletflow.common.event.WalletTopics;
 import com.walletflow.common.tenant.TenantContext;
+import com.walletflow.transaction.services.TopupService;
 import com.walletflow.transaction.services.TransferService;
 import com.walletflow.transaction.support.FakeWalletDirectory;
 import com.walletflow.transaction.support.FakeWalletDirectoryConfig;
@@ -88,6 +89,8 @@ class SagaFlowIT {
     @Autowired
     TransferService transferService;
     @Autowired
+    TopupService topupService;
+    @Autowired
     FakeWalletDirectory wallets;
     @Autowired
     EnvelopeReader envelopeReader;
@@ -150,21 +153,60 @@ class SagaFlowIT {
         await(() -> "COMPLETED".equals(status(txn)));
     }
 
+    @Test
+    @DisplayName("⭐ Nạp tiền trọn vòng qua Kafka: lệnh thu ra dây → xác nhận của bank-adapter → lệnh ghi sổ → COMPLETED")
+    void vong_nap_tien_qua_kafka() {
+        Accepted txn = SagaFixture.acceptTopup(topupService, wallets, TENANT, 300_000);
+
+        // Lệnh thu tiền phải thật sự ra tới Kafka, đúng topic, đúng schema
+        String charge = awaitRaw(WalletTopics.CMD_BANK_CHARGE, txn.transactionId().toString());
+        EventSchemas.assertValid(WalletTopics.CMD_BANK_CHARGE, charge);
+
+        // Đóng vai bank-adapter. Đây là thứ không test nào khác phủ: hằng số topic của
+        // BankResultListener, deserialize payload, và tenant lấy từ envelope — sai cái nào thì lệnh
+        // nạp treo ở PROCESSING vĩnh viễn mà CI vẫn xanh.
+        publish(WalletTopics.EVT_BANK_CHARGE_PENDING, "BankChargePending", txn, SagaFixture.chargePending(txn));
+        await(() -> "AWAITING_PAYMENT".equals(status(txn)));
+
+        publish(WalletTopics.EVT_BANK_COMPLETED, "BankCompleted", txn, SagaFixture.bankCompleted(txn));
+        await(() -> "POSTING".equals(status(txn)));
+
+        String journal = awaitRaw(WalletTopics.CMD_POST_JOURNAL, txn.transactionId().toString());
+        EventSchemas.assertValid(WalletTopics.CMD_POST_JOURNAL, journal);
+        assertThat(journal).contains("EXTERNAL_BANK").contains("TOPUP");
+
+        reply(WalletTopics.EVT_LEDGER_POSTED, txn, SagaFixture.topupPosted(txn));
+        await(() -> "COMPLETED".equals(status(txn)));
+        EventSchemas.assertValid(WalletTopics.EVT_TXN_COMPLETED,
+                awaitRaw(WalletTopics.EVT_TXN_COMPLETED, txn.transactionId().toString()));
+    }
+
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    /** Đẩy một message của bank-adapter lên dây, với envelope mang đúng tenant của giao dịch. */
+    private void publish(String topic, String eventType, Accepted txn, Object payload) {
+        send(topic, txn.to().toString(),
+                EventEnvelope.of(UUID.randomUUID(), eventType, txn.tenantId(), null, payload, Instant.now()));
+    }
+
     private void reply(String topic, Accepted txn, Object payload) {
         UUID eventId = payload instanceof LedgerPostedEvent posted ? posted.entryId() : UUID.randomUUID();
         EventEnvelope<Object> envelope = EventEnvelope.of(eventId,
                 payload instanceof LedgerPostedEvent ? "LedgerPosted" : "LedgerRejected",
                 txn.tenantId(), null, payload, Instant.now());
+        // Lệnh nạp không có ví nguồn — key là ví được ghi có, đúng như producer thật đặt
+        send(topic, (txn.from() != null ? txn.from() : txn.to()).toString(), envelope);
+    }
+
+    private void send(String topic, String key, EventEnvelope<Object> envelope) {
         Map<String, Object> config = new HashMap<>();
         config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
         config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         try (KafkaProducer<String, String> producer = new KafkaProducer<>(config)) {
-            producer.send(new ProducerRecord<>(topic, txn.from().toString(),
-                    objectMapper.writeValueAsString(envelope))).get();
+            producer.send(new ProducerRecord<>(topic, key, objectMapper.writeValueAsString(envelope))).get();
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  bank-adapter nói chuyện với cổng thanh toán: chữ ký VNPay (vnp_SecureHash), hash secret, URL thanh toán có
+  chữ ký có thể lọt vào log qua message của exception. Mọi dòng log ra console đều đi qua bộ che của
+  common-lib (ADR-017, roadmap 2.2 "masking vào logback").
+-->
+<configuration>
+    <include resource="walletflow/logging/masking-console.xml"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

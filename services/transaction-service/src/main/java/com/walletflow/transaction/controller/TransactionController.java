@@ -4,8 +4,11 @@ import com.walletflow.common.exception.UnauthorizedException;
 import com.walletflow.common.response.BaseResponse;
 import com.walletflow.common.response.ResponseBuilder;
 import com.walletflow.common.security.AuthHeaders;
+import com.walletflow.transaction.dto.TopupRequest;
 import com.walletflow.transaction.dto.TransactionView;
 import com.walletflow.transaction.dto.TransferRequest;
+import com.walletflow.transaction.services.AcceptResult;
+import com.walletflow.transaction.services.TopupService;
 import com.walletflow.transaction.services.TransferService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -27,7 +30,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/v1/transactions")
 @RequiredArgsConstructor
-@Tag(name = "Transactions", description = "Lệnh chuyển tiền")
+@Tag(name = "Transactions", description = "Lệnh chuyển tiền và nạp tiền")
 public class TransactionController {
 
     /** Header chuẩn (IETF draft "The Idempotency-Key HTTP Header Field"). */
@@ -37,6 +40,7 @@ public class TransactionController {
     public static final String REPLAYED = "Idempotent-Replayed";
 
     private final TransferService transferService;
+    private final TopupService topupService;
 
     /**
      * Trả {@code 202 Accepted}: lệnh đã được NHẬN và sẽ được ghi sổ bất đồng bộ. Gửi lại cùng
@@ -50,9 +54,25 @@ public class TransactionController {
             @RequestHeader(value = AuthHeaders.USER_ID, required = false) UUID userId,
             @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String idempotencyKey,
             @Valid @RequestBody TransferRequest request) {
-        TransferService.AcceptResult result =
-                transferService.accept(requireUser(userId), idempotencyKey, request);
+        return accepted(transferService.accept(requireUser(userId), idempotencyKey, request));
+    }
 
+    /**
+     * Nhận lệnh nạp tiền. Cũng {@code 202 Accepted}: trang thanh toán chưa có ở thời điểm này — lệnh
+     * thu còn phải đi qua outbox sang bank-adapter. Client poll
+     * {@code GET /api/v1/transactions/{id}} tới khi trạng thái là {@code AWAITING_PAYMENT}, rồi mở
+     * {@code paymentUrl}.
+     */
+    @PostMapping("/topup")
+    @Operation(summary = "Nạp tiền vào ví của mình — bắt buộc header Idempotency-Key")
+    public ResponseEntity<String> topup(
+            @RequestHeader(value = AuthHeaders.USER_ID, required = false) UUID userId,
+            @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String idempotencyKey,
+            @Valid @RequestBody TopupRequest request) {
+        return accepted(topupService.accept(requireUser(userId), idempotencyKey, request));
+    }
+
+    private static ResponseEntity<String> accepted(AcceptResult result) {
         return ResponseEntity.status(result.status())
                 .location(URI.create("/api/v1/transactions/" + result.transactionId()))
                 .header(REPLAYED, String.valueOf(result.replayed()))
@@ -61,7 +81,7 @@ public class TransactionController {
     }
 
     @GetMapping("/{transactionId}")
-    @Operation(summary = "Trạng thái một lệnh chuyển tiền của người dùng hiện tại")
+    @Operation(summary = "Trạng thái một lệnh tiền của người dùng hiện tại")
     public ResponseEntity<BaseResponse<TransactionView>> get(
             @RequestHeader(value = AuthHeaders.USER_ID, required = false) UUID userId,
             @PathVariable UUID transactionId) {
