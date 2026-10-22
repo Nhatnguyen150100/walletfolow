@@ -6,7 +6,6 @@ import com.walletflow.bank.enums.EProviderTxnStatus;
 import com.walletflow.bank.provider.PaymentProvider;
 import com.walletflow.bank.provider.VerifiedWebhook;
 import com.walletflow.bank.repositories.ProviderTransactionRepository;
-import com.walletflow.common.event.EBankOperation;
 import com.walletflow.common.exception.ResourceNotFoundException;
 import com.walletflow.common.exception.UnauthorizedException;
 import io.micrometer.core.instrument.Counter;
@@ -70,8 +69,7 @@ public class PaymentReturnService {
 
         String providerRef = verified.get().providerRef();
         ProviderTransaction txn = Optional.ofNullable(providerRef)
-                .flatMap(ref -> repository.findByProviderAndProviderRefAndOperation(
-                        providerName, ref, EBankOperation.CHARGE))
+                .flatMap(ref -> repository.findChargeByProviderRef(providerName, ref))
                 // Cùng một câu trả lời cho "không có" và "có nhưng không đọc được": khác nhau là để người
                 // ngoài dò xem mã nào có thật (CLAUDE.md — chống dò id, ADR-018 §5)
                 .orElseThrow(() -> new ResourceNotFoundException("Không tìm thấy lần thu"));

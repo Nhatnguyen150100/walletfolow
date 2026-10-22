@@ -29,15 +29,31 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
      * tới từ Internet và tenant do bên ngoài gửi thì không bao giờ được tin (ADR-018 §6).
      *
      * <p>Đây là query DUY NHẤT trên bảng này không lọc tenant, và là ngoại lệ có chủ ý: nó CHÍNH LÀ bước suy
-     * ra tenant. {@code uk_provider_txn_provider_ref} là UNIQUE {@code (provider, provider_ref)} nên cặp này
-     * xác định đúng một hàng. Caller phải đặt {@code TenantContext} theo tenant ĐỌC ĐƯỢC từ hàng trước khi
-     * làm bất cứ việc gì tiếp theo; mọi query sau đó lọc tenant như thường.
+     * ra tenant. Caller phải đặt {@code TenantContext} theo tenant ĐỌC ĐƯỢC từ hàng trước khi làm bất cứ việc
+     * gì tiếp theo; mọi query sau đó lọc tenant như thường.
      *
-     * <p>Ràng {@code operation} để một IPN của lần HOÀN TIỀN (2.4) không bị dẫn vào đường của lần thu — cùng
-     * một {@code provider_ref} có thể xuất hiện ở nhiều thao tác.
+     * <p><b>Chỉ tra lần THU, và {@code 'CHARGE'} là HẰNG trong câu lệnh — cả hai đều cố ý.</b> Từ V7, khoá ở
+     * DB là unique RIÊNG PHẦN {@code uk_provider_txn_charge_ref}
+     * {@code (provider, provider_ref) WHERE operation = 'CHARGE'}: một mã thu xác định đúng một hàng, còn mã
+     * của lần HOÀN không bị ràng buộc gì (provider được phép đánh mã theo giao dịch, và hoàn một phần sẽ
+     * sinh nhiều hàng REFUND cùng mã). Tính duy nhất mà đường suy-ra-tenant dựa vào vì thế chỉ tồn tại
+     * trong phạm vi {@code CHARGE} — nên hàm này không nhận {@code operation}: bất biến được cưỡng chế
+     * bằng chữ ký hàm, không bằng một lời dặn trong javadoc.
+     *
+     * <p>Hằng cũng là điều kiện để index được dùng: Postgres chỉ dùng partial index khi chứng minh được
+     * mệnh đề WHERE của câu lệnh hàm ý mệnh đề của index. Với tham số bind ({@code operation = $3}) nó
+     * chứng minh được ở kế hoạch *custom* nhưng KHÔNG ở kế hoạch *generic* — mà pgjdbc tự chuyển sang
+     * server-side prepared sau vài lần gọi trên cùng connection, và connection của pool sống rất lâu. Hậu
+     * quả sẽ là seq scan trên một bảng chỉ mọc thêm, ở đúng đường đi từ Internet, mà không có gì báo.
+     *
+     * <p>Lọc {@code operation} còn để một IPN của lần HOÀN TIỀN (2.4) không bị dẫn vào đường của lần thu.
      */
-    Optional<ProviderTransaction> findByProviderAndProviderRefAndOperation(
-            String provider, String providerRef, EBankOperation operation);
+    @Query(value = """
+            SELECT * FROM provider_transactions
+             WHERE provider = :provider AND provider_ref = :providerRef AND operation = 'CHARGE'
+            """, nativeQuery = true)
+    Optional<ProviderTransaction> findChargeByProviderRef(@Param("provider") String provider,
+                                                          @Param("providerRef") String providerRef);
 
     /**
      * Kéo lần hỏi lại kế tiếp về ngay bây giờ. Dùng khi có tín hiệu người dùng vừa trả tiền xong (trang
@@ -48,8 +64,9 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
      * bao nhiêu lần cũng vô hại và không bao giờ tự nó ghi tiền (ADR-016 §1).
      *
      * <p>Lọc tenant dù caller đã cầm sẵn hàng: đây là đường ghi từ một endpoint CÔNG KHAI, và bất biến
-     * "mọi query lọc theo tenant" (ADR-010) tồn tại đúng để chỗ như thế này không trở thành ghi chéo tenant
-     * vào ngày ai đó nới khoá unique trên {@code provider_ref}.
+     * "mọi query lọc theo tenant" (ADR-010) tồn tại đúng cho những chỗ như thế này. Ngày "ai đó nới khoá
+     * unique trên {@code provider_ref}" đã tới rồi — V7 nới phía REFUND — và việc câu này vẫn lọc tenant
+     * chính là lý do lần nới đó không biến thành ghi chéo tenant.
      *
      * @return 1 nếu vừa kéo lịch, 0 nếu hàng không còn PENDING (đã chốt rồi) hoặc đã tới hạn sẵn
      */
@@ -75,8 +92,8 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
      * chỉ định thì xung đột ở khoá nào cũng là "đã có".
      *
      * <p>Không nuốt nhầm gì: xung đột thật chỉ ở {@code idempotency_key} với bộ ba khác là không thể (khoá băm từ
-     * chính bộ ba); {@code uk_provider_txn_provider_ref} không bao giờ đụng lúc INSERT ({@code provider_ref}
-     * NULL, NULLS DISTINCT); {@code id} ngẫu nhiên. Nếu một xung đột lạ xảy ra, {@code claim} đọc lại theo bộ ba
+     * chính bộ ba); {@code uk_provider_txn_charge_ref} (V7) không bao giờ đụng lúc INSERT ({@code provider_ref}
+     * còn NULL, NULLS DISTINCT); {@code id} ngẫu nhiên. Nếu một xung đột lạ xảy ra, {@code claim} đọc lại theo bộ ba
      * không thấy hàng → lỗi kỹ thuật → DLT (fail-closed), không bao giờ thu hai lần. <b>Thêm unique index mới vào
      * bảng này thì nó cũng bị "nuốt" theo cách đó — cân nhắc lại câu này khi thêm.</b>
      *

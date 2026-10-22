@@ -164,3 +164,55 @@ Hệ quả cần nhớ:
   về muộn" mà không sửa trạng thái lần thu thì saga nằm `REFUNDING` tới khi job quét bỏ cuộc.
 - `REFUND_NO_RESPONSE` (gửi hết lượt không hồi âm) tăng **cùng** counter `walletflow.topup.refund_failed`
   với lời từ chối của provider: với người trực thì cả hai là một việc — tiền ở chỗ provider, máy hết đường.
+
+## Amendments — 2026-10-22 (2.4c PR1)
+
+Hai mục "còn mở" của ADR này đã được đóng, trước khi có provider thật — chúng đều là loại bẫy chỉ nổ ở
+lần đầu nối provider, trên đường tiền.
+
+### B1. Chỉ mã của lần THU là duy nhất (bank-adapter V7)
+
+Mục *Consequences* cảnh báo: `UNIQUE (provider, provider_ref)` chung cho mọi thao tác, nên provider nào
+trả mã lần hoàn trùng mã lần thu sẽ nổ `23505`. Nay DB chỉ còn cưỡng chế tính duy nhất cho mã của lần
+**THU**.
+
+Vì sao không để tới 2.4c PR2: chỗ nổ là bước **ghi câu trả lời**, tức là SAU khi provider đã hoàn tiền
+thật. Exception ra khỏi transaction → hàng `REFUND` ở lại `NEW` → Kafka gửi lại → lần gửi lại thường bị
+provider từ chối ("đã hoàn rồi") → hàng `FAILED` **vĩnh viễn** trong khi tiền đã về thẻ người dùng. Chứng
+minh bằng `RefundFlowIT.ma_hoan_trung_ma_thu_van_ghi_duoc` + `MockProvider.reuseChargeRefForRefunds`.
+
+Khoá mới **không** phải bộ ba `(provider, provider_ref, operation)` mà là unique RIÊNG PHẦN chỉ cho
+`CHARGE`: `uk_provider_txn_charge_ref (provider, provider_ref) WHERE operation = 'CHARGE'`. Bộ ba vẫn để
+lại cùng cái bẫy cho hai ca chưa chết — provider đánh mã theo lô, và **hoàn một phần** (mục "chưa có hoàn
+một phần" ở trên), lúc đó một giao dịch có nhiều hàng `REFUND` trùng mã nhau. Mà không dòng code nào tra
+một hàng `REFUND` theo mã: bất biến thật sự cần cưỡng chế là "một mã THU ⇒ đúng một hàng", nền móng của
+đường suy ra tenant từ webhook (`RefundFlowIT.ma_thu_van_duy_nhat_xuyen_tenant` ghim lại). Đổi lại, DB
+không còn phát hiện giúp "provider trả trùng mã hoàn" — việc đó chuyển cho đối soát tầng 3 (Phase 3), nơi
+phát hiện ra nó không làm hỏng một lần hoàn đang chạy.
+
+### B2. Đường hoàn có mạch và bulkhead RIÊNG
+
+§4 của ADR này đã nêu đúng một nửa vấn đề (ném exception ở `VnPayProvider.refund` làm mở mạch, chặn luôn
+`querydr`), nhưng xử lý nó bằng cách *tránh ném*. Đó là chữa triệu chứng: mọi lỗi kỹ thuật thật của đường
+hoàn — và PR2 sẽ có I/O thật — vẫn tiêu vào cùng một ngân sách lỗi với đường thu.
+
+Nay `ResilientPaymentProvider` có hai khoang (`Isolation`): `provider-<tên>` cho `charge`/`getStatus`,
+`provider-<tên>-refund` cho `refund`. Hai đường có hai lý do để sống: đường thu hỏng thì ta mù về những
+giao dịch người dùng **đã** trả tiền; đường hoàn hỏng thì tiền người dùng nằm ngoài ví. Không cái nào
+được phép làm cái kia câm. `ProviderResilienceIT.mach_thu_mo_van_hoan_duoc` và
+`mach_hoan_mo_van_hoi_duoc_trang_thai` kiểm chiều mạch; `RefundBulkheadIsolationIT` kiểm chiều thread pool
+(khoang hoàn đầy vẫn `getStatus` được) — nửa này mới là thứ PR2 cần, khi `refund` có I/O thật.
+
+**Cái giá của cách ly, cố ý trả:** provider chết toàn diện thì mỗi lệnh hoàn vẫn đốt trọn timeout trước khi
+mạch HOÀN gom đủ lời gọi để mở — trước đây mạch thu đã chặn sẵn giúp. Người trực sẽ thấy DLT
+`txn.command.bank-refund.v1` chậm hơn trong sự cố; đó là biểu hiện bình thường, không phải dấu hiệu hỏng.
+
+Hai khoang cũng có nghĩa `max-threads`/`queue-capacity`/ngưỡng mạch là **của mỗi khoang**, nên trần thread
+của adapter là 2×. Thread được tạo lazy nên khoang hoàn giữ 0 thread cho tới lệnh hoàn đầu tiên.
+
+### B3. 2.4c PR2 (hoàn thật qua VNPay) bị chặn phía VNPay
+
+Merchant sandbox hiện chưa dùng được `vnp_Command=refund`, nên `VnPayProvider.refund` giữ nguyên
+`Declined(REFUND_UNSUPPORTED)` và mọi ca hoàn VNPay vẫn là thao tác tay qua portal (runbook mục E). Hệ
+quả đã ghi ở *Consequences* vẫn đúng và nay là vĩnh viễn cho tới khi mở được: hàng `REFUND` `FAILED` mang
+`REFUND_UNSUPPORTED` **không** tự hoàn được kể cả sau khi PR2 lên.

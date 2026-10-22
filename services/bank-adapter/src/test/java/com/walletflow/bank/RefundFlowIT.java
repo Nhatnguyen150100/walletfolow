@@ -32,6 +32,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -137,6 +138,8 @@ class RefundFlowIT {
         db.clean();
         mock.reset();
         resilientProvider.circuitBreaker().reset();
+        // Đường hoàn có mạch riêng từ 2.4c — lỗi kỹ thuật của lệnh hoàn mở đúng mạch này
+        resilientProvider.refundCircuitBreaker().reset();
         tenant = UUID.randomUUID();
     }
 
@@ -187,6 +190,48 @@ class RefundFlowIT {
                 .hasSize(1);
         assertThat(db.outboxOfOperation(charge.transactionId(), WalletTopics.EVT_BANK_FAILED, "REFUND")).isEmpty();
         assertFullyRefundedAtProvider(chargeRow, 250_000);
+    }
+
+    @Test
+    @DisplayName("⭐ Provider trả mã hoàn TRÙNG mã thu: vẫn ghi được, không nổ khoá unique sau khi tiền đã đi")
+    void ma_hoan_trung_ma_thu_van_ghi_duoc() {
+        BankChargeCommand charge = succeededCharge(120_000);
+        // Có provider thật đánh mã theo GIAO DỊCH chứ không theo THAO TÁC. Khoá cũ
+        // UNIQUE (provider, provider_ref) nổ 23505 ở bước ghi câu trả lời — tức là SAU khi provider đã
+        // hoàn tiền thật. Hàng kẹt ở NEW, lệnh được gửi lại, và lần gửi lại thường bị provider từ chối
+        // ("đã hoàn rồi") → hàng FAILED vĩnh viễn trong khi tiền đã về thẻ người dùng.
+        mock.reuseChargeRefForRefunds(true);
+
+        sendRefund(tenant, BankFixtures.refundOf(charge));
+
+        awaitRefundStatus(charge, "SUCCEEDED");
+        Map<String, Object> chargeRow = db.row(tenant, charge.transactionId(), "CHARGE");
+        Map<String, Object> refundRow = db.row(tenant, charge.transactionId(), "REFUND");
+        assertThat(refundRow.get("provider_ref"))
+                .as("mã của lần hoàn đúng là mã provider trả về, kể cả khi nó trùng mã lần thu")
+                .isEqualTo(chargeRow.get("provider_ref"));
+        assertThat(db.outboxEventIds(charge.transactionId(), WalletTopics.EVT_BANK_COMPLETED, "REFUND"))
+                .as("hoàn xong thì phải báo hoàn xong — không được im lặng vì một ràng buộc của bảng")
+                .hasSize(1);
+        assertThat(db.outboxOfOperation(charge.transactionId(), WalletTopics.EVT_BANK_FAILED, "REFUND"))
+                .as("⚠ 'failed' ở đây là nói tiền chưa về trong khi nó đã về")
+                .isEmpty();
+        assertFullyRefundedAtProvider(chargeRow, 120_000);
+    }
+
+    @Test
+    @DisplayName("⭐ Mã của lần THU vẫn duy nhất xuyên tenant — nền móng của đường suy ra tenant từ webhook")
+    void ma_thu_van_duy_nhat_xuyen_tenant() {
+        BankChargeCommand charge = succeededCharge(70_000);
+        String chargeRef = (String) db.row(tenant, charge.transactionId(), "CHARGE").get("provider_ref");
+
+        // V7 chỉ NỚI phía REFUND. Nếu ai đó nới nốt phía CHARGE thì webhook tới từ Internet có thể khớp
+        // nhiều hàng và `findByProviderAndProviderRefAndOperation` chọn bừa một tenant — đó là một lỗ
+        // cross-tenant, không chỉ là một ràng buộc dữ liệu (ADR-018 §6).
+        assertThatThrownBy(() -> db.insertRow(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                70_000, "mock", "SUCCEEDED", chargeRef, null))
+                .as("hai lần THU cùng mã ở hai tenant phải bị DB chặn")
+                .isInstanceOf(DuplicateKeyException.class);
     }
 
     // ------------------------------------------------------------------
@@ -478,7 +523,7 @@ class RefundFlowIT {
 
         // Provider hồi lại, người vận hành replay từ DLT: dùng lại đúng hàng NEW, hoàn một lần
         mock.failNextCalls(0);
-        resilientProvider.circuitBreaker().reset();
+        resilientProvider.refundCircuitBreaker().reset();
         sendRefund(tenant, BankFixtures.refundOf(charge));
 
         awaitRefundStatus(charge, "SUCCEEDED");

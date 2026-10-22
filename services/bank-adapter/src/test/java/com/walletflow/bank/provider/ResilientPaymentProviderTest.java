@@ -108,4 +108,22 @@ class ResilientPaymentProviderTest {
                     assertThat(mock.chargeCalls()).as("không lời gọi nào được thêm trong lúc chờ").isEqualTo(4);
                 });
     }
+
+    @Test
+    @DisplayName("Hai khoang có tên riêng trong metric — alert PaymentRefundProviderDown lọc theo đúng tên này")
+    void hai_khoang_co_ten_rieng_trong_metric() {
+        // `deploy/prometheus/alerts.yml` tách hai alert bằng regex trên tag `name` (`.*-refund`). Đổi tên
+        // ở PaymentProviderConfig mà không sửa alert thì: alert của đường hoàn không bao giờ kêu, VÀ sự cố
+        // đường hoàn cũng bị regex loại khỏi alert kia — mất hẳn page cho ca "tiền người dùng nằm ngoài
+        // ví", im lặng. Để ở tầng unit để nó chạy cả khi máy không có Docker.
+        runner.run(context -> {
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+            for (String name : List.of("provider-mock", "provider-mock-refund")) {
+                assertThat(registry.find("resilience4j.circuitbreaker.state").tag("name", name).gauges())
+                        .as("mạch %s", name).isNotEmpty();
+                assertThat(registry.find("resilience4j.bulkhead.queue.capacity").tag("name", name).gauges())
+                        .as("bulkhead %s", name).isNotEmpty();
+            }
+        });
+    }
 }
