@@ -55,6 +55,7 @@ public class StuckSagaScanner {
     private final Counter retries;
     private final Counter manualReviews;
     private final Counter scanFailures;
+    private final Counter topupRefundsFailed;
 
     public StuckSagaScanner(
             SagaRepository sagaRepository,
@@ -79,6 +80,10 @@ public class StuckSagaScanner {
         this.retries = meterRegistry.counter("walletflow.saga.retries");
         this.manualReviews = meterRegistry.counter("walletflow.saga.manual_review");
         this.scanFailures = meterRegistry.counter("walletflow.saga.scan_failures");
+        // CÙNG counter với SagaService: "hoàn không được" là một sự kiện nghiệp vụ, không phải hai —
+        // dù nó tới từ lời từ chối của provider hay từ việc gửi hết lượt mà không ai trả lời. Alert
+        // TopupRefundFailed treo trên counter này, và runbook mục E xếp cả hai ca dưới nó.
+        this.topupRefundsFailed = meterRegistry.counter("walletflow.topup.refund_failed");
     }
 
     /** @return số saga đã xử lý (kể cả saga xử lý lỗi) trong lượt này */
@@ -137,7 +142,11 @@ public class StuckSagaScanner {
     private static boolean isOpen(ETransactionStatus status) {
         return status == ETransactionStatus.PROCESSING
                 || status == ETransactionStatus.AWAITING_PAYMENT
-                || status == ETransactionStatus.POSTING;
+                || status == ETransactionStatus.POSTING
+                // Bù trừ (2.4b): thiếu trạng thái này thì job quét ĐÓNG mọi saga đang hoàn tiền, và
+                // lệnh hoàn mất trên đường không bao giờ được gửi lại — tiền của người dùng ở lại chỗ
+                // provider trong im lặng. Compensation phải luôn đi tới cùng (roadmap §2.4).
+                || status == ETransactionStatus.REFUNDING;
     }
 
     private void handle(SagaState saga) {
@@ -153,18 +162,26 @@ public class StuckSagaScanner {
         }
         Transaction txn = found.get();
 
-        boolean charging = SagaService.STEP_BANK_CHARGE.equals(saga.getCurrentStep());
-
-        if (saga.getAttemptCount() >= maxAttempts) {
-            String code = charging ? "BANK_NO_RESPONSE" : "LEDGER_NO_RESPONSE";
-            String who = charging ? "Cổng thanh toán" : "Ledger";
+        // Hai hàng phải đồng ý với nhau về việc "đang hoàn tiền hay không" — chúng được ghi cùng một
+        // transaction nên chỉ sửa tay mới làm lệch (runbook mục D, đặt nhầm bước). Lệch mà vẫn gửi là
+        // đúng cái runbook cảnh báo: gửi lệnh GHI SỔ cho giao dịch đang hoàn tiền thì ví được cộng số
+        // tiền vừa trả về thẻ; gửi lệnh HOÀN cho giao dịch đang chờ ghi sổ thì trả lại tiền của một lần
+        // nạp sắp thành công. Cưỡng chế bằng code, không bằng một dòng tài liệu.
+        if ((txn.getStatus() == ETransactionStatus.REFUNDING)
+                != SagaService.STEP_BANK_REFUND.equals(saga.getCurrentStep())) {
             transactionRepository.transition(txn.getTenantId(), txn.getId(),
-                    ETransactionStatus.MANUAL_REVIEW.name(), code,
-                    who + " không trả lời sau " + saga.getAttemptCount() + " lần gửi");
+                    ETransactionStatus.MANUAL_REVIEW.name(), "SAGA_STATE_DESYNC",
+                    "Giao dịch " + txn.getStatus() + " nhưng saga đứng ở bước " + saga.getCurrentStep()
+                            + " — không gửi lại lệnh nào");
             sagaRepository.close(txn.getId(), "MANUAL_REVIEW");
             manualReviews.increment();
-            log.error("Saga: giao dịch {} chuyển MANUAL_REVIEW sau {} lần gửi không có câu trả lời ở bước {} — "
-                    + "cần người đối chiếu", txn.getId(), saga.getAttemptCount(), saga.getCurrentStep());
+            log.error("Saga: giao dịch {} đang {} nhưng saga ở bước {} — KHÔNG gửi lại lệnh nào, chuyển "
+                    + "người xử lý", txn.getId(), txn.getStatus(), saga.getCurrentStep());
+            return;
+        }
+
+        if (saga.getAttemptCount() >= maxAttempts) {
+            giveUp(saga, txn);
             return;
         }
 
@@ -179,6 +196,40 @@ public class StuckSagaScanner {
     }
 
     /**
+     * Hết lượt gửi lại: chuyển người xử lý. Không đoán FAILED (tiền có thể đã đi) hay COMPLETED (có thể
+     * chưa) — chỉ ghi lại ai đã im lặng, để runbook phân loại được.
+     */
+    private void giveUp(SagaState saga, Transaction txn) {
+        // Mã + người im lặng đi cùng nhau: một switch duy nhất để chúng không bao giờ lệch nhau khi
+        // thêm một bước saga mới.
+        record NoAnswer(String code, String who) { }
+        NoAnswer silent = switch (saga.getCurrentStep()) {
+            case SagaService.STEP_BANK_CHARGE -> new NoAnswer("BANK_NO_RESPONSE", "Cổng thanh toán");
+            // Mã riêng: ca này là tiền ĐÃ thu của người dùng mà lệnh trả lại không có hồi âm — runbook
+            // xử lý khác hẳn một lần thu không trả lời (ở đó chưa chắc có đồng nào đi).
+            case SagaService.STEP_BANK_REFUND ->
+                    new NoAnswer("REFUND_NO_RESPONSE", "Cổng thanh toán (lệnh hoàn)");
+            default -> new NoAnswer("LEDGER_NO_RESPONSE", "Ledger");
+        };
+        // Nguyên nhân phải hoàn đi kèm vào failure_reason: transition() ghi đè failure_code, mà mã gốc
+        // (ví đã đóng...) là thứ runbook mục E cần để quyết. Mất nó thì chỉ còn log.
+        String why = silent.who() + " không trả lời sau " + saga.getAttemptCount() + " lần gửi"
+                + (SagaService.STEP_BANK_REFUND.equals(saga.getCurrentStep())
+                        ? ". Nguyên nhân phải hoàn: " + refundReason(txn) : "");
+        transactionRepository.transition(txn.getTenantId(), txn.getId(),
+                ETransactionStatus.MANUAL_REVIEW.name(), silent.code(), why);
+        sagaRepository.close(txn.getId(), "MANUAL_REVIEW");
+        manualReviews.increment();
+        if (SagaService.STEP_BANK_REFUND.equals(saga.getCurrentStep())) {
+            // Tiền của người dùng vẫn ở chỗ provider mà máy đã hết đường tự gỡ — đúng định nghĩa của
+            // alert TopupRefundFailed. Không tăng thì runbook trỏ tới một alert không bao giờ kêu.
+            topupRefundsFailed.increment();
+        }
+        log.error("Saga: giao dịch {} chuyển MANUAL_REVIEW sau {} lần gửi không có câu trả lời ở bước {} — "
+                + "cần người đối chiếu", txn.getId(), saga.getAttemptCount(), saga.getCurrentStep());
+    }
+
+    /**
      * Gửi lại lệnh của ĐÚNG bước saga đang đứng. Gửi nhầm lệnh là hỏng nặng: một lệnh nạp còn đang chờ
      * người dùng trả tiền mà bị gửi lệnh ghi sổ thì ví được cộng số tiền chưa ai trả.
      *
@@ -187,6 +238,14 @@ public class StuckSagaScanner {
      * toán duy nhất, và phát lại câu trả lời hiện tại — ADR-016).
      */
     private void resend(SagaState saga, Transaction txn, UUID eventId) {
+        // Bước bù trừ được kiểm TRƯỚC nhánh theo loại giao dịch: một lệnh nạp đang hoàn tiền mà bị gửi
+        // lại lệnh GHI SỔ thì ví được cộng số tiền vừa trả về thẻ người dùng — vừa hoàn vừa cộng.
+        // (Cặp (status, current_step) đã được handle() kiểm khớp trước khi tới đây.)
+        if (SagaService.STEP_BANK_REFUND.equals(saga.getCurrentStep())) {
+            bankCommandSender.sendRefund(txn.getId(), txn.getToWallet(), txn.getAmountMinor(),
+                    txn.getCurrency(), refundReason(txn), eventId);
+            return;
+        }
         if (SagaService.STEP_BANK_CHARGE.equals(saga.getCurrentStep())) {
             bankCommandSender.sendCharge(txn.getId(), txn.getToWallet(), txn.getAmountMinor(),
                     txn.getCurrency(), null, eventId);
@@ -202,5 +261,14 @@ public class StuckSagaScanner {
             default -> throw new IllegalStateException(
                     "Không biết gửi lại lệnh nào cho giao dịch loại " + txn.getType());
         }
+    }
+
+    /**
+     * Mã nguyên nhân phải hoàn — {@code SagaService} ghi nó vào {@code failure_code} trong cùng
+     * transaction với việc gửi lệnh hoàn đầu tiên. {@code reasonCode} là field bắt buộc của schema nên
+     * có giá trị thay thế, phòng ca cột bị sửa tay thành null.
+     */
+    private static String refundReason(Transaction txn) {
+        return txn.getFailureCode() != null ? txn.getFailureCode() : "TOPUP_REFUND";
     }
 }

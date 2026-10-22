@@ -1,10 +1,13 @@
-# Runbook — `TopupManualReview` / `TopupResultConflict`
+# Runbook — `TopupManualReview` / `TopupResultConflict` / `TopupRefundFailed`
 
 > **`TopupManualReview` — mức page.** Một lệnh nạp tiền đã **thu được tiền của người dùng** nhưng
 > không ghi vào ví được. Giao dịch đứng ở `MANUAL_REVIEW` (ADR-019 §4, §5).
 >
 > **`TopupResultConflict` — mức cảnh báo.** bank-adapter nói hai điều trái nhau về cùng một lần thu,
 > hoặc lời xác nhận lệch với lệnh ta gửi. Có thể kèm theo `TopupManualReview`, có thể không.
+>
+> **`TopupRefundFailed` — mức page.** Đã thử hoàn tiền tự động và KHÔNG hoàn được (2.4b, ADR-020).
+> Tiền vẫn ở chỗ provider — mục E.
 
 ## Nguyên tắc vàng
 
@@ -15,11 +18,23 @@ này nghĩa là ngân hàng **đã** trừ họ. Mỗi phút ở đây là một
 **Hai nguồn phải khớp trước khi quyết:** sổ cái của ta (`ledger`) và cổng thanh toán (`provider`).
 Không quyết dựa trên một nguồn.
 
-**Chưa có hoàn tiền tự động** — đang làm ở 2.4b ([ADR-020](../adr/ADR-020-topup-compensation-refund.md)):
-PR1 đã có hàng rào ở ledger và lệnh hoàn ở bank-adapter, nhưng saga chưa gửi lệnh hoàn (PR2). Tới lúc đó mọi
-ca ở đây kết thúc bằng một thao tác tay: hoặc ghi sổ được (chỉ khi ledger chưa dựng hàng rào — mục A), hoặc
-hoàn tiền qua cổng của provider. Với VNPay, hoàn tự động chưa có cả sau PR2 (2.4c): bank-adapter trả
-`REFUND_UNSUPPORTED` và ca đó vẫn chờ người hoàn tay qua portal.
+**Hoàn tiền tự động phụ thuộc một cờ** (2.4b, [ADR-020](../adr/ADR-020-topup-compensation-refund.md)).
+`TOPUP_REFUND_ENABLED` ở transaction-service:
+
+- **Tắt** (mặc định) → mọi ca kết thúc bằng thao tác tay như trước: hoặc ghi sổ được (chỉ khi ledger chưa
+  dựng hàng rào — mục A), hoặc hoàn tiền qua portal của provider.
+- **Bật** → hai ca *biết chắc đã thu tiền mà ví chưa được cộng* (ledger từ chối, `BANK_RESULT_CONFLICT`)
+  tự chuyển sang `REFUNDING` và gửi lệnh hoàn; hoàn xong thì về `FAILED`. Những ca "không biết chắc"
+  (`BANK_AMOUNT_MISMATCH`, `BANK_NO_RESPONSE`, `SAGA_STATE_DESYNC`) vẫn dừng ở `MANUAL_REVIEW` —
+  không biết đã thu bao nhiêu thì không biết phải hoàn bao nhiêu.
+
+**Chỉ bật cờ khi MỌI instance ledger đã lên V6** (hàng rào `rejected_topups`) và mọi instance
+transaction-service đã lên V4. Bật sớm hơn thì một bản gửi lại của lệnh ghi sổ vẫn có thể được ghi SAU khi
+đã hoàn tiền: ví được cộng **và** tiền đã về thẻ.
+
+Với **VNPay**, hoàn tự động chưa có cả khi cờ bật (2.4c): bank-adapter trả `REFUND_UNSUPPORTED`, saga
+chuyển `MANUAL_REVIEW` với `failure_code = 'REFUND_DECLINED'` và ca đó phải hoàn tay qua portal. Hàng hoàn
+`FAILED` ở bank-adapter là **vĩnh viễn** — gửi lại lệnh hoàn sau khi 2.4c lên chỉ phát lại lời từ chối cũ.
 
 ## Chẩn đoán — 3 phút
 
@@ -29,7 +44,9 @@ docker exec wf-postgres psql -U walletflow -d txndb -c "
   SELECT t.id, t.tenant_id, t.to_wallet, t.amount_minor, t.currency, t.failure_code,
          t.provider, t.provider_ref, t.created_at, s.current_step, s.attempt_count
   FROM transactions t LEFT JOIN saga_state s ON s.transaction_id = t.id
-  WHERE t.type = 'TOPUP' AND t.status = 'MANUAL_REVIEW' ORDER BY t.created_at;"
+  WHERE t.type = 'TOPUP' AND t.status IN ('MANUAL_REVIEW', 'REFUNDING') ORDER BY t.created_at;"
+# REFUNDING = máy đang tự xử lý (lệnh hoàn đã gửi, chờ bank-adapter). Chỉ đáng lo nếu nó đứng đó quá
+# lâu — job quét gửi lại lệnh hoàn mỗi lượt, hết lượt thì tự chuyển REFUND_NO_RESPONSE (mục E).
 
 # 2. Lần thu đó ở bank-adapter nói gì
 docker exec wf-postgres psql -U walletflow -d bankdb -c "
@@ -49,10 +66,18 @@ docker exec wf-postgres psql -U walletflow -d ledgerdb -c "
 | `BANK_AMOUNT_MISMATCH` | Xác nhận của provider lệch với lệnh đã gửi | B |
 | `BANK_RESULT_CONFLICT` | Provider xác nhận đã thu SAU khi lệnh đã đóng là thất bại | B |
 | `BANK_NO_RESPONSE` | bank-adapter không trả lời sau đủ số lần gửi | C |
+| `REFUND_DECLINED` | Đã thử hoàn tự động, provider **từ chối dứt khoát** | E |
+| `REFUND_NO_RESPONSE` | Lệnh hoàn gửi đủ số lần mà không có hồi âm | E |
+| `REFUND_POSTED_CONFLICT` | Ledger ghi sổ TRONG KHI đang hoàn tiền | E |
+| `REFUND_AMOUNT_MISMATCH` | Xác nhận hoàn lệch số tiền/ví so với lần nạp | E |
 
 ## A — Ledger từ chối ghi sổ (tiền đã thu)
 
 Nguyên nhân gần như luôn là trạng thái tài khoản: ví bị đóng giữa lúc người dùng đang trả tiền.
+
+> Mục này là đường đi khi **cờ hoàn tiền đang TẮT**. Cờ bật thì ca này không dừng ở `MANUAL_REVIEW`
+> nữa: saga tự chuyển `REFUNDING` và gửi lệnh hoàn. Thấy một mã của ledger ở `MANUAL_REVIEW` trong khi
+> cờ đang bật nghĩa là lời từ chối tới **trước** lúc bật cờ — xử lý theo mục này.
 
 1. Xác nhận tiền đã thu thật: bước 2 ở trên phải cho `status = 'SUCCEEDED'`, và đối chiếu với cổng
    thanh toán (portal của provider) theo `provider_ref`. **Không tin một nguồn.**
@@ -145,9 +170,70 @@ nguy hiểm về tiền, nhưng mất thêm một vòng.
 > Quy trình mở lại cho **chuyển tiền** nằm ở [`saga-stuck.md`](saga-stuck.md) — câu lệnh khác
 > (`status = 'PROCESSING'`), đừng dùng nhầm.
 
+> **Lệnh nạp đang ở bước hoàn tiền** (`current_step = 'BANK_REFUND'`) thì đặt `status = 'REFUNDING'`,
+> không phải `POSTING`. Đặt nhầm `POSTING` là bảo job quét gửi lại lệnh **ghi sổ** cho một giao dịch mà
+> tiền đang trên đường về thẻ người dùng — vừa hoàn vừa cộng ví.
+
+## E — Hoàn tiền tự động không thành công
+
+Chỉ gặp khi cờ `TOPUP_REFUND_ENABLED` đang bật. Điểm chung của cả ba ca: **tiền vẫn ở chỗ provider**, và
+máy đã hết đường tự gỡ.
+
+Xem lần hoàn ở bank-adapter trước khi làm gì:
+
+```bash
+docker exec wf-postgres psql -U walletflow -d bankdb -c "
+  SELECT id, operation, status, provider_ref, refund_of, amount_minor, failure_code, updated_at
+  FROM provider_transactions WHERE transaction_id = '<id>' ORDER BY created_at;"
+```
+
+**`REFUND_DECLINED` — provider từ chối dứt khoát.** Trước 2.4c, VNPay luôn trả `REFUND_UNSUPPORTED`.
+`failure_reason` của giao dịch giữ cả lời từ chối lẫn nguyên nhân phải hoàn. Hàng `REFUND` `FAILED` ở
+bank-adapter là vĩnh viễn — **đừng gửi lại lệnh hoàn**, nó chỉ phát lại đúng lời từ chối đó. Hoàn tay qua
+portal theo `provider_ref` của lần **thu**, rồi đánh dấu như mục A bước 4 (`REFUNDED_MANUALLY`, giữ
+nguyên `status = 'MANUAL_REVIEW'`).
+
+**`REFUND_NO_RESPONSE` — gửi đủ số lần, không có hồi âm.** Khác `BANK_NO_RESPONSE`: ở đó chưa chắc có
+đồng nào đi, ở đây tiền chắc chắn **đã** bị trừ của người dùng.
+
+1. bank-adapter còn sống không (`service-down.md`), DLT có message không (`dlt-not-empty.md`), outbox có
+   tắc không (`outbox-stalled.md`). Lệnh hoàn thường mất trên đường vì một trong ba.
+2. Không có hàng `REFUND` nào ở bank-adapter → lệnh chưa bao giờ tới. Sửa đường đi, rồi mở lại saga theo
+   mục D với `status = 'REFUNDING'`; lượt quét kế tiếp gửi lại lệnh hoàn với cùng khoá nên provider chỉ
+   hoàn một lần.
+3. Có hàng `REFUND` ở `SUCCEEDED` → tiền đã về thật, chỉ mất câu trả lời. Mở lại saga theo mục D như trên;
+   lệnh gửi lại là cách lấy lại câu trả lời đã mất, bank-adapter phát lại kết quả hiện có.
+4. Có hàng `REFUND` ở `NEW`/`PENDING` → provider đang xử lý hoặc adapter đang thử lại. Chờ, đừng hoàn tay
+   song song — hoàn hai lần là mất tiền của ta.
+
+**`REFUND_POSTED_CONFLICT` — ledger ghi sổ trong khi đang hoàn.** Hàng rào `rejected_topups` sinh ra để ca
+này không tồn tại; thấy nó nghĩa là có một instance ledger chưa lên V6, hoặc bút toán được ghi tay.
+**Đây là ca mất tiền của công ty, không phải của khách** — ví có thể vừa được cộng vừa được hoàn.
+
+1. Bút toán `TOPUP` có thật không (bước 3 chẩn đoán) và lần hoàn đã `SUCCEEDED` chưa (câu lệnh ở trên).
+2. **Cả hai đều có** → ví đang giữ số tiền người dùng đã được trả lại. Dừng cờ hoàn tiền
+   (`TOPUP_REFUND_ENABLED=false`) trên mọi instance **trước**, vì nguyên nhân gốc là một instance ledger
+   thiếu hàng rào. Rồi mở issue mức nghiêm trọng; việc gỡ số dư là thao tác đụng tiền, phải chờ 2.5
+   (`REVERSAL` có audit) hoặc một quyết định có hai người ký.
+3. Chỉ có bút toán, lần hoàn chưa đi → huỷ ý định hoàn: giao dịch này thật sự đã thành công. Đóng theo mục
+   D ở bước `POSTING` để saga nhận lại `LedgerPosted`.
+4. Kiểm phiên bản Flyway của **mọi** instance ledger (`SELECT MAX(version) FROM flyway_schema_history`)
+   trước khi bật lại cờ.
+
+**`REFUND_AMOUNT_MISMATCH` — xác nhận hoàn nói một con số khác lần nạp.** bank-adapter đã kiểm lệnh hoàn
+khớp với lần thu rồi, nên tới được đây nghĩa là bug ở một trong hai phía. Giao dịch KHÔNG được đóng: hoàn
+thiếu thì người dùng mất phần chênh, hoàn thừa thì ta mất. Lấy `raw_response` của hàng `REFUND` và đối
+chiếu với portal trước khi quyết; mở issue như mục B.
+
+**Giao dịch `REFUNDING` mà `saga_state.current_step` không phải `BANK_REFUND`** (hoặc ngược lại): job quét
+không gửi lệnh nào và chuyển `SAGA_STATE_DESYNC`. Gần như luôn là hệ quả của việc mở lại ca theo mục D mà
+đặt nhầm bước. Đặt lại cho hai hàng **khớp nhau** rồi mở lại; đừng chỉ sửa một hàng.
+
 ## Sau sự cố
 
 - Có bao nhiêu lệnh nạp còn kẹt cùng lý do? (`SELECT failure_code, count(*) ... GROUP BY 1`)
 - Nếu là ca A do ví bị đóng giữa chừng: có nên chặn đóng ví khi còn lệnh nạp đang chờ không?
-- Mọi ca ở đây đều sẽ tự động hoá được bằng 2.4b (hoàn tiền tự động). Ghi lại số ca và lý do để biết
-  2.4b phải phủ những gì.
+- Ca nào ở đây **đã** tự động hoá được (mục A với cờ bật) và ca nào chưa? Ghi lại số ca và lý do: đó là
+  đầu vào để biết 2.4c (hoàn thật qua VNPay) và 2.5 (admin API) phải phủ những gì.
+- Nếu ca phải hoàn tay là `REFUND_DECLINED` của VNPay: đếm chúng. Mỗi ca là một lần hoàn thật không để
+  lại dấu vết nào trong `provider_transactions` (ADR-020 *Consequences*) — 2.5 phải có đường ghi nhận.

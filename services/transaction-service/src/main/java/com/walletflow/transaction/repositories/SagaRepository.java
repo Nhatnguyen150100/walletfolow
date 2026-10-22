@@ -85,6 +85,35 @@ public interface SagaRepository extends Repository<SagaState, UUID> {
                     @Param("deadlineSeconds") long deadlineSeconds);
 
     /**
+     * Mở saga sang bước BÙ TRỪ (2.4b, ADR-020): {@code BANK_REFUND}, ngân sách thử lại mới, hạn chót
+     * mới. Khác {@link #advanceStep}: KHÔNG đòi {@code step_status = 'SENT'}, vì ca
+     * {@code BANK_RESULT_CONFLICT} bắt đầu từ một saga đã đóng {@code FAILED} — provider xác nhận đã
+     * thu sau khi lệnh nạp đã báo thất bại, và tiền đó phải được trả lại.
+     *
+     * <p>Điều kiện {@code current_step <> :step} khiến câu này chỉ ăn MỘT lần: lần gọi thứ hai (event
+     * lặp) không đặt lại {@code attempt_count}, nên nó không thể kéo dài vô hạn ngân sách thử lại của
+     * bước hoàn. Người gọi còn đứng dưới khoá hàng giao dịch và chỉ vào đây từ hai trạng thái cụ thể,
+     * nên đây là hàng rào thứ hai chứ không phải hàng rào duy nhất.
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE saga_state
+               SET current_step     = :step,
+                   step_status      = 'SENT',
+                   attempt_count    = 1,
+                   command_event_id = :eventId,
+                   deadline_at      = now() + make_interval(secs => :deadlineSeconds),
+                   updated_at       = now()
+             WHERE tenant_id = :tenantId AND transaction_id = :transactionId
+               AND current_step <> :step
+            """, nativeQuery = true)
+    int startCompensation(@Param("tenantId") UUID tenantId,
+                          @Param("transactionId") UUID transactionId,
+                          @Param("step") String step,
+                          @Param("eventId") UUID eventId,
+                          @Param("deadlineSeconds") long deadlineSeconds);
+
+    /**
      * Đẩy hạn chót ra sau mà KHÔNG gửi lại gì. Hai chỗ dùng: saga xử lý lỗi (để nó không chặn đầu hàng
      * đợi của job quét) và lệnh nạp vừa vào phòng chờ (hạn chót phải phủ được quãng người dùng ngồi
      * trả tiền, nếu không job quét coi nó là treo).

@@ -60,7 +60,11 @@ ta chỉ gửi lệnh ghi sổ sau khi đã thu được tiền, nên từ chố
 mà ví không được cộng. `FAILED` nói với họ "bạn không mất tiền" — một lời nói dối.
 
 Nên: `MANUAL_REVIEW` + counter `walletflow.topup.manual_review` + log mang `provider_ref` để người xử lý
-đối chiếu. Hoàn tiền tự động là 2.4b.
+đối chiếu.
+
+> **Sửa đổi (2.4b, [ADR-020](ADR-020-topup-compensation-refund.md)):** ca này không còn dừng ở
+> `MANUAL_REVIEW` khi cờ `TOPUP_REFUND_ENABLED` bật — saga chuyển `REFUNDING`, gửi lệnh hoàn, và chỉ về
+> `FAILED` sau khi tiền đã về người dùng. Lúc đó `FAILED` nói đúng sự thật. Cờ tắt ⇒ y như trên.
 
 ### 5. Xác nhận lệch với lệnh đã gửi thì KHÔNG ghi sổ
 
@@ -118,8 +122,10 @@ suông, còn `.v1` nới thì mô tả đúng nghiệp vụ. Test
 - Không bảng dedup mới, không topic mới, không schema mới.
 
 **Mất / còn mở:**
-- **Chưa có hoàn tiền tự động.** Mọi ca §4, §5 và "hai kết quả trái nhau" đều chờ người. Đây là nợ của
-  2.4b, và trước khi bật provider thật thì phải có.
+- ~~**Chưa có hoàn tiền tự động.**~~ Đã trả ở 2.4b ([ADR-020](ADR-020-topup-compensation-refund.md)):
+  ca §4 (ledger từ chối) và "hai kết quả trái nhau" được hoàn tự động qua `REFUNDING → FAILED` khi cờ
+  `TOPUP_REFUND_ENABLED` bật. **Ca §5 (xác nhận lệch số tiền) vẫn chờ người** — lệch số tiền nghĩa là
+  không biết đã thu bao nhiêu, nên không biết phải hoàn bao nhiêu.
 - **`clientIp` gửi đi là null.** Sau gateway, IP mà transaction-service nhìn thấy là IP của gateway. Lấy
   đúng IP người dùng cần chốt số proxy tin cậy trước (mục còn mở của ADR-018). Tới lúc đó bank-adapter
   dùng IP máy chủ — đúng hợp đồng v1 nhưng làm yếu chống gian lận phía VNPay.

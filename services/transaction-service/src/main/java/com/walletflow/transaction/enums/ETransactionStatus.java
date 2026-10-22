@@ -19,9 +19,23 @@ public enum ETransactionStatus {
      * PROCESSING (chưa thu được đồng nào) khi đối soát.
      */
     POSTING,
+    /**
+     * Nạp tiền: đã thu được tiền nhưng KHÔNG ghi sổ được (ledger từ chối, hoặc provider xác nhận đã thu
+     * sau khi lệnh đã đóng thất bại), và lệnh hoàn tiền đã gửi sang bank-adapter — đang chờ nó trả lời
+     * (roadmap 2.4b, ADR-020).
+     *
+     * <p>Trạng thái duy nhất đi ra từ một trạng thái "đã đóng": ca {@code BANK_RESULT_CONFLICT} bắt đầu
+     * từ {@link #FAILED}. Bù trừ là bước TIẾP của saga, không phải quay lui — từ đây chỉ có hai đường
+     * ra: hoàn xong → {@link #FAILED}, hoàn không được → {@link #MANUAL_REVIEW}.
+     */
+    REFUNDING,
     /** Ledger đã ghi bút toán. Trạng thái cuối — không gì kéo nó về được. */
     COMPLETED,
-    /** Ledger từ chối, kèm mã lỗi. */
+    /**
+     * Ledger từ chối, kèm mã lỗi. Với nạp tiền còn một nghĩa thứ hai từ 2.4b: đã thu được tiền nhưng
+     * không ghi sổ được và <b>đã hoàn trả xong</b> — cả hai nghĩa đều là "người dùng không mất tiền",
+     * nên vẫn là một trạng thái. Phân biệt bằng {@code failure_code} + log của bước hoàn.
+     */
     FAILED,
     /**
      * Ledger không trả lời sau đủ số lần gửi lại. Không đoán là thành công hay thất bại: tiền có thể

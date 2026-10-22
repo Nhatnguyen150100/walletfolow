@@ -89,6 +89,21 @@ public final class SagaFixture {
                 "MOCK-" + txn.transactionId(), failureCode);
     }
 
+    /** bank-adapter đã hoàn xong tiền cho lần thu của lệnh nạp (2.4b). */
+    public static BankCompletedEvent refundCompleted(Accepted txn) {
+        return new BankCompletedEvent(txn.transactionId(), EBankOperation.REFUND, txn.to(), PROVIDER,
+                "MOCK-RF-" + txn.transactionId(), txn.amount(), ECurrency.VND);
+    }
+
+    /**
+     * Provider từ chối hoàn. {@code providerRef} null như lúc VNPay trả {@code REFUND_UNSUPPORTED} mà
+     * không gọi mạng (ADR-020 §4) — không có lần hoàn nào ở provider để mà có mã.
+     */
+    public static BankFailedEvent refundFailed(Accepted txn, String failureCode) {
+        return new BankFailedEvent(txn.transactionId(), EBankOperation.REFUND, txn.to(), PROVIDER,
+                null, failureCode);
+    }
+
     public static LedgerPostedEvent topupPosted(Accepted txn) {
         return new LedgerPostedEvent(txn.transactionId(), UUID.randomUUID(), EJournalType.TOPUP,
                 ECurrency.VND, List.of(new Leg("EXTERNAL_BANK", -txn.amount()),
