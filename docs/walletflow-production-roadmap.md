@@ -789,9 +789,11 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.3b Webhook ingestion — worker xử lý bất đồng bộ + trang quay về ([ADR-018](adr/ADR-018-webhook-ingestion.md) *Amendments*) | ✅ | #33 |
 | 2.4a Saga top-up — nhận lệnh nạp, ghi sổ sau khi provider xác nhận ([ADR-019](adr/ADR-019-topup-saga.md)) | ✅ | #34 |
 | 2.4b (PR1) Hàng rào ledger — lệnh nạp bị từ chối thì từ chối vĩnh viễn + lệnh hoàn `txn.command.bank-refund.v1` ở bank-adapter ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | ✅ | #35 |
-| 2.4b (PR2) Saga top-up — bù trừ: `POSTING → REFUNDING → FAILED` khi ledger từ chối / `BANK_RESULT_CONFLICT`, sau cờ `TOPUP_REFUND_ENABLED` ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | 🟡 `feat/phase-2-topup-compensation` | |
-| 2.4c VNPay refund thật (`vnp_Command=refund`) — tới lúc đó VNPay trả `REFUND_UNSUPPORTED` → chờ người | ⬜ | |
+| 2.4b (PR2) Saga top-up — bù trừ: `POSTING → REFUNDING → FAILED` khi ledger từ chối / `BANK_RESULT_CONFLICT`, sau cờ `TOPUP_REFUND_ENABLED` ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | ✅ | #36 |
+| 2.4c (PR1) Hạ tầng hoàn tiền — mã provider duy nhất theo `operation` (V7), mạch + bulkhead riêng cho đường hoàn | 🟡 `feat/phase-2-refund-infra` | |
+| 2.4c (PR2) VNPay refund thật (`vnp_Command=refund`) | ⛔ chặn phía VNPay — merchant sandbox chưa dùng được `refund`; mọi ca vẫn hoàn tay qua portal | |
 | 2.5 Admin API & manual review | ⬜ | |
+| (DoD Phase 2) `ChaosProviderIT` (Toxiproxy) — provider chết 5 phút: không mất tiền, không saga treo | ⬜ không thuộc mục nào — ghi vào bảng để nó có chủ | |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 
 Đường găng nạp tiền: **2.2a → 2.2b → 2.3 → 2.4 (top-up)**. DoD ô "rút tiền" chưa đạt được khi 2.1 còn bị

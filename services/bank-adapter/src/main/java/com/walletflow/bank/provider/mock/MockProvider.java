@@ -71,6 +71,7 @@ public class MockProvider implements PaymentProvider {
     private final ConcurrentMap<String, RefundResult> refundsByKey = new ConcurrentHashMap<>();
     private final AtomicInteger chargeCalls = new AtomicInteger();
     private final AtomicInteger failNextCalls = new AtomicInteger();
+    private volatile boolean reuseChargeRefForRefund;
     private final AtomicInteger loseNextChargeResponses = new AtomicInteger();
 
     /**
@@ -164,7 +165,7 @@ public class MockProvider implements PaymentProvider {
             return decline(request, "NOT_REFUNDABLE");
         }
         session.refundedMinor = Math.addExact(session.refundedMinor, request.amountMinor());
-        String refundRef = "MOCK-RF-" + UUID.randomUUID();
+        String refundRef = reuseChargeRefForRefund ? request.providerRef() : "MOCK-RF-" + UUID.randomUUID();
         RefundResult.Refunded refunded = new RefundResult.Refunded(refundRef,
                 "{\"result\":\"REFUNDED\",\"ref\":\"" + refundRef + "\"}");
         refundsByKey.put(request.idempotencyKey(), refunded);
@@ -228,6 +229,19 @@ public class MockProvider implements PaymentProvider {
                 current.autoSettleAfter(), current.settleOutcome());
     }
 
+    /**
+     * Mọi lần hoàn (cho tới {@link #reset()}) trả về ĐÚNG mã của lần thu thay vì một mã mới (roadmap
+     * 2.4c). Có provider thật làm vậy — mã tham chiếu là của *giao dịch* chứ không của *thao tác*. Đây là
+     * thứ khoá UNIQUE cũ {@code (provider, provider_ref)} không chịu được, và nó chỉ nổ SAU khi tiền đã
+     * rời tài khoản merchant, nên phải mô phỏng được ở đây chứ không đợi gặp provider thật (V7).
+     *
+     * <p>Khác {@link #failNextCalls(int)} / {@link #loseNextChargeResponses(int)}: đây là một CHẾ ĐỘ, không
+     * phải bộ đếm tiêu dần — cách đánh mã là tính chất của provider, không phải của từng lời gọi.
+     */
+    public void reuseChargeRefForRefunds(boolean reuse) {
+        this.reuseChargeRefForRefund = reuse;
+    }
+
     public void setDeclineAboveMinor(long declineAboveMinor) {
         Settings current = settings;
         settings = new Settings(current.latency(), current.failureRate(), declineAboveMinor,
@@ -253,6 +267,7 @@ public class MockProvider implements PaymentProvider {
         chargeCalls.set(0);
         failNextCalls.set(0);
         loseNextChargeResponses.set(0);
+        reuseChargeRefForRefund = false;
     }
 
     /**

@@ -7,7 +7,6 @@ import com.walletflow.bank.enums.EWebhookOutcome;
 import com.walletflow.bank.provider.PaymentProvider;
 import com.walletflow.bank.repositories.ProviderTransactionRepository;
 import com.walletflow.bank.repositories.WebhookEventRepository;
-import com.walletflow.common.event.EBankOperation;
 import com.walletflow.common.tenant.TenantContext;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -67,8 +66,7 @@ public class WebhookProcessor {
      */
     public void process(WebhookEvent event) {
         Optional<ProviderTransaction> found = Optional.ofNullable(event.getProviderRef())
-                .flatMap(ref -> providerTransactions.findByProviderAndProviderRefAndOperation(
-                        provider.name(), ref, EBankOperation.CHARGE));
+                .flatMap(ref -> providerTransactions.findChargeByProviderRef(provider.name(), ref));
         if (found.isEmpty()) {
             unresolved.increment();
             // WARN chứ không DEBUG như lúc nhận: tới được đây nghĩa là chữ ký ĐÃ hợp lệ, nên đây không phải

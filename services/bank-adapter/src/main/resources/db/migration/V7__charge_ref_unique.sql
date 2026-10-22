@@ -1,0 +1,47 @@
+-- =====================================================================
+-- V7 — bank-adapter: chỉ MÃ CỦA LẦN THU là duy nhất (roadmap 2.4c, ADR-020 *Amendments* B1)
+-- =====================================================================
+-- V1 đặt UNIQUE (provider, provider_ref) chung cho mọi thao tác, lúc chỉ có CHARGE nên nó đúng. V6 thêm
+-- REFUND vào cùng bảng và ADR-020 (*Consequences*) đã ghi lại điều này như một mục còn mở: provider nào
+-- trả mã của LẦN HOÀN trùng mã của LẦN THU thì khoá cũ nổ 23505.
+--
+-- Vì sao phải sửa trước khi có provider thật:
+--   Lần hoàn được ghi SAU khi provider đã trả lời — tức là tiền đã rời tài khoản merchant. 23505 ở
+--   `markRefunded` ném ra ngoài transaction, hàng REFUND ở lại `NEW`, Kafka gửi lại, và lần gửi lại có thể
+--   nhận một câu trả lời khác (provider đã hoàn rồi thì lệnh thứ hai thường bị từ chối) → hàng thành
+--   `FAILED` VĨNH VIỄN trong khi tiền đã về thẻ người dùng. Ta mất tiền và sổ của adapter nói ngược lại.
+--   MockProvider sinh mã `MOCK-RF-...` khác mã thu nên hôm nay không ai thấy; đó đúng là loại bẫy chỉ nổ
+--   lần đầu khi nối provider thật, trên đường tiền.
+--
+-- Khoá mới chỉ áp cho CHARGE, không phải cho bộ ba (provider, provider_ref, operation). Vì sao hẹp đến vậy:
+--
+--   * Bất biến mà CODE thật sự dựa vào là "một mã THU ⇒ đúng một hàng": đó là đường DUY NHẤT suy ra tenant
+--     của một webhook tới từ Internet (`findByProviderAndProviderRefAndOperation(..., CHARGE)` —
+--     WebhookProcessor, PaymentReturnService). Mất nó là mất một tính chất cross-tenant, nên nó phải được
+--     cưỡng chế ở DB.
+--   * KHÔNG dòng code nào tra một hàng HOÀN theo mã. `eventId` của outbox sinh từ transactionId chứ không
+--     từ provider_ref, nên mã hoàn trùng cũng không đụng dedup của consumer.
+--   * Giữ ràng buộc ở phía REFUND chỉ còn là một cái bẫy: nó nổ ở bước GHI CÂU TRẢ LỜI, tức sau khi tiền đã
+--     đi, và còn hai ca nữa chưa chết — provider đánh mã theo lô, và hoàn MỘT PHẦN (ADR-020 ghi "thêm khi có
+--     provider cần"), lúc đó một giao dịch có nhiều hàng REFUND và chúng trùng mã nhau. Đổi một cái bẫy chắc
+--     chắn nổ lấy một cái bẫy thỉnh thoảng nổ thì vẫn là bẫy, trên cùng đường tiền ấy.
+--
+-- Đánh đổi: DB không còn phát hiện giúp "provider trả trùng mã hoàn". Đó là việc của đối soát tầng 3
+-- (Phase 3) — nơi phát hiện ra nó không làm hỏng một lần hoàn đang chạy.
+--
+-- `provider_ref` NULL (hàng NEW/FAILED) vẫn không bị khoá: Postgres coi mỗi NULL là khác nhau, như trước.
+--
+-- TƯƠNG THÍCH NGƯỢC: khoá mới NỚI hơn khoá cũ (mọi hàng thoả khoá cũ đều thoả khoá mới), nên bản app đang
+-- chạy không gặp lỗi nào mới. Chỉ đi được một chiều: đảo lại được chỉ khi chưa có dữ liệu đụng.
+--
+-- KHOÁ: hai mức khác nhau, cả hai giữ tới hết transaction của Flyway. `DROP CONSTRAINT` lấy ACCESS
+-- EXCLUSIVE (chớp nhoáng, chỉ sửa catalog); `CREATE INDEX` không CONCURRENTLY giữ SHARE trong suốt lúc
+-- build — chặn INSERT/UPDATE/DELETE nhưng KHÔNG chặn SELECT (xem V5). Cùng đánh đổi đã chấp nhận ở V6 —
+-- bảng nhỏ (một hàng mỗi lần nạp, thêm một hàng mỗi lần hoàn). Khi bảng đủ lớn để quan tâm thì dùng
+-- CREATE UNIQUE INDEX CONCURRENTLY trong một migration có `executeInTransaction=false`; đừng viết
+-- CONCURRENTLY ở đây rồi tưởng là đã an toàn.
+--
+-- UNIQUE INDEX chứ không phải CONSTRAINT: Postgres không cho UNIQUE CONSTRAINT có mệnh đề WHERE.
+ALTER TABLE provider_transactions DROP CONSTRAINT uk_provider_txn_provider_ref;
+CREATE UNIQUE INDEX uk_provider_txn_charge_ref
+    ON provider_transactions (provider, provider_ref) WHERE operation = 'CHARGE';

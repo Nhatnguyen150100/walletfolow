@@ -191,8 +191,10 @@ groups:
       # Tính cả HALF_OPEN: khi provider chết, mạch đi vòng OPEN -> HALF_OPEN (vài giây thử) -> OPEN. Chỉ đếm
       # OPEN thì một lần scrape rơi vào HALF_OPEN là đặt lại `for` và alert không bao giờ kêu. Tổng về 0
       # ngay khi mạch đóng lại, nên một lần mở chớp nhoáng (< 2 phút) không page.
+      # Từ 2.4c đường hoàn có mạch riêng (`provider-<tên>-refund`) — loại nó ra ở đây, nó có alert riêng
+      # bên dưới: hai mạch mở nói hai chuyện khác nhau và runbook xử lý khác nhau.
       - alert: PaymentProviderDown
-        expr: sum by (job, name) (resilience4j_circuitbreaker_state{state=~"open|half_open"}) == 1
+        expr: sum by (job, name) (resilience4j_circuitbreaker_state{state=~"open|half_open", name!~".*-refund"}) == 1
         for: 2m
         labels:
           severity: page
@@ -201,6 +203,25 @@ groups:
           description: >-
             Provider lỗi liên tục nên bank-adapter ngừng gọi ra ngoài. Kiểm trang trạng thái của provider
             và DLT txn.command.bank-charge.v1 — KHÔNG đánh dấu thất bại bằng tay cho lần thu nào.
+          runbook: docs/runbooks/payment-provider-down.md
+
+      # Mạch của đường HOÀN mở: đường thu vẫn chạy (hai khoang tách rời — ADR-020 *Amendments* B2), nhưng
+      # mỗi lệnh hoàn đang rơi vào nhánh thử lại rồi DLT. Ở đầu kia của mỗi lệnh đó là tiền đã bị trừ của
+      # một người dùng mà ví chưa được cộng, nên nó không được chờ tới sáng.
+      - alert: PaymentRefundProviderDown
+        expr: sum by (job, name) (resilience4j_circuitbreaker_state{state=~"open|half_open", name=~".*-refund"}) == 1
+        # 5m chứ không 2m như đường thu: lưu lượng hoàn thấp hơn nhiều nên mạch hoàn cần lâu hơn để gom đủ
+        # lời gọi mà kết luận, và một lần mở chớp nhoáng ở đây không làm ai mất gì thêm — tiền đã nằm ngoài
+        # ví từ trước, chậm thêm vài phút không đổi bản chất.
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Circuit breaker đường HOÀN TIỀN {{ $labels.name }} của {{ $labels.job }} đang mở"
+          description: >-
+            Lệnh hoàn không đi được. Lần thu vẫn xác nhận bình thường. Kiểm DLT
+            txn.command.bank-refund.v1 và các saga đang REFUNDING; KHÔNG hoàn tay song song khi hàng REFUND
+            còn NEW/PENDING — hoàn hai lần là mất tiền của ta (runbook topup-stuck mục E).
           runbook: docs/runbooks/payment-provider-down.md
 
       # Job đối chiếu không hỏi được provider — lần thu đang chờ chưa được chốt kết quả

@@ -32,21 +32,34 @@ import java.util.function.Supplier;
  *
  * <p>Câu trả lời dứt khoát của provider (từ chối, phiên hết hạn) là giá trị trả về bình thường nên
  * KHÔNG tính là lỗi cho breaker — người dùng nhập sai số tiền không được làm mở mạch cho mọi người khác.
+ *
+ * <p><b>Hoàn tiền có mạch RIÊNG</b> (roadmap 2.4c). Dùng chung một mạch với thu tiền thì một đợt lệnh hoàn
+ * lỗi sẽ chặn luôn {@code getStatus} của mọi lần thu đang chờ — tức là ta mù về những giao dịch mà người
+ * dùng ĐÃ trả tiền, chỉ vì một tính năng khác đang hỏng. Chiều ngược lại cũng vậy: provider hỏng đường thu
+ * thì lệnh hoàn vẫn phải đi được, vì ở đầu kia của nó là tiền đang nằm ngoài ví người dùng. Hai đường có
+ * hai lý do để sống, nên có hai mạch.
  */
 public class ResilientPaymentProvider implements PaymentProvider, AutoCloseable {
 
+    /**
+     * Một khoang cách ly: mạch + thread pool của riêng nó. Hai khoang không chia sẻ ngân sách lỗi lẫn
+     * thread thực thi, nên hỏng hóc của đường này không mở mạch của đường kia, cũng không ăn hết thread
+     * của nó. Chúng vẫn dùng chung {@code timeLimiter} (stateless) và lịch hẹn giờ timeout — một thread
+     * duy nhất, nhưng nó chỉ đánh dấu future quá hạn chứ không chạy lời gọi nào.
+     */
+    public record Isolation(CircuitBreaker breaker, ThreadPoolBulkhead bulkhead) { }
+
     private final PaymentProvider delegate;
-    private final CircuitBreaker circuitBreaker;
-    private final ThreadPoolBulkhead bulkhead;
+    private final Isolation payments;
+    private final Isolation refunds;
     private final TimeLimiter timeLimiter;
     private final ScheduledExecutorService timeoutScheduler;
 
-    public ResilientPaymentProvider(PaymentProvider delegate, CircuitBreaker circuitBreaker,
-                                    ThreadPoolBulkhead bulkhead, TimeLimiter timeLimiter,
-                                    ScheduledExecutorService timeoutScheduler) {
+    public ResilientPaymentProvider(PaymentProvider delegate, Isolation payments, Isolation refunds,
+                                    TimeLimiter timeLimiter, ScheduledExecutorService timeoutScheduler) {
         this.delegate = delegate;
-        this.circuitBreaker = circuitBreaker;
-        this.bulkhead = bulkhead;
+        this.payments = payments;
+        this.refunds = refunds;
         this.timeLimiter = timeLimiter;
         this.timeoutScheduler = timeoutScheduler;
     }
@@ -72,17 +85,17 @@ public class ResilientPaymentProvider implements PaymentProvider, AutoCloseable 
             // Không có I/O để bảo vệ; đi qua breaker thì một đợt querydr lỗi chặn luôn mọi lần tạo URL nạp tiền
             return delegate.charge(request);
         }
-        return call("charge", () -> delegate.charge(request));
+        return call("charge", payments, () -> delegate.charge(request));
     }
 
     @Override
     public ProviderStatus getStatus(String providerRef, Instant sessionCreatedAt) {
-        return call("getStatus", () -> delegate.getStatus(providerRef, sessionCreatedAt));
+        return call("getStatus", payments, () -> delegate.getStatus(providerRef, sessionCreatedAt));
     }
 
     @Override
     public RefundResult refund(RefundRequest request) {
-        return call("refund", () -> delegate.refund(request));
+        return call("refund", refunds, () -> delegate.refund(request));
     }
 
     /** Kiểm chữ ký là tính toán cục bộ, không có I/O — không đi qua breaker/bulkhead/timeout. */
@@ -91,23 +104,34 @@ public class ResilientPaymentProvider implements PaymentProvider, AutoCloseable 
         return delegate.verifyWebhook(params);
     }
 
-    /** Để quan sát và để test đưa mạch về trạng thái ban đầu. */
+    /** Mạch của đường THU (charge + getStatus). Để quan sát và để test đưa về trạng thái ban đầu. */
     public CircuitBreaker circuitBreaker() {
-        return circuitBreaker;
+        return payments.breaker();
     }
 
-    /** Sở hữu cả thread pool của bulkhead lẫn lịch hẹn giờ timeout — Spring gọi khi đóng context. */
+    /** Mạch của đường HOÀN — tách riêng để nó không làm mù đường thu, và ngược lại. */
+    public CircuitBreaker refundCircuitBreaker() {
+        return refunds.breaker();
+    }
+
+    /** Sở hữu cả thread pool của hai bulkhead lẫn lịch hẹn giờ timeout — Spring gọi khi đóng context. */
     @Override
     public void close() throws Exception {
         timeoutScheduler.shutdownNow();
-        bulkhead.close();
+        try {
+            payments.bulkhead().close();
+        } finally {
+            // finally chứ không nối tiếp: khoang kia ném thì khoang này rò nguyên một thread pool, và
+            // trong test (mỗi lớp IT một context) rò đó cộng dồn cho tới hết lượt build.
+            refunds.bulkhead().close();
+        }
     }
 
-    private <T> T call(String operation, Supplier<T> action) {
-        Supplier<CompletionStage<T>> isolated = () -> bulkhead.executeSupplier(action);
+    private <T> T call(String operation, Isolation isolation, Supplier<T> action) {
+        Supplier<CompletionStage<T>> isolated = () -> isolation.bulkhead().executeSupplier(action);
         Supplier<CompletionStage<T>> limited = () -> timeLimiter.executeCompletionStage(timeoutScheduler, isolated);
         try {
-            return circuitBreaker.executeCompletionStage(limited).toCompletableFuture().join();
+            return isolation.breaker().executeCompletionStage(limited).toCompletableFuture().join();
         } catch (RuntimeException failure) {
             // Lỗi đi qua future thì bị bọc (có thể nhiều lớp); bulkhead đầy / mạch mở thì ném ngay tại chỗ
             throw translate(operation, unwrap(failure));

@@ -169,7 +169,12 @@ public class PaymentProviderConfig {
                 .automaticTransitionFromOpenToHalfOpenEnabled(true)
                 .permittedNumberOfCallsInHalfOpenState(2)
                 .build());
-        CircuitBreaker breaker = breakers.circuitBreaker("provider-" + raw.name());
+        // Hai khoang cách ly, cùng cấu hình nhưng ngân sách lỗi và thread riêng (roadmap 2.4c): một đợt
+        // lệnh hoàn lỗi không được làm mù `getStatus` của những lần thu mà người dùng ĐÃ trả tiền, và một
+        // provider hỏng đường thu không được chặn lệnh hoàn — tiền của người dùng đang nằm ngoài ví.
+        // Tên có hậu tố để metric (tag `name`) phân biệt được hai mạch trên dashboard và alert.
+        CircuitBreaker paymentBreaker = breakers.circuitBreaker("provider-" + raw.name());
+        CircuitBreaker refundBreaker = breakers.circuitBreaker("provider-" + raw.name() + "-refund");
         TaggedCircuitBreakerMetrics.ofCircuitBreakerRegistry(breakers).bindTo(meterRegistry);
 
         ThreadPoolBulkheadRegistry bulkheads = ThreadPoolBulkheadRegistry.of(ThreadPoolBulkheadConfig.custom()
@@ -177,7 +182,8 @@ public class PaymentProviderConfig {
                 .maxThreadPoolSize(maxThreads)
                 .queueCapacity(queueCapacity)
                 .build());
-        ThreadPoolBulkhead bulkhead = bulkheads.bulkhead("provider-" + raw.name());
+        ThreadPoolBulkhead paymentBulkhead = bulkheads.bulkhead("provider-" + raw.name());
+        ThreadPoolBulkhead refundBulkhead = bulkheads.bulkhead("provider-" + raw.name() + "-refund");
         TaggedThreadPoolBulkheadMetrics.ofThreadPoolBulkheadRegistry(bulkheads).bindTo(meterRegistry);
 
         // Không bật cancelRunningFuture: trên đường executeCompletionStage nó không ngắt được gì, chỉ gây
@@ -194,7 +200,10 @@ public class PaymentProviderConfig {
         ScheduledExecutorService timeoutScheduler =
                 Executors.newSingleThreadScheduledExecutor(Thread.ofPlatform().name("provider-timeout").factory());
 
-        return new ResilientPaymentProvider(raw, breaker, bulkhead, timeLimiter, timeoutScheduler);
+        return new ResilientPaymentProvider(raw,
+                new ResilientPaymentProvider.Isolation(paymentBreaker, paymentBulkhead),
+                new ResilientPaymentProvider.Isolation(refundBreaker, refundBulkhead),
+                timeLimiter, timeoutScheduler);
     }
 
     private static boolean containsIgnoreCase(String value, String part) {

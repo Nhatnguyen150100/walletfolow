@@ -5,6 +5,7 @@ import com.walletflow.bank.provider.ChargeRequest;
 import com.walletflow.bank.provider.ChargeResult;
 import com.walletflow.bank.provider.ProviderUnavailableException;
 import com.walletflow.bank.provider.RefundRequest;
+import com.walletflow.bank.provider.RefundResult;
 import com.walletflow.bank.provider.ResilientPaymentProvider;
 import com.walletflow.bank.provider.mock.MockProvider;
 import com.walletflow.bank.support.Await;
@@ -96,6 +97,8 @@ class ProviderResilienceIT {
         mock.reset();
         breaker = provider.circuitBreaker();
         breaker.reset();
+        // Hai mạch riêng từ 2.4c — đặt lại cả hai, không thì một test làm mở mạch hoàn sẽ kéo test sau đỏ
+        provider.refundCircuitBreaker().reset();
     }
 
     @Test
@@ -139,7 +142,7 @@ class ProviderResilienceIT {
     }
 
     @Test
-    @DisplayName("⭐ Lỗi kỹ thuật vượt ngưỡng: mạch MỞ, và khi mở thì mock KHÔNG bị gọi nữa (charge/getStatus/refund đều bị chặn)")
+    @DisplayName("⭐ Lỗi kỹ thuật vượt ngưỡng: mạch MỞ, và khi mở thì mock KHÔNG bị gọi nữa (charge/getStatus bị chặn)")
     void loi_ky_thuat_vuot_nguong_mo_mach_va_khong_goi_provider() {
         String providerRef = createSession(1_000);   // 1 lời gọi thành công
         mock.failNextCalls(3);                        // + 3 lỗi kỹ thuật = 4 lời gọi, 75% lỗi
@@ -161,10 +164,6 @@ class ProviderResilienceIT {
         assertThatThrownBy(() -> provider.getStatus(providerRef, null))
                 .isInstanceOf(ProviderUnavailableException.class)
                 .hasCauseInstanceOf(CallNotPermittedException.class);
-        assertThatThrownBy(() -> provider.refund(
-                new RefundRequest(UUID.randomUUID().toString(), providerRef, 1_000, ECurrency.VND)))
-                .isInstanceOf(ProviderUnavailableException.class)
-                .hasCauseInstanceOf(CallNotPermittedException.class);
 
         assertThat(mock.chargeCalls())
                 .as("mạch mở: các lời gọi bị chặn ở trước provider, bộ đếm của mock đứng yên")
@@ -173,6 +172,77 @@ class ProviderResilienceIT {
         // Đối chứng: mock vẫn trả lời được — lời gọi trên bị từ chối vì MẠCH, không phải vì mock hỏng
         breaker.reset();
         assertThat(provider.getStatus(providerRef, null).state()).isEqualTo(EProviderState.PENDING);
+    }
+
+    @Test
+    @DisplayName("⭐ Mạch của đường THU mở KHÔNG chặn lệnh hoàn — ở đầu kia của lệnh hoàn là tiền đang ngoài ví người dùng")
+    void mach_thu_mo_van_hoan_duoc() {
+        String providerRef = createSession(1_000);
+        mock.settle(providerRef, EProviderState.SUCCEEDED);   // có tiền thật để mà hoàn
+        mock.failNextCalls(3);
+        for (int i = 0; i < 3; i++) {
+            assertThatThrownBy(() -> provider.charge(chargeRequest(1_000)))
+                    .isInstanceOf(ProviderUnavailableException.class);
+        }
+        assertThat(breaker.getState()).isEqualTo(CircuitBreaker.State.OPEN);
+        assertThat(provider.refundCircuitBreaker().getState())
+                .as("ngân sách lỗi của hai đường là riêng — lỗi của đường thu không được tiêu vào đường hoàn")
+                .isEqualTo(CircuitBreaker.State.CLOSED);
+
+        RefundResult result = provider.refund(
+                new RefundRequest(UUID.randomUUID().toString(), providerRef, 1_000, ECurrency.VND));
+
+        assertThat(result)
+                .as("lệnh hoàn phải TỚI được provider: dùng chung mạch thì mọi lần hoàn rơi thẳng vào DLT "
+                        + "chỉ vì đường thu đang hỏng")
+                .isInstanceOf(RefundResult.Refunded.class);
+    }
+
+    @Test
+    @DisplayName("⭐ Mạch của đường HOÀN mở KHÔNG làm mù getStatus — những lần thu đang chờ vẫn được hỏi lại")
+    void mach_hoan_mo_van_hoi_duoc_trang_thai() {
+        String providerRef = createSession(1_000);
+        mock.failNextCalls(1_000);
+        for (int i = 0; i < 4; i++) {
+            assertThatThrownBy(() -> provider.refund(
+                    new RefundRequest(UUID.randomUUID().toString(), providerRef, 1_000, ECurrency.VND)))
+                    .isInstanceOf(ProviderUnavailableException.class);
+        }
+        assertThat(provider.refundCircuitBreaker().getState()).isEqualTo(CircuitBreaker.State.OPEN);
+        assertThat(breaker.getState())
+                .as("mạch của đường thu phải còn đóng")
+                .isEqualTo(CircuitBreaker.State.CLOSED);
+
+        mock.failNextCalls(0);
+
+        assertThat(provider.getStatus(providerRef, null).state())
+                .as("người dùng ĐÃ trả tiền cho lần thu này — không biết nó ra sao là ca mất tiền, không "
+                        + "phải một tính năng tạm hỏng")
+                .isEqualTo(EProviderState.PENDING);
+        assertThatThrownBy(() -> provider.refund(
+                new RefundRequest(UUID.randomUUID().toString(), providerRef, 1_000, ECurrency.VND)))
+                .as("đối chứng: mạch hoàn vẫn đang mở, nên lệnh hoàn vẫn bị chặn")
+                .isInstanceOf(ProviderUnavailableException.class)
+                .hasCauseInstanceOf(CallNotPermittedException.class);
+    }
+
+    @Test
+    @DisplayName("Từ chối nghiệp vụ của lệnh HOÀN không mở mạch hoàn — VNPay từ chối 100% cho tới 2.4c")
+    void tu_choi_hoan_khong_mo_mach_hoan() {
+        String providerRef = createSession(5_000);   // phiên chưa settle ⇒ mock trả NOT_REFUNDABLE
+
+        for (int i = 0; i < 20; i++) {
+            assertThat(provider.refund(
+                    new RefundRequest(UUID.randomUUID().toString(), providerRef, 1_000, ECurrency.VND)))
+                    .isInstanceOf(RefundResult.Declined.class);
+        }
+
+        assertThat(provider.refundCircuitBreaker().getState())
+                .as("VNPay trả REFUND_UNSUPPORTED cho MỌI lệnh hoàn tới trước 2.4c (ADR-020 §4). Coi đó là "
+                        + "lỗi kỹ thuật thì mạch hoàn mở vĩnh viễn trên production và alert "
+                        + "PaymentRefundProviderDown page mãi cho một thứ đúng theo thiết kế.")
+                .isEqualTo(CircuitBreaker.State.CLOSED);
+        assertThat(provider.refundCircuitBreaker().getMetrics().getNumberOfFailedCalls()).isZero();
     }
 
     @Test

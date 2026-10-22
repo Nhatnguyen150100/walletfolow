@@ -42,10 +42,13 @@ walletflow:
     # Bọc mọi lời gọi ra provider (ResilientPaymentProvider)
     resilience:
       timeout: 5s
-      # Bulkhead: provider chậm chỉ chiếm được chừng này thread, không kéo cả consumer Kafka theo
+      # Bulkhead: provider chậm chỉ chiếm được chừng này thread, không kéo cả consumer Kafka theo.
+      # MỖI KHOANG, không phải tổng — từ 2.4c đường thu và đường hoàn có pool riêng (ADR-020 *Amendments*
+      # B2), nên trần của adapter là 2x. Thread được tạo lazy: khoang hoàn giữ 0 thread tới lệnh hoàn đầu.
       max-threads: 8
       queue-capacity: 16
-      # Circuit breaker: >= 50% của 20 lời gọi gần nhất lỗi -> mở 30s, không gọi ra ngoài nữa
+      # Circuit breaker: >= 50% của 20 lời gọi gần nhất lỗi -> mở 30s, không gọi ra ngoài nữa. Cũng là MỖI
+      # KHOANG: hai mạch gom lời gọi độc lập, nên mỗi đường tự kết luận về sức khoẻ của chính nó.
       failure-rate-threshold: 50
       sliding-window-size: 20
       minimum-calls: 10

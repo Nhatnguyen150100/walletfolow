@@ -1,9 +1,13 @@
-# Runbook — `PaymentProviderDown` / `BankStatusCheckFailing` / `ProviderAmountMismatch` / `PendingChargeOverdue` / `ExpiredChargeNeedsReview` / `ExpiredChargeUnconfirmed` / `BankWebhookBacklog` / `BankWebhookAbandoned` / `BankWebhookForeignAccount` / `BankWebhookUnresolvedRef`
+# Runbook — `PaymentProviderDown` / `PaymentRefundProviderDown` / `BankStatusCheckFailing` / `ProviderAmountMismatch` / `PendingChargeOverdue` / `ExpiredChargeNeedsReview` / `ExpiredChargeUnconfirmed` / `BankWebhookBacklog` / `BankWebhookAbandoned` / `BankWebhookForeignAccount` / `BankWebhookUnresolvedRef`
 
-> **`PaymentProviderDown` — mức page.** Circuit breaker của bank-adapter đang mở: cổng thanh toán lỗi
-> liên tục (timeout, 5xx, mất kết nối) nên adapter ngừng gọi ra ngoài.
+> **`PaymentProviderDown` — mức page.** Circuit breaker của **đường THU** (`provider-<tên>`) đang mở: cổng
+> thanh toán lỗi liên tục (timeout, 5xx, mất kết nối) nên adapter ngừng gọi ra ngoài.
 >
 > **Không mất tiền**, nhưng mọi lần nạp tiền đang đứng, và người đã trả tiền chưa được xác nhận.
+>
+> **`PaymentRefundProviderDown` — mức page.** Mạch của **đường HOÀN** (`provider-<tên>-refund`) đang mở.
+> Từ 2.4c hai đường có hai khoang riêng ([ADR-020](../adr/ADR-020-topup-compensation-refund.md)
+> *Amendments* B2), nên alert này KHÔNG kéo theo alert kia — xem mục R.
 
 ## Nguyên tắc vàng
 
@@ -44,6 +48,32 @@ docker exec wf-postgres psql -U walletflow -d railsdb -c "
 | Hàng `NEW` lâu | Lệnh thu chưa hỏi được provider lần nào (kể cả có thể đã tạo phiên mà mất câu trả lời) | Sau khi provider sống lại: **replay** message từ DLT `txn.command.bank-charge.v1.DLT` (xem `dlt-not-empty.md`). Adapter gửi lại đúng khoá cũ, không tạo phiên thứ hai. |
 | Hàng `PENDING` lâu | Phiên đã tạo, chưa chốt kết quả | Không cần làm gì: job đối chiếu tự hỏi lại, nhịp giãn cấp số 30 s → 1 m → 2 m → … → tối đa 10 m (`check_attempts`, ADR-017). Quá hạn phiên + grace (15 + 15 phút) mà vẫn đứng: xem `PendingChargeOverdue` bên dưới. |
 | Hàng `FAILED` với `failure_code = EXPIRED` | Phiên hết hạn và provider **khẳng định** chưa thu đồng nào (ADR-017) | Bình thường — người dùng bỏ dở. Không bao giờ do provider chết mà ra: provider không trả lời thì hàng giữ `PENDING`. |
+
+## R — `PaymentRefundProviderDown` (mạch đường HOÀN mở)
+
+Khác `PaymentProviderDown` ở một điểm quyết định: **đường thu vẫn chạy**. Lần thu vẫn được xác nhận, ví
+vẫn được cộng, người dùng vẫn nạp được. Thứ đang đứng là các lệnh **hoàn** — và sau mỗi lệnh đó là tiền
+đã bị trừ của một người dùng mà ví không được cộng.
+
+```bash
+# Lệnh hoàn đang ở đâu
+docker exec wf-postgres psql -U walletflow -d bankdb -c "
+  SELECT transaction_id, status, provider_ref, failure_code, created_at, updated_at
+  FROM provider_transactions WHERE operation = 'REFUND' ORDER BY created_at DESC LIMIT 20;"
+```
+
+| Hàng `REFUND` ở | Nghĩa | Xử lý |
+|---|---|---|
+| `NEW` | Chưa gọi được provider lần nào, hoặc đã gọi mà mất câu trả lời | **Không hoàn tay.** Chờ provider sống lại rồi replay DLT `txn.command.bank-refund.v1.DLT`; khoá gửi provider là tất định nên không hoàn hai lần. |
+| `SUCCEEDED` | Tiền đã về thật | Không làm gì. Saga nhận `bank.event.completed` và tự đóng. |
+| `FAILED` | Provider từ chối dứt khoát | Mạch không liên quan tới ca này — xem [`topup-stuck.md`](topup-stuck.md) mục E. |
+
+**Nguy hiểm nhất ở đây là hoàn tay song song.** Mạch mở không nói lệnh hoàn chưa đi — nó chỉ nói ta không
+*hỏi* được. Một hàng `NEW` có thể đã hoàn xong ở phía provider. Hoàn tay thêm lần nữa là mất tiền của
+công ty và không có đường lấy lại. Đối chiếu portal theo `provider_ref` của **lần thu** trước, luôn.
+
+Saga ở transaction-service tự lo phần còn lại: job quét gửi lại lệnh hoàn, hết lượt thì chuyển
+`REFUND_NO_RESPONSE` + `MANUAL_REVIEW` (alert `TopupRefundFailed`). Không cần đụng vào `transactions`.
 
 ## `BankStatusCheckFailing` — mức ticket
 
