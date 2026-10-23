@@ -46,6 +46,21 @@ spring:
           predicates:
             - Path=/api/v1/admin/wallets/**
 
+        # Hàng đợi giao dịch cần người can thiệp (roadmap 2.5, ADR-021). Mọi path /api/v1/admin/**
+        # đã bị JwtAuthenticationFilter đòi một VAI vận hành (ADMIN/OPS/AUDITOR) trước khi tới đây;
+        # ai được làm gì bên trong thì transaction-service quyết. Rate limit theo user: số người
+        # vận hành ít, nhưng một client hỏng lặp vô hạn vẫn không được làm nặng DB.
+        - id: transaction-admin
+          uri: lb://TRANSACTION-SERVICE
+          predicates:
+            - Path=/api/v1/admin/transactions/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@userKeyResolver}"
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+
         # ----- Các route sau sẽ hoạt động khi service tương ứng ra đời (milestone sau) -----
         # Lệnh ghi tiền: rate limit theo user đã xác thực (chống spam giao dịch)
         - id: transaction-service

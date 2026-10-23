@@ -38,6 +38,11 @@ chuyển `MANUAL_REVIEW` với `failure_code = 'REFUND_DECLINED'` và ca đó ph
 
 ## Chẩn đoán — 3 phút
 
+> Từ 2.5 PR1 có API thay cho bước 1 bên dưới, và nó **để lại dấu vết** (`audit_events`) trong khi
+> `psql` thì không: `GET /api/v1/admin/transactions/manual-review` (vai `ADMIN`/`OPS`/`AUDITOR`), và
+> `GET /api/v1/admin/transactions/{id}` cho một ca kèm trạng thái saga. Bước 2 và 3 vẫn phải dùng
+> `psql` cho tới 2.5 PR3.
+
 ```bash
 # 1. Các lệnh nạp đang chờ người xử lý — kèm mã tham chiếu phía provider
 docker exec wf-postgres psql -U walletflow -d txndb -c "
@@ -49,7 +54,7 @@ docker exec wf-postgres psql -U walletflow -d txndb -c "
 # lâu — job quét gửi lại lệnh hoàn mỗi lượt, hết lượt thì tự chuyển REFUND_NO_RESPONSE (mục E).
 
 # 2. Lần thu đó ở bank-adapter nói gì
-docker exec wf-postgres psql -U walletflow -d bankdb -c "
+docker exec wf-postgres psql -U walletflow -d railsdb -c "
   SELECT id, status, operation, provider_ref, amount_minor, failure_code, updated_at
   FROM provider_transactions WHERE transaction_id = '<id>';"
 
@@ -121,9 +126,9 @@ phép lệch; một lần thu không được phép vừa thất bại vừa th�
 
 1. Lấy nguyên văn hai phía:
    ```bash
-   docker exec wf-postgres psql -U walletflow -d bankdb -c "
+   docker exec wf-postgres psql -U walletflow -d railsdb -c "
      SELECT raw_request, raw_response FROM provider_transactions WHERE transaction_id = '<id>';"
-   docker exec wf-postgres psql -U walletflow -d bankdb -c "
+   docker exec wf-postgres psql -U walletflow -d railsdb -c "
      SELECT provider, outcome, received_at FROM webhook_events
      WHERE provider_ref = '<ref>' ORDER BY received_at;"
    ```
@@ -182,7 +187,7 @@ máy đã hết đường tự gỡ.
 Xem lần hoàn ở bank-adapter trước khi làm gì:
 
 ```bash
-docker exec wf-postgres psql -U walletflow -d bankdb -c "
+docker exec wf-postgres psql -U walletflow -d railsdb -c "
   SELECT id, operation, status, provider_ref, refund_of, amount_minor, failure_code, updated_at
   FROM provider_transactions WHERE transaction_id = '<id>' ORDER BY created_at;"
 ```

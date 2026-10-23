@@ -1,0 +1,23 @@
+-- =====================================================================
+-- V3 — Vai vận hành: OPS và AUDITOR (roadmap 2.5, ADR-021)
+-- =====================================================================
+-- Tới nay chỉ có USER và ADMIN, và cột `role` KHÔNG có ràng buộc nào — một chuỗi tuỳ ý ghi được
+-- vào đây, rồi nổ ở chỗ khác lúc Hibernate nạp entity (@Enumerated(STRING) không map được giá trị
+-- lạ). Cách duy nhất cấp quyền hôm nay là UPDATE thẳng (scripts/e2e/make-admin.sh), nên cột này là
+-- bề mặt mà người vận hành gõ tay vào — đúng chỗ cần một CHECK.
+--
+-- Ba vai của 2.5, tách theo thứ người ta ĐƯỢC LÀM chứ không theo chức danh:
+--   ADMIN   — duyệt được thao tác đụng tiền (4-eyes ở PR2), và làm được mọi việc của OPS.
+--   OPS     — xem hàng đợi cần can thiệp và mở được ca xử lý, nhưng KHÔNG tự quyết chuyện tiền.
+--   AUDITOR — chỉ đọc. Tồn tại để người kiểm tra sổ sách không phải mượn một tài khoản có quyền ghi.
+--   USER    — khách hàng; không thấy gì trong khu vực /admin.
+--
+-- TƯƠNG THÍCH NGƯỢC: chỉ NỚI (thêm hai giá trị) + ràng buộc một tập vốn đã đúng với mọi hàng hiện
+-- có. Bản app đang chạy không biết OPS/AUDITOR nhưng cũng không bao giờ gặp: chưa ai được cấp.
+-- Thứ tự triển khai: V3 + bản app biết hai vai mới lên TOÀN BỘ instance TRƯỚC, rồi mới cấp vai cho
+-- người thật — instance cũ nạp một hàng OPS sẽ nổ ở @Enumerated (bài học V3 của transaction-service).
+--
+-- KHOÁ: ADD CONSTRAINT quét toàn bảng `users` một lần dưới ACCESS EXCLUSIVE. Bảng nhỏ và câu này
+-- chạy lúc triển khai, chấp nhận — cùng đánh đổi đã ghi ở V7 của bank-adapter.
+ALTER TABLE users
+    ADD CONSTRAINT ck_users_role CHECK (role IN ('USER', 'ADMIN', 'OPS', 'AUDITOR'));
