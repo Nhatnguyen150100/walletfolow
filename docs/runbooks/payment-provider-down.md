@@ -57,7 +57,7 @@ vẫn được cộng, người dùng vẫn nạp được. Thứ đang đứng 
 
 ```bash
 # Lệnh hoàn đang ở đâu
-docker exec wf-postgres psql -U walletflow -d bankdb -c "
+docker exec wf-postgres psql -U walletflow -d railsdb -c "
   SELECT transaction_id, status, provider_ref, failure_code, created_at, updated_at
   FROM provider_transactions WHERE operation = 'REFUND' ORDER BY created_at DESC LIMIT 20;"
 ```

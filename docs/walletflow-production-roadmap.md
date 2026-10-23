@@ -790,9 +790,11 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.4a Saga top-up — nhận lệnh nạp, ghi sổ sau khi provider xác nhận ([ADR-019](adr/ADR-019-topup-saga.md)) | ✅ | #34 |
 | 2.4b (PR1) Hàng rào ledger — lệnh nạp bị từ chối thì từ chối vĩnh viễn + lệnh hoàn `txn.command.bank-refund.v1` ở bank-adapter ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | ✅ | #35 |
 | 2.4b (PR2) Saga top-up — bù trừ: `POSTING → REFUNDING → FAILED` khi ledger từ chối / `BANK_RESULT_CONFLICT`, sau cờ `TOPUP_REFUND_ENABLED` ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | ✅ | #36 |
-| 2.4c (PR1) Hạ tầng hoàn tiền — mã provider duy nhất theo `operation` (V7), mạch + bulkhead riêng cho đường hoàn | 🟡 `feat/phase-2-refund-infra` | |
+| 2.4c (PR1) Hạ tầng hoàn tiền — chỉ mã lần THU là duy nhất (V7), mạch + bulkhead riêng cho đường hoàn ([ADR-020](adr/ADR-020-topup-compensation-refund.md) *Amendments*) | ✅ | #37 |
 | 2.4c (PR2) VNPay refund thật (`vnp_Command=refund`) | ⛔ chặn phía VNPay — merchant sandbox chưa dùng được `refund`; mọi ca vẫn hoàn tay qua portal | |
-| 2.5 Admin API & manual review | ⬜ | |
+| 2.5 (PR1) Khu vực vận hành — hàng đợi cần can thiệp, `audit_events` ở txndb, nền RBAC ADMIN/OPS/AUDITOR ([ADR-021](adr/ADR-021-admin-review-audit.md)) | 🟡 `feat/phase-2-admin-review` | |
+| 2.5 (PR2) Xử lý ca — `POST /resolve` (REVERSAL / đánh dấu đã hoàn tay) + 4-eyes, audit CÙNG transaction với việc ghi tiền | ⬜ chờ PR1 | |
+| 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider + bút toán qua `/internal` của bank-adapter và ledger | ⬜ chờ PR1 | |
 | (DoD Phase 2) `ChaosProviderIT` (Toxiproxy) — provider chết 5 phút: không mất tiền, không saga treo | ⬜ không thuộc mục nào — ghi vào bảng để nó có chủ | |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 
@@ -906,12 +908,27 @@ bù trừ (2.4b, [ADR-020](adr/ADR-020-topup-compensation-refund.md)): `POSTING 
 
 ## 2.5 — Admin API & manual review · 3 ngày
 
-- `GET /admin/manual-review` — danh sách ca cần người can thiệp, có đủ ngữ cảnh (saga state,
-  provider raw response, bút toán liên quan).
-- `POST /admin/transactions/{id}/resolve` — ghi `REVERSAL` hoặc đánh dấu đã xử lý.
-- **4-eyes**: thao tác đụng tiền cần **hai** tài khoản admin khác nhau phê duyệt (GAP-A4).
-- Mọi thao tác admin ghi `audit_events` bất biến: ai, lúc nào, từ IP nào, trước/sau ra sao.
-- RBAC: `ADMIN`, `OPS`, `AUDITOR` (chỉ đọc).
+> **Hình dạng thật sau khi khảo sát** ([ADR-021](adr/ADR-021-admin-review-audit.md)): tách **ba PR**.
+> Mục này lớn hơn mô tả ban đầu ở bốn chỗ — vai chỉ có `USER`/`ADMIN` và **gateway chưa kiểm vai ở
+> path nào**; `audit_events` chỉ có ở authdb và **không có `tenant_id`**; ngữ cảnh người trực cần
+> nằm ở hai DB không có API đọc theo `transactionId`; 4-eyes chưa có gì.
+
+**PR1 — nền (chỉ đọc, không đụng tiền):**
+- `GET /api/v1/admin/transactions/manual-review` — hàng đợi, **cũ nhất trước**, gồm cả `REFUNDING`.
+- `GET /api/v1/admin/transactions/{id}` — kèm trạng thái saga.
+- `audit_events` ở **txndb**, append-only; thao tác đọc cũng ghi dấu vết.
+- RBAC `ADMIN`/`OPS`/`AUDITOR`: gateway chặn thô `/api/v1/admin/**`, service kiểm chi tiết.
+
+**PR2 — xử lý ca (đụng tiền):** `POST /resolve` ghi `REVERSAL` hoặc đánh dấu đã hoàn tay (đường mà
+[ADR-020](adr/ADR-020-topup-compensation-refund.md) đang nợ), **4-eyes** (GAP-A4), và audit vào
+**cùng transaction** với việc ghi tiền. Lưu ý: `REVERSAL` cần `entryId` mà txndb chưa lưu, và không
+áp dụng cho ca bị ledger từ chối (không có bút toán để đảo).
+
+**PR3 — ngữ cảnh chéo service:** raw response của provider và bút toán liên quan, qua `/internal`
+của bank-adapter và ledger.
+
+**Chưa thuộc PR nào:** ca "cần người xem" của bank-adapter không vào hàng đợi — adapter chưa bao giờ
+ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định riêng.
 
 ### ✅ Definition of Done — Phase 2
 
