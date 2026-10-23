@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -21,6 +22,38 @@ public interface TransactionRepository extends Repository<Transaction, UUID> {
     Optional<Transaction> findByTenantIdAndIdAndInitiatedBy(UUID tenantId, UUID id, UUID initiatedBy);
 
     Optional<Transaction> findByTenantIdAndId(UUID tenantId, UUID id);
+
+    /**
+     * Hàng đợi cần người can thiệp (roadmap 2.5): những giao dịch mà máy đã dừng lại và chờ người,
+     * cộng những giao dịch máy đang tự xử lý nhưng người trực vẫn cần nhìn thấy
+     * ({@code REFUNDING} — đứng quá lâu ở đó là một sự cố, runbook topup-stuck mục E).
+     *
+     * <p>Cũ nhất TRƯỚC, không phải mới nhất: ở đây mỗi phút trôi qua là một phút khách hàng mất
+     * tiền mà không có gì, nên thứ tự đọc đúng của hàng đợi là thứ tự nó phải được xử lý. Chốt thêm
+     * bằng {@code id} để trang kế tiếp không nhảy cóc khi hai hàng cùng {@code created_at}.
+     *
+     * <p>Lọc tenant như mọi query khác (ADR-010): người vận hành của tenant này không nhìn thấy ca
+     * của tenant khác.
+     *
+     * <p><b>Tập trạng thái là HẰNG trong câu lệnh, không phải tham số</b> — cùng lý do với
+     * {@code findChargeByProviderRef} của bank-adapter (ADR-020 *Amendments* B1). Index riêng phần
+     * {@code idx_transactions_needs_review} (V5) chỉ dùng được khi Postgres chứng minh được mệnh đề
+     * WHERE của câu lệnh hàm ý mệnh đề của index; với tham số bind ({@code status IN ?}) nó chứng
+     * minh được ở kế hoạch *custom* nhưng KHÔNG ở *generic*, mà pgjdbc tự chuyển sang server-side
+     * prepared sau vài lần gọi trên cùng connection. Hậu quả sẽ là quét toàn bảng
+     * {@code transactions} — bảng chỉ mọc thêm — mà không có gì báo.
+     *
+     * <p>Hệ quả: tập trạng thái này sống ở ĐÚNG hai chỗ và chúng phải khớp nhau — câu lệnh ở đây và
+     * mệnh đề của index trong V5. Thêm một trạng thái vào hàng đợi là một migration, không phải một
+     * dòng Java.
+     */
+    @Query(value = """
+            SELECT * FROM transactions
+             WHERE tenant_id = :tenantId AND status IN ('MANUAL_REVIEW', 'REFUNDING')
+             ORDER BY created_at ASC, id ASC
+             LIMIT :limit
+            """, nativeQuery = true)
+    List<Transaction> findNeedingReview(@Param("tenantId") UUID tenantId, @Param("limit") int limit);
 
     /**
      * Khoá hàng giao dịch trước khi saga quyết định chuyển trạng thái. Hai event của cùng một giao

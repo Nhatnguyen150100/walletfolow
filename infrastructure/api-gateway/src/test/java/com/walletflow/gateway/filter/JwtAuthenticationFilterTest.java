@@ -6,6 +6,8 @@ import io.jsonwebtoken.Jwts;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -19,11 +21,13 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.time.Instant;
 import java.util.Date;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.walletflow.gateway.filter.JwtAuthenticationFilter.HDR_TENANT_ID;
 import static com.walletflow.gateway.filter.JwtAuthenticationFilter.HDR_USER_ID;
+import static com.walletflow.gateway.filter.JwtAuthenticationFilter.HDR_USER_ROLE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -249,6 +253,143 @@ class JwtAuthenticationFilterTest {
     assertThat(JwtAuthenticationFilter.isTraversal("/api/v1/transactions/3f1c2a3b-4d5e-4f60-8a71-b2c3d4e5f601"))
         .isFalse();
     assertThat(JwtAuthenticationFilter.isTraversal("/api/v1/wallets/file.v2")).isFalse();
+  }
+
+  // ------------------------------------------------------------------
+  // Khu vực vận hành (roadmap 2.5, ADR-021)
+  // ------------------------------------------------------------------
+  @Test
+  @DisplayName("⭐ Khách hàng (USER) với token HỢP LỆ vẫn không vào được /api/v1/admin/**: 403, không chạm service")
+  void khach_hang_khong_vao_duoc_khu_vuc_van_hanh() {
+    MockServerWebExchange exchange = adminRequest("USER");
+
+    filter.filter(exchange, chain).block();
+
+    assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(forwarded.get())
+        .as("⚠ chặn ở biên: một lỗi phân quyền trong service nội bộ không được là thứ DUY NHẤT "
+            + "đứng giữa khách hàng với dữ liệu của người khác")
+        .isNull();
+  }
+
+  @Test
+  @DisplayName("Ba vai vận hành đều qua được biên — phân quyền chi tiết là việc của service")
+  void ba_vai_van_hanh_qua_duoc_bien() {
+    for (String role : List.of("ADMIN", "OPS", "AUDITOR")) {
+      forwarded.set(null);
+      MockServerWebExchange exchange = adminRequest(role);
+
+      filter.filter(exchange, chain).block();
+
+      assertThat(forwarded.get()).as(role).isNotNull();
+      assertThat(forwarded.get().getHeaders().getFirst(HDR_USER_ROLE))
+          .as("service cần vai LÚC ĐÓ để ghi audit và để tự kiểm lại").isEqualTo(role);
+    }
+  }
+
+  @Test
+  @DisplayName("Vai lạ (token của một bên phát hành khác): 403, không đoán là có quyền")
+  void vai_la_bi_tu_choi() {
+    MockServerWebExchange exchange = adminRequest("SUPERUSER");
+
+    filter.filter(exchange, chain).block();
+
+    assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(forwarded.get()).isNull();
+  }
+
+  @Test
+  @DisplayName("Token KHÔNG có claim role trên path vận hành: 403 (fail-closed), không coi là có quyền")
+  void thieu_claim_role_bi_tu_choi() {
+    String token = Jwts.builder()
+        .header().keyId(KID).and()
+        .subject(UUID.randomUUID().toString())
+        .claim(JwtAuthenticationFilter.CLAIM_TENANT, REAL_TENANT.toString())
+        .issuer(ISSUER)
+        .issuedAt(Date.from(Instant.now()))
+        .expiration(Date.from(Instant.now().plusSeconds(900)))
+        .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
+        .compact();
+    MockServerWebExchange exchange = MockServerWebExchange.from(
+        MockServerHttpRequest.get("/api/v1/admin/transactions/manual-review")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token));
+
+    filter.filter(exchange, chain).block();
+
+    assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(forwarded.get()).isNull();
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @ValueSource(strings = {
+      "/api/v1/admin/transactions/manual-review",
+      "/api/v1/admin/transactions/manual-review/",   // trailing slash
+      "/api/v1/admin/transactions",
+      "/api/v1/admin/",
+      "/api/v1/admin",
+      "/api/v1/admin/wallets/rebuild"                // khu vực vận hành của service khác
+  })
+  @DisplayName("⭐ Hình dạng path không lách được hàng rào vai — USER bị chặn ở mọi biến thể")
+  void hinh_dang_path_khong_lach_duoc(String path) {
+    // Đây là canh bạc của cả PR: hàng rào khớp bằng AntPathMatcher trên path ĐÃ GIẢI MÃ, còn route
+    // của Spring Cloud Gateway khớp PathPattern cũng trên path đã giải mã. Hai matcher khác nhau
+    // cùng nhìn một chuỗi — hướng nguy hiểm là filter TRƯỢT mà route TRÚNG. Không có gì ghim bất
+    // biến đó ngoài test này.
+    //
+    // KHÔNG có ca percent-encoding (`/api/v1/%61dmin/...`) ở đây, và đó là chủ ý: `getURI().getPath()`
+    // là dạng ĐÃ GIẢI MÃ theo đúng ngữ nghĩa của java.net.URI, nên nó về `/api/v1/admin/...` và rơi
+    // vào đúng ca đầu tiên của danh sách này. Viết ca đó bằng MockServerHttpRequest còn cho kết quả
+    // SAI: mock mã hoá chuỗi đầu vào (`%61` -> `%2561`), nên nó dựng một request mà Netty không bao
+    // giờ tạo ra. Các encoding nguy hiểm thật (`%2e`, `%2f`, `%5c`, `%3b`) đã bị isTraversal loại ở
+    // bước 0 và có test riêng.
+    String token = Jwts.builder()
+        .header().keyId(KID).and()
+        .subject(UUID.randomUUID().toString())
+        .claim("email", "a@b.com")
+        .claim("role", "USER")
+        .claim(JwtAuthenticationFilter.CLAIM_TENANT, REAL_TENANT.toString())
+        .issuer(ISSUER)
+        .issuedAt(Date.from(Instant.now()))
+        .expiration(Date.from(Instant.now().plusSeconds(900)))
+        .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
+        .compact();
+
+    MockServerWebExchange exchange = MockServerWebExchange.from(
+        MockServerHttpRequest.get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + token));
+    filter.filter(exchange, chain).block();
+
+    assertThat(forwarded.get())
+        .as("%s — lọt qua đây là khách hàng chạm được khu vực quản trị", path)
+        .isNull();
+  }
+
+  @Test
+  @DisplayName("Hàng rào vai KHÔNG áp cho path thường — không khoá nhầm khách hàng")
+  void hang_rao_vai_khong_cham_path_thuong() {
+    String token = token(UUID.randomUUID().toString())
+        .claim(JwtAuthenticationFilter.CLAIM_TENANT, REAL_TENANT.toString()).compact();
+
+    filter.filter(MockServerWebExchange.from(MockServerHttpRequest.get("/api/v1/wallets/me")
+        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)), chain).block();
+
+    assertThat(forwarded.get()).as("USER vẫn dùng được ví của chính mình").isNotNull();
+  }
+
+  private static MockServerWebExchange adminRequest(String role) {
+    String token = Jwts.builder()
+        .header().keyId(KID).and()
+        .subject(UUID.randomUUID().toString())
+        .claim("email", "a@b.com")
+        .claim("role", role)
+        .claim(JwtAuthenticationFilter.CLAIM_TENANT, REAL_TENANT.toString())
+        .issuer(ISSUER)
+        .issuedAt(Date.from(Instant.now()))
+        .expiration(Date.from(Instant.now().plusSeconds(900)))
+        .signWith(KEY_PAIR.getPrivate(), Jwts.SIG.RS256)
+        .compact();
+    return MockServerWebExchange.from(
+        MockServerHttpRequest.get("/api/v1/admin/transactions/manual-review")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + token));
   }
 
   private static JwtBuilder token(String userId) {

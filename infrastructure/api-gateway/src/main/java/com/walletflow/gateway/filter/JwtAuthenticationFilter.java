@@ -21,6 +21,7 @@ import reactor.core.publisher.Mono;
 
 import java.security.Key;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -72,6 +73,16 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
    */
   private static final List<String> IDENTITY_HEADERS =
       List.of(HDR_USER_ID, HDR_USER_EMAIL, HDR_USER_ROLE, HDR_TENANT_ID);
+
+  /**
+   * Khu vực vận hành. Mọi path dưới đây đòi một VAI vận hành, không chỉ một phiên đăng nhập hợp lệ.
+   * Giữ chung một tiền tố để không bao giờ có một endpoint quản trị nào lọt ra ngoài hàng rào này
+   * chỉ vì người thêm nó quên — thêm nhầm chỗ thì route gateway cũng không tồn tại và nó 404.
+   */
+  static final String ADMIN_PREFIX = "/api/v1/admin/**";
+
+  /** Vai được vào khu vực vận hành. Phải khớp {@code ERole} của auth-service (auth V3). */
+  static final Set<String> OPERATOR_ROLES = Set.of("ADMIN", "OPS", "AUDITOR");
 
   /** Các tiền tố đường dẫn KHÔNG cần đăng nhập. */
   private static final List<String> PUBLIC_PREFIXES = List.of(
@@ -137,10 +148,23 @@ public class JwtAuthenticationFilter implements GlobalFilter, Ordered {
         return unauthorized(exchange, "Token không mang tenant hợp lệ, vui lòng đăng nhập lại");
       }
 
+      String role = String.valueOf(claims.get("role"));
+
+      // Khu vực vận hành: chặn THÔ ngay ở biên — khách hàng không có việc gì ở đây, và một lỗi
+      // phân quyền trong service nội bộ không được phép là thứ duy nhất đứng giữa họ với dữ liệu
+      // của người khác. Ai ĐƯỢC LÀM GÌ bên trong (xem được, nhưng có duyệt được thao tác đụng tiền
+      // không) vẫn do service quyết: gateway không biết nghiệp vụ, và nhét luật nghiệp vụ vào đây
+      // là chẻ chúng ra hai nơi (ADR-021).
+      if (antPathMatcher.match(ADMIN_PREFIX, path) && !OPERATOR_ROLES.contains(role)) {
+        log.warn("Từ chối {} vào khu vực vận hành {} — vai {}", claims.getSubject(), path, role);
+        return reject(exchange, HttpStatus.FORBIDDEN, "FORBIDDEN",
+            "Tài khoản không có quyền vào khu vực quản trị");
+      }
+
       ServerHttpRequest authenticated = sanitized.mutate()
           .header(HDR_USER_ID, claims.getSubject())
           .header(HDR_USER_EMAIL, String.valueOf(claims.get("email")))
-          .header(HDR_USER_ROLE, String.valueOf(claims.get("role")))
+          .header(HDR_USER_ROLE, role)
           .header(HDR_TENANT_ID, tenantId.toString())
           .build();
 
