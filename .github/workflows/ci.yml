@@ -66,7 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # up.sh tự sinh khoá JWT tạm cho lần chạy (không có .env trên runner, và không cần secret nào)
       - name: Dựng stack
@@ -87,7 +87,7 @@ jobs:
 
       - name: Upload log container khi hỏng
         if: failure() || cancelled()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-container-logs
           path: e2e-logs/
