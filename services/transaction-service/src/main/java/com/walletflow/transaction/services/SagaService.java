@@ -190,6 +190,10 @@ public class SagaService {
             return;
         }
         Transaction txn = locked.get();
+        if (alreadyResolved(txn, "provider " + event.provider() + " xác nhận ĐÃ THU (ref "
+                + event.providerRef() + ")")) {
+            return;
+        }
 
         switch (txn.getStatus()) {
             case PROCESSING, AWAITING_PAYMENT -> startPosting(txn, event);
@@ -330,6 +334,10 @@ public class SagaService {
             return;
         }
         Transaction txn = locked.get();
+        if (alreadyResolved(txn, "provider " + event.provider() + " từ chối lần thu ("
+                + event.failureCode() + ")")) {
+            return;
+        }
 
         switch (txn.getStatus()) {
             case PROCESSING, AWAITING_PAYMENT -> fail(txn, event.failureCode(),
@@ -420,6 +428,31 @@ public class SagaService {
      * <p>Chỉ nạp hàng saga cho lệnh NẠP: {@code BANK_REFUND} là bước của riêng luồng nạp, nên chuyển
      * tiền (đường nóng) không phải trả thêm một lượt đi về DB cho một câu hỏi luôn có cùng câu trả lời.
      */
+    /**
+     * Hàng rào cho ca đã được một người vận hành CHỐT (2.5 PR2, ADR-021 *Amendments* A3). Saga không
+     * bao giờ được ghi tiếp vào một ca như thế, bất kể event nào tới và bất kể ca đang ở trạng thái
+     * nào.
+     *
+     * <p>Vì sao phải ở MỌI handler chứ không riêng {@code onPosted}: sau khi chốt, ca về
+     * {@code FAILED}. Trước 2.5 PR2 những ca này nằm ở {@code MANUAL_REVIEW}, nơi mọi handler bỏ qua
+     * bản lặp một cách an toàn — chuyển chúng sang {@code FAILED} là đẩy chúng vào đúng những nhánh
+     * nguy hiểm: {@code onPosted} cho "ledger thắng" (ví được cộng trong khi tiền đã hoàn tay), và
+     * {@code onBankCompleted} gửi LỆNH HOÀN THỨ HAI cho số tiền vừa được hoàn tay qua portal.
+     *
+     * <p>Mỗi lần chạm vào đây là một bất thường thật: hoặc có một bút toán/lần thu không ai giải
+     * thích được, hoặc người vận hành chốt một ca chưa xong. Đếm và kêu to, không im lặng.
+     */
+    private boolean alreadyResolved(Transaction txn, String what) {
+        if (txn.getResolvedAt() == null) {
+            return false;
+        }
+        topupResultConflicts.increment();
+        log.error("Saga: {} cho giao dịch {} mà người vận hành đã CHỐT lúc {} — không ghi gì thêm, "
+                + "cần người đối chiếu ngay (tiền có thể đã được xử lý tay rồi)",
+                what, txn.getId(), txn.getResolvedAt());
+        return true;
+    }
+
     private boolean refundStarted(Transaction txn) {
         if (txn.getType() != EJournalType.TOPUP) {
             return false;
@@ -443,6 +476,10 @@ public class SagaService {
         // nhưng ở đây là vừa cộng ví vừa đã trả tiền về thẻ, và còn báo THÀNH CÔNG cho người dùng).
         if (refundStarted(txn)) {
             postedWhileRefunding(txn, event);
+            return;
+        }
+
+        if (alreadyResolved(txn, "ledger GHI SỔ bút toán " + event.entryId())) {
             return;
         }
 
@@ -511,6 +548,9 @@ public class SagaService {
             return;
         }
         Transaction txn = locked.get();
+        if (alreadyResolved(txn, "ledger TỪ CHỐI (" + event.reasonCode() + ")")) {
+            return;
+        }
 
         switch (txn.getStatus()) {
             case PROCESSING, POSTING, MANUAL_REVIEW -> rejectOpen(txn, event);

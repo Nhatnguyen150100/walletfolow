@@ -97,7 +97,7 @@ class AdminReviewIT {
 
     @BeforeEach
     void reset() {
-        jdbcTemplate.execute("TRUNCATE saga_state, transactions, idempotency_keys, outbox_event, audit_events");
+        jdbcTemplate.execute("TRUNCATE resolution_requests, saga_state, transactions, idempotency_keys, outbox_event, audit_events");
         wallets.reset();
         operator = UUID.randomUUID();
     }

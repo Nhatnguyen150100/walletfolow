@@ -75,6 +75,16 @@ public class Transaction {
     @Column(name = "failure_reason")
     private String failureReason;
 
+    /**
+     * Lúc một người vận hành chốt ca này (2.5 PR2, ADR-021). Khác null = ĐÃ có người xử lý, nên một
+     * bút toán ghi sau thời điểm này là XUNG ĐỘT chứ không phải "ledger thắng" — xem
+     * {@code SagaService.onPosted}. Chi tiết ai/vì sao nằm ở {@code audit_events}.
+     *
+     * <p>Không bao giờ quay về null: "đã có người đụng vào" là sự thật không thu hồi được.
+     */
+    @Column(name = "resolved_at")
+    private Instant resolvedAt;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
