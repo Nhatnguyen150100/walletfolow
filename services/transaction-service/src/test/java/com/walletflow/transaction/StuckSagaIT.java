@@ -336,6 +336,35 @@ class StuckSagaIT {
     }
 
     @Test
+    @DisplayName("⭐ Cổng thanh toán im lặng quá lâu (provider chết, bank-adapter không phát gì): saga nạp đang chờ trả tiền vẫn "
+            + "có điểm kết thúc — hết lượt thì MANUAL_REVIEW(BANK_NO_RESPONSE), KHÔNG đoán FAILED, KHÔNG gửi thêm lệnh thu")
+    void lenh_nap_het_luot_o_buoc_thu_thi_chuyen_nguoi_xu_ly() {
+        Accepted txn = acceptTopup();
+        jdbcTemplate.update("UPDATE transactions SET status = 'AWAITING_PAYMENT' WHERE id = ?", txn.transactionId());
+        jdbcTemplate.update("UPDATE saga_state SET attempt_count = 3 WHERE transaction_id = ?", txn.transactionId());
+        makeOverdue(txn);
+        double before = counter("walletflow.saga.manual_review");
+
+        assertThat(scanner.scan()).isEqualTo(1);
+
+        assertThat(jdbcTemplate.queryForObject("SELECT status FROM transactions WHERE id = ?",
+                String.class, txn.transactionId()))
+                .as("saga không được treo mãi chờ một câu trả lời không tới (DoD Phase 2: 'không saga treo')")
+                .isEqualTo("MANUAL_REVIEW");
+        assertThat(jdbcTemplate.queryForObject("SELECT failure_code FROM transactions WHERE id = ?",
+                String.class, txn.transactionId()))
+                .as("không phải FAILED: người dùng có thể đã trả tiền ở cổng trong lúc ta không hỏi được — báo "
+                        + "thất bại là bỏ rơi tiền của họ")
+                .isEqualTo("BANK_NO_RESPONSE");
+        assertThat(saga(txn).get("step_status")).isEqualTo("MANUAL_REVIEW");
+        assertThat(outbox(WalletTopics.CMD_BANK_CHARGE, txn)).as("hết lượt thì thôi gửi lệnh thu").hasSize(1);
+        assertThat(commands(txn)).as("chưa ai xác nhận đã thu thì không được ghi sổ").isEmpty();
+        assertThat(counter("walletflow.saga.manual_review")).isEqualTo(before + 1);
+
+        assertThat(scanner.scan()).as("đã chuyển người xử lý thì không quét lại").isZero();
+    }
+
+    @Test
     @DisplayName("Lệnh nạp quá hạn ở bước ghi sổ: gửi lại lệnh ghi sổ TOPUP với vế EXTERNAL_BANK")
     void lenh_nap_qua_han_o_buoc_ghi_so() {
         Accepted txn = acceptTopup();

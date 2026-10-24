@@ -211,6 +211,36 @@ public final class FakeVnPayServer implements AutoCloseable {
         return result;
     }
 
+    /**
+     * IPN mà VNPay gửi về cho một giao dịch đã biết, ký đúng: HMAC-SHA512 trên dạng chuẩn (sắp theo tên, mã hoá
+     * US-ASCII, bỏ tham số rỗng) — cùng quy tắc với URL thanh toán, cài lại độc lập ở đây.
+     *
+     * <p>IPN đi theo đường KHÁC {@code querydr} (VNPay gọi vào ta), nên nó vẫn tới được khi chiều ta gọi VNPay
+     * đang chết. Nội dung của nó chỉ là gợi ý — adapter vẫn phải hỏi lại {@code querydr} (ADR-018).
+     *
+     * @return tham số của IPN đã giải mã, có cả {@code vnp_SecureHash}
+     */
+    public Map<String, String> ipn(String txnRef) {
+        Txn txn = txn(txnRef);
+        TreeMap<String, String> params = new TreeMap<>();
+        params.put("vnp_Amount", Long.toString(txn.scaledAmount));
+        params.put("vnp_BankCode", "NCB");
+        params.put("vnp_OrderInfo", txn.orderInfo);
+        params.put("vnp_PayDate", DATE.format(Instant.now()));
+        params.put("vnp_ResponseCode", "00");
+        params.put("vnp_TmnCode", tmnCode);
+        params.put("vnp_TransactionNo", "14000001");
+        params.put("vnp_TransactionStatus", txn.status);
+        params.put("vnp_TxnRef", txn.txnRef);
+        String canonical = params.entrySet().stream()
+                .filter(entry -> !entry.getValue().isEmpty())
+                .map(entry -> encode(entry.getKey()) + "=" + encode(entry.getValue()))
+                .collect(Collectors.joining("&"));
+        Map<String, String> result = new LinkedHashMap<>(params);
+        result.put("vnp_SecureHash", hmac(hashSecret, canonical));
+        return result;
+    }
+
     // ------------------------------------------------------------------
     // Điều khiển cho test
     // ------------------------------------------------------------------

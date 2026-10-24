@@ -251,6 +251,49 @@ alert `ExpiredChargeUnconfirmed` (ticket).
 `countOverdue` (đã `FAILED`). Nhóm này vẫn chỉ được chặn bằng quy trình xả hàng trước khi đổi tài khoản
 (runbook), chưa có alert. Ghi nhận, chưa sửa trong PR này.
 
+### Amendment 3 (2026-10-24) — chaos test: provider chết 5 phút (DoD Phase 2)
+
+Không đổi hành vi — chốt **tiêu chí** cho ô DoD "provider chết 5 phút → không mất tiền, không saga treo" và
+ghi lại điều chaos test chứng minh được.
+
+**Phạm vi thật.** Toxiproxy chỉ chặn được `querydr`, và đó cũng là lời gọi mạng DUY NHẤT tới VNPay: tạo phiên
+ký URL tại chỗ (§1), hoàn tiền chưa gọi VNPay (ADR-020, 2.4c), IPN là VNPay gọi vào ta. `MockProvider` chạy
+trong process nên không đặt proxy trước được; đường thu/hoàn của mock đã có `ProviderResilienceIT` và
+`RefundBulkheadIsolationIT`.
+
+**Tiêu chí (đã chốt với chủ dự án):**
+- *Không mất tiền* = "không biết" không bao giờ thành `FAILED`/`EXPIRED`. Sống lại thì mỗi người đã trả tiền
+  được **đúng một** `bank.event.completed` mang đúng số tiền, dù job đối chiếu và worker webhook đều chạy lại
+  sau đó (tuần tự — ca hai đường chạy đua đúng cùng lúc thuộc `markSucceeded` "UPDATE trả 0 thì im lặng", chưa
+  có chaos test riêng). Không lần thu nào mất lịch hỏi lại.
+- *Không treo* = mọi saga có điểm kết thúc trong thời gian hữu hạn: trạng thái cuối, **hoặc**
+  `MANUAL_REVIEW` có alert. Outage 5 phút phải tự hồi, không cần người.
+
+**Điều đã chứng minh** (`ChaosProviderIT`, thời gian được tua bằng cách lùi `next_check_at`):
+- Năm kiểu chết ở tầng TCP đều là "không biết": ngắt hẳn, nhận kết nối rồi im, reset, cắt ngang câu trả lời,
+  chậm hơn read-timeout. Mỗi lời gọi bị chặn trước `resilience.timeout` nên thread đối soát không bị giữ.
+- Mạch tự mở với đúng cửa sổ/ngưỡng production (chỉ rút `open-wait` cho test), rồi tự đóng lại khi
+  provider ổn. Khi chập chờn, mạch đi đủ CLOSED→OPEN→HALF_OPEN→OPEN (lượt thăm dò gặp lúc vẫn chết)
+  →HALF_OPEN→CLOSED, không lần thu nào bị chốt hai lần.
+- Webhook đến lúc provider chết không bị bỏ: 5 phút chỉ tiêu ~5/10 lượt thử ở nhịp mặc định, và được xử lý
+  (`RESOLVED`) khi provider sống lại. Outage dài hơn ~25′ thì webhook hết lượt (`ABANDONED`,
+  alert `BankWebhookAbandoned`) — vô hại, job đối chiếu vẫn là lưới an toàn.
+- Chết vắt qua hạn phiên + grace: hàng giữ `PENDING`, `PendingChargeOverdue` bật; sống lại thì người đã trả
+  vẫn `SUCCEEDED` (thành công thắng dù quá hạn), người chưa trả mới `EXPIRED`.
+
+**Mutation đã kiểm tay:** cho `VnPayProvider.getStatus` coi lỗi mạng là "chưa thu" → 7/8 ca đỏ. Ca quan trọng
+nhất đỏ đúng chỗ: người đã trả tiền bị `EXPIRED` khi provider chết vắt qua hạn phiên.
+
+**Phía saga — outage dài.** bank-adapter không phát gì khi provider chết, nên saga nạp ở `AWAITING_PAYMENT`
+hết lượt sau ~55′ (`payment-deadline` 45′, rồi gửi lại sau 4′ và 6′ — nhịp `recordRetry` của ADR-019 §6)
+→ `MANUAL_REVIEW(BANK_NO_RESPONSE)` + alert, không bao giờ `FAILED`
+(`StuckSagaIT.lenh_nap_het_luot_o_buoc_thu_thi_chuyen_nguoi_xu_ly`). Nếu provider sống lại SAU mốc đó,
+`completed` tới một saga đã ở diện người xử lý và bị bỏ qua có chủ ý (giữ `failure_code` gốc,
+`SagaService.onBankCompleted`) — người trực xử lý theo `topup-stuck.md` mục C → A. Không mất trong im lặng,
+nhưng là việc tay. Mốc tính từ lúc **tạo phiên**, không phải từ lúc provider chết: lần thu tự hồi nếu provider
+sống lại trước ~45′ kể từ lúc tạo phiên (55′ trừ một nhịp hỏi tối đa `max-recheck-after` 10′). Phiên tạo ở
+phút 0, người dùng trả tiền ở phút 14 đúng lúc provider chết tới phút 56: rơi vào nhánh này dù outage chỉ ~42′.
+
 ## Liên quan
 
 - ADR-016 (mô hình thu), ADR-005 (tiền), ADR-009 (bí mật), roadmap 2.2–2.4, §5.6, §5.7.
