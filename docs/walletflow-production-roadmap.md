@@ -777,7 +777,7 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 > Tương ứng M4 của master plan, cộng phần webhook (master plan chưa đề cập nhưng là **phần khó
 > nhất trong thực tế**).
 
-### Trạng thái Phase 2 (cập nhật 2026-10-23)
+### Trạng thái Phase 2 (cập nhật 2026-10-24)
 
 | Mục | Trạng thái | PR |
 |---|---|---|
@@ -793,9 +793,9 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.4c (PR1) Hạ tầng hoàn tiền — chỉ mã lần THU là duy nhất (V7), mạch + bulkhead riêng cho đường hoàn ([ADR-020](adr/ADR-020-topup-compensation-refund.md) *Amendments*) | ✅ | #37 |
 | 2.4c (PR2) VNPay refund thật (`vnp_Command=refund`) | ⛔ chặn phía VNPay — merchant sandbox chưa dùng được `refund`; mọi ca vẫn hoàn tay qua portal | |
 | 2.5 (PR1) Khu vực vận hành — hàng đợi cần can thiệp, `audit_events` ở txndb, nền RBAC ADMIN/OPS/AUDITOR ([ADR-021](adr/ADR-021-admin-review-audit.md)) | ✅ | #39 |
-| 2.5 (PR2) Xử lý ca — `POST /resolve` đánh dấu đã hoàn tay + **4-eyes** (GAP-A4), audit CÙNG transaction với việc ghi tiền ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments*) | 🟡 `feat/phase-2-admin-resolve` | |
+| 2.5 (PR2) Xử lý ca — `POST /resolve` đánh dấu đã hoàn tay + **4-eyes** (GAP-A4), audit CÙNG transaction với việc ghi tiền ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments*) | ✅ | #40 |
 | 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider + bút toán qua `/internal`; mở đường cho `REVERSAL` (cần `entryId`, xem ADR-021 *Amendments* A1) | ⬜ | |
-| (DoD Phase 2) `ChaosProviderIT` (Toxiproxy) — provider chết 5 phút: không mất tiền, không saga treo | ⬜ không thuộc mục nào — ghi vào bảng để nó có chủ | |
+| (DoD Phase 2) `ChaosProviderIT` (Toxiproxy trước `querydr` của VNPay giả) — provider chết 5 phút: không mất tiền, không saga treo; `StuckSagaIT` cho điểm kết thúc phía saga ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*) | 🟡 `feat/phase-2-chaos-provider` | |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 
 Đường găng nạp tiền: **2.2a → 2.2b → 2.3 → 2.4 (top-up)**. DoD ô "rút tiền" chưa đạt được khi 2.1 còn bị
@@ -903,7 +903,9 @@ bù trừ (2.4b, [ADR-020](adr/ADR-020-topup-compensation-refund.md)): `POSTING 
    hai nhóm ca dùng chung một bối cảnh Spring, và ca "ledger ghi sổ trong khi đang hoàn" → gọi người.
 2. `WithdrawCompensationIT` — HOLD xong, payout fail → tiền quay về ví đúng bằng số đã giữ.
 3. `ChaosProviderIT` (Toxiproxy) — provider timeout/chập chờn → circuit breaker mở, saga không treo,
-   không mất tiền.
+   không mất tiền. Hình dạng thật: ở bank-adapter, proxy đặt trước `querydr` (lời gọi mạng duy nhất tới
+   VNPay — mock chạy trong process); điểm kết thúc phía saga do `StuckSagaIT` chứng minh. Tiêu chí ở
+   [ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*.
 4. ~~`CompensationFailureIT`~~ — đã nằm trong `TopupCompensationIT` (xem mục 1).
 
 ## 2.5 — Admin API & manual review · 3 ngày
@@ -940,7 +942,9 @@ ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định 
 - [ ] Nạp tiền thật qua sandbox VNPay/Stripe → số dư tăng đúng
 - [ ] Rút tiền → tiền bị giữ, không tiêu được, payout fail thì hoàn đủ
 - [ ] Webhook trùng/muộn/sai chữ ký đều xử lý đúng
-- [ ] Chaos test: provider chết 5 phút → không mất tiền, không saga treo
+- [x] Chaos test: provider chết 5 phút → không mất tiền, không saga treo — `ChaosProviderIT` +
+  `StuckSagaIT.lenh_nap_het_luot_o_buoc_thu_thi_chuyen_nguoi_xu_ly`; "không treo" = trạng thái cuối hoặc
+  `MANUAL_REVIEW` có alert ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*)
 - [ ] Không có thao tác đụng tiền nào không để lại audit
 
 ### Nợ mang sang (phát hiện khi làm Phase 2)
