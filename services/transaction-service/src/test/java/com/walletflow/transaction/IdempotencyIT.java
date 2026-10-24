@@ -95,7 +95,7 @@ class IdempotencyIT {
         // key đã có câu trả lời và được replay, nên một bug "trả 503 cho lệnh đã được nhận" bị che mất
         // hoàn toàn. Đã xảy ra thật: mutation-test bỏ phần sửa mà test vẫn xanh.
         http.getRestTemplate().setRequestFactory(new JdkClientHttpRequestFactory());
-        jdbcTemplate.execute("TRUNCATE saga_state, transactions, idempotency_keys, outbox_event");
+        jdbcTemplate.execute("TRUNCATE resolution_requests, saga_state, transactions, idempotency_keys, outbox_event");
         wallets.reset();
         alice = UUID.randomUUID();
         aliceWallet = wallets.add(TENANT, alice, ECurrency.VND, EWalletStatus.ACTIVE);

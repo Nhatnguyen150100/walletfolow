@@ -93,7 +93,7 @@ class TopupSagaIT {
 
     @BeforeEach
     void reset() {
-        jdbcTemplate.execute("TRUNCATE saga_state, transactions, idempotency_keys, outbox_event");
+        jdbcTemplate.execute("TRUNCATE resolution_requests, saga_state, transactions, idempotency_keys, outbox_event");
         wallets.reset();
     }
 
