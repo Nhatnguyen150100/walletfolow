@@ -17,8 +17,8 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * Hàng đợi giao dịch cần người can thiệp (roadmap 2.5 PR1, ADR-021). CHỈ ĐỌC — thao tác xử lý
- * (REVERSAL, đánh dấu đã hoàn tay) cùng với 4-eyes là PR2.
+ * Hàng đợi giao dịch cần người can thiệp (roadmap 2.5 PR1, ADR-021). CHỈ ĐỌC — thao tác xử lý và
+ * 4-eyes nằm ở {@link ResolutionService}, nơi có ranh giới transaction riêng vì nó đụng tiền.
  *
  * <p>Mọi thao tác ở đây đều để lại dấu vết, kể cả thao tác đọc và kể cả thao tác BỊ TỪ CHỐI: người
  * vận hành xem dữ liệu tài chính của một khách hàng là việc cần giải trình được, và một lần bị từ

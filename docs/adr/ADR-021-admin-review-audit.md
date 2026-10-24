@@ -147,6 +147,103 @@ quét toàn bảng `transactions` — bảng chỉ mọc thêm.
   là chủ ý (đo "khách mất tiền bao lâu" chứ không phải "kẹt bao lâu"), nhưng nếu màn hình trình bày
   `stuckForSeconds` như độ ưu tiên thì hai con số đang nói hai chuyện khác nhau.
 
+---
+
+## Amendments — 2026-10-23 (2.5 PR2)
+
+### A1. REVERSAL bị hoãn, và vì sao nó không phải ca chính
+
+Roadmap mô tả `POST /resolve` là "ghi `REVERSAL` **hoặc** đánh dấu đã xử lý", như thể REVERSAL là ca
+chính. Đối chiếu từng `failure_code` đang thực sự được ghi thì ngược lại: **REVERSAL chỉ áp dụng cho
+đúng một ca** (`REFUND_POSTED_CONFLICT`). Mọi ca còn lại — ledger từ chối (`ACCOUNT_CLOSED`,
+`ACCOUNT_FROZEN`, `NOT_FOUND`), `BANK_AMOUNT_MISMATCH`, `BANK_NO_RESPONSE`, `BANK_RESULT_CONFLICT`,
+`REFUND_DECLINED`, `REFUND_NO_RESPONSE`, `SAGA_STATE_DESYNC` — **không có bút toán nào để đảo**:
+ledger từ chối *trước khi* ghi, hoặc lệnh ghi sổ chưa từng được gửi.
+
+Và ca duy nhất áp dụng được thì hiện làm chưa được: `entryId` không nằm ở txndb (`SagaService`
+nhận nó trong `LedgerPostedEvent` rồi bỏ đi), còn quyết định đúng — đảo hay nhận bút toán — phụ
+thuộc lần hoàn ở bank-adapter đã xong chưa, dữ liệu thuộc railsdb (PR3). Nên PR2 làm phần thay được
+SQL tay, REVERSAL chờ PR3.
+
+### A2. 4-eyes chỉ cho thao tác ĐỤNG TIỀN
+
+`MARK_REFUNDED_MANUALLY` cần hai người: `OPS` hoặc `ADMIN` đề xuất, một `ADMIN` **khác** duyệt. Mở
+lại một ca kẹt không nằm trong tập này — ledger idempotent theo `transactionId` nên lệnh gửi lại
+không ghi bút toán thứ hai, và bắt nó chờ người thứ hai lúc 2 giờ sáng là đổi một rủi ro thật lấy
+một thủ tục.
+
+Bốn mắt được cưỡng chế ở **ba tầng**, cố ý: kiểm ở `ResolutionService`, điều kiện
+`maker_id <> :checkerId` của câu UPDATE, và `CHECK ck_resolution_four_eyes` ở DB. Một thao tác đụng
+tiền không được phép chỉ dựa vào một lớp kiểm tra.
+
+Còn mở: **4-eyes không chặn được một người có hai tài khoản.** Đó là vấn đề quản trị danh tính, nằm
+ngoài tầm với của code ở đây — nhưng đừng tưởng bảng này giải quyết nó.
+
+### A3. `resolved_at` — dấu bền thứ hai, cùng hình dạng với hàng rào của 2.4b
+
+Sau khi chốt, giao dịch về `FAILED`. Một `LedgerPosted` tới muộn rơi vào nhánh "ledger thắng" của
+`SagaService` và đẩy nó thành `COMPLETED` — ví được cộng **trong khi** tiền đã hoàn tay, và giao
+dịch trông như một lần nạp thành công nên không ai nhìn lại. Ca này có thật với lời từ chối **trước**
+ledger V6: lúc đó chưa có `rejected_topups`, nên lệnh ghi sổ gửi lại vẫn ghi được sau khi ví mở lại.
+
+`transactions.resolved_at` (V6) là dấu bền cho ca đó, đặt trên chính hàng mà `SagaService` đã khoá
+và đọc sẵn — kiểm thêm một cột là miễn phí, còn đọc một bảng khác là một lượt đi về DB cho cả đường
+chuyển tiền. Đây là hàng rào thứ ba cùng khuôn: `rejected_topups` (ledger, ADR-020 §1),
+`current_step = BANK_REFUND` (saga, ADR-020 *Amendments* A1), và nay `resolved_at`.
+
+### A4. Audit của thao tác đụng tiền: `MANDATORY`, không `REQUIRES_NEW`
+
+`AuditWriter.writeInCurrentTransaction` dùng `MANDATORY` — không có transaction đang mở thì ném.
+Chiều nguy hiểm **không phải** "audit hỏng thì tiền vẫn ghi" (với `REQUIRES_NEW` thì exception vẫn
+kéo đổ transaction ngoài, nên chiều đó an toàn ở cả hai), mà là chiều ngược lại: dấu vết commit độc
+lập rồi tiền rollback, để lại một dòng audit nói "đã duyệt và thực thi" cho việc chưa từng xảy ra.
+**Sổ kiểm toán nói dối tệ hơn sổ kiểm toán thiếu.**
+
+Hệ quả cho việc viết test: một test kiểu "audit hỏng ⇒ tiền rollback" **xanh với cả hai
+propagation**, nên nó không ghim được thiết kế này. Thứ ghim được là gọi thẳng
+`writeInCurrentTransaction` ngoài mọi transaction và đòi nó ném.
+
+### A5. Chốt một ca là đẩy nó từ nhánh AN TOÀN sang nhánh NGUY HIỂM — hàng rào phải ở mọi handler
+
+Bản đầu của PR2 chỉ đặt `resolved_at` ở `onPosted`. Review độc lập tìm ra chỗ đó là chưa đủ, và lý
+do đáng ghi lại vì nó đúng loại sai lầm dễ lặp:
+
+Trước PR2, các ca này nằm ở `MANUAL_REVIEW` — trạng thái mà **mọi** handler của saga bỏ qua an toàn
+(`case MANUAL_REVIEW -> log.debug`). Việc chốt chuyển chúng sang `FAILED`, và `FAILED` là trạng thái
+có nhánh xử lý thật ở hai chỗ: `onPosted` cho "ledger thắng" ⇒ `COMPLETED`, và `onBankCompleted` gọi
+`startRefund` ⇒ **gửi lệnh hoàn THỨ HAI cho số tiền vừa được hoàn tay qua portal**. Tức là bản thân
+việc chốt — thứ sinh ra để làm ca an toàn hơn — lại mở ra một đường mất tiền mới.
+
+Nên `alreadyResolved()` được gọi ngay sau khi khoá ở **cả bốn** handler (`onPosted`,
+`onBankCompleted`, `onBankFailed`, `onRejected`). Bất biến: **saga không bao giờ ghi tiếp vào một ca
+đã được người vận hành chốt**, bất kể event nào tới và ca đang ở trạng thái nào.
+
+`transactions.resolved_at` còn được trigger `trg_transactions_resolved_at_final` giữ: đặt được một
+lần, không gỡ và không sửa. Gỡ nó bằng một câu `UPDATE` là mở lại đúng cửa hoàn-tiền-hai-lần — và
+"sửa bằng SQL tay, không để lại dấu vết" chính là vấn đề mở đầu của ADR này.
+
+### A6. Chỉ lệnh NẠP mới đánh dấu "đã hoàn tay" được
+
+`MARK_REFUNDED_MANUALLY` đòi `type = TOPUP` và có `provider_ref`. Chuyển tiền không có provider nào
+để hoàn qua portal, nên đánh dấu như vậy cho một `TRANSFER` (ca `LEDGER_NO_RESPONSE` là có thật) vừa
+là lời khai sai, vừa nguy hiểm hơn thế: `resolved_at` sau đó chặn vĩnh viễn mọi `LedgerPosted` tới
+sau, nghĩa là một quyết định vận hành **phủ quyết sổ cái** — ngược hẳn bất biến §1.
+
+### A7. Còn mở sau PR2
+
+- **`findPending` chưa có endpoint** "chờ tôi duyệt" — bảng ghi được, nhưng người duyệt phải biết
+  `requestId` từ nơi khác. Thêm cùng màn hình tra cứu audit.
+- **Lần DUYỆT thất bại (`CASE_NO_LONGER_OPEN`) không để lại dấu vết**: nó ném trong transaction nên
+  cuộn luôn dòng audit. Một ADMIN cố duyệt một ca đã đóng là thông tin kiểm toán — nên ghi qua
+  `AuditService` (nuốt lỗi) ở chỗ ném, cùng khuôn `ADMIN_ACCESS_DENIED`.
+- **Hai POST không có `Idempotency-Key`**: khoá tự nhiên đủ để không làm hai lần, nhưng một lần gửi
+  lại do timeout trả 409 và client không phân biệt được "tôi vừa thắng" với "người khác đã quyết".
+- **`resolution_requests` không append-only**: `APPROVED → PENDING` bằng SQL tay vẫn làm được. Khác
+  `audit_events` (có trigger) và khác `resolved_at` (nay có trigger). Cân nhắc khi bảng này trở
+  thành căn cứ đối soát ở Phase 3.
+- **`ck_resolution_decided` chưa đòi `checker_role IS NOT NULL`** khi đã quyết, và chưa cấm điền
+  `checker_*` lúc còn `PENDING`.
+
 ## Alternatives rejected
 
 - **Một `admin-service` riêng:** mọi dòng của hàng đợi thành một lời gọi mạng, cộng một module mới,

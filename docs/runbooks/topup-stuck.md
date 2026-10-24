@@ -107,15 +107,30 @@ Nguyên nhân gần như luôn là trạng thái tài khoản: ví bị đóng g
    - **Mở lại được** → mở ví, rồi mở lại saga theo mục D. Lệnh ghi sổ được gửi lại với cùng
      `transactionId`, ledger ghi đúng MỘT bút toán.
    - **Không mở lại được** (đóng vĩnh viễn, KYC) → **hoàn tiền tay** qua portal của provider theo
-     `provider_ref`, rồi đánh dấu đã xử lý:
-     ```sql
-     UPDATE transactions SET failure_code = 'REFUNDED_MANUALLY',
-            failure_reason = 'Hoàn tay qua portal <provider>, ref <refund_ref>, bởi <ai>, <khi nào>',
-            updated_at = now()
-      WHERE id = '<id>' AND status = 'MANUAL_REVIEW';
+     `provider_ref`, rồi đánh dấu đã xử lý **qua API, không phải SQL** (2.5 PR2):
+
+     ```bash
+     # 1) Người thứ nhất (OPS hoặc ADMIN) đề xuất — chưa có gì xảy ra với tiền
+     curl -X POST .../api/v1/admin/transactions/<id>/resolve \
+       -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN" \
+       -d '{"action":"MARK_REFUNDED_MANUALLY","reason":"Ví đóng vĩnh viễn (KYC)","evidence":"<mã hoàn ở portal>"}'
+     # -> 202 { "data": { "resolutionRequestId": "..." } }
+
+     # 2) Người thứ HAI, phải là ADMIN và phải KHÁC người ở bước 1
+     curl -X POST .../api/v1/admin/transactions/resolutions/<requestId>/decision \
+       -H 'Content-Type: application/json' -H "Authorization: Bearer $TOKEN_ADMIN_2" \
+       -d '{"approve":true,"note":"Đã đối chiếu portal"}'
      ```
-     Giữ nguyên `status = 'MANUAL_REVIEW'`: chưa có `audit_events` (2.5), nên trạng thái này là dấu vết
-     duy nhất cho thấy đã có người đụng vào. Đừng đổi sang `FAILED`.
+
+     Giao dịch về **`FAILED`** với `failure_code = REFUNDED_MANUALLY` — lúc này `FAILED` nói đúng sự
+     thật: người dùng không mất tiền (ADR-020). Hàng đợi vơi đi một ca.
+
+     **Đừng dùng `UPDATE` tay nữa.** API đóng thêm `resolved_at` — dấu bền khiến một `LedgerPosted`
+     tới muộn không biến ca này thành `COMPLETED`. Sửa bằng SQL thì thiếu dấu đó, và người dùng có
+     thể vừa được hoàn tay vừa được cộng ví (ca có thật với lời từ chối **trước** ledger V6).
+
+     > Nếu bước 2 trả lỗi về audit, đó **không** phải lỗi lạ: dấu vết và việc ghi tiền nằm cùng một
+     > transaction, nên không ghi được dấu vết thì cố ý không ghi tiền. Xem log, sửa, rồi làm lại.
 
 ## B — Hai bên nói lệch nhau
 
@@ -195,8 +210,8 @@ docker exec wf-postgres psql -U walletflow -d railsdb -c "
 **`REFUND_DECLINED` — provider từ chối dứt khoát.** Trước 2.4c, VNPay luôn trả `REFUND_UNSUPPORTED`.
 `failure_reason` của giao dịch giữ cả lời từ chối lẫn nguyên nhân phải hoàn. Hàng `REFUND` `FAILED` ở
 bank-adapter là vĩnh viễn — **đừng gửi lại lệnh hoàn**, nó chỉ phát lại đúng lời từ chối đó. Hoàn tay qua
-portal theo `provider_ref` của lần **thu**, rồi đánh dấu như mục A bước 4 (`REFUNDED_MANUALLY`, giữ
-nguyên `status = 'MANUAL_REVIEW'`).
+portal theo `provider_ref` của lần **thu**, rồi đánh dấu **qua API 4-eyes như mục A bước 4** — ca về
+`FAILED` với `failure_code = REFUNDED_MANUALLY`.
 
 **`REFUND_NO_RESPONSE` — gửi đủ số lần, không có hồi âm.** Khác `BANK_NO_RESPONSE`: ở đó chưa chắc có
 đồng nào đi, ở đây tiền chắc chắn **đã** bị trừ của người dùng.

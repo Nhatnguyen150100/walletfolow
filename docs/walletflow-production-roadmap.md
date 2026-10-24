@@ -777,7 +777,7 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 > Tương ứng M4 của master plan, cộng phần webhook (master plan chưa đề cập nhưng là **phần khó
 > nhất trong thực tế**).
 
-### Trạng thái Phase 2 (cập nhật 2026-10-22)
+### Trạng thái Phase 2 (cập nhật 2026-10-24)
 
 | Mục | Trạng thái | PR |
 |---|---|---|
@@ -792,9 +792,9 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.4b (PR2) Saga top-up — bù trừ: `POSTING → REFUNDING → FAILED` khi ledger từ chối / `BANK_RESULT_CONFLICT`, sau cờ `TOPUP_REFUND_ENABLED` ([ADR-020](adr/ADR-020-topup-compensation-refund.md)) | ✅ | #36 |
 | 2.4c (PR1) Hạ tầng hoàn tiền — chỉ mã lần THU là duy nhất (V7), mạch + bulkhead riêng cho đường hoàn ([ADR-020](adr/ADR-020-topup-compensation-refund.md) *Amendments*) | ✅ | #37 |
 | 2.4c (PR2) VNPay refund thật (`vnp_Command=refund`) | ⛔ chặn phía VNPay — merchant sandbox chưa dùng được `refund`; mọi ca vẫn hoàn tay qua portal | |
-| 2.5 (PR1) Khu vực vận hành — hàng đợi cần can thiệp, `audit_events` ở txndb, nền RBAC ADMIN/OPS/AUDITOR ([ADR-021](adr/ADR-021-admin-review-audit.md)) | 🟡 `feat/phase-2-admin-review` | |
-| 2.5 (PR2) Xử lý ca — `POST /resolve` (REVERSAL / đánh dấu đã hoàn tay) + 4-eyes, audit CÙNG transaction với việc ghi tiền | ⬜ chờ PR1 | |
-| 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider + bút toán qua `/internal` của bank-adapter và ledger | ⬜ chờ PR1 | |
+| 2.5 (PR1) Khu vực vận hành — hàng đợi cần can thiệp, `audit_events` ở txndb, nền RBAC ADMIN/OPS/AUDITOR ([ADR-021](adr/ADR-021-admin-review-audit.md)) | ✅ | #39 |
+| 2.5 (PR2) Xử lý ca — `POST /resolve` đánh dấu đã hoàn tay + **4-eyes** (GAP-A4), audit CÙNG transaction với việc ghi tiền ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments*) | ✅ | #40 |
+| 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider + bút toán qua `/internal`; mở đường cho `REVERSAL` (cần `entryId`, xem ADR-021 *Amendments* A1) | ⬜ | |
 | (DoD Phase 2) `ChaosProviderIT` (Toxiproxy trước `querydr` của VNPay giả) — provider chết 5 phút: không mất tiền, không saga treo; `StuckSagaIT` cho điểm kết thúc phía saga ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*) | 🟡 `feat/phase-2-chaos-provider` | |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 
@@ -921,10 +921,15 @@ bù trừ (2.4b, [ADR-020](adr/ADR-020-topup-compensation-refund.md)): `POSTING 
 - `audit_events` ở **txndb**, append-only; thao tác đọc cũng ghi dấu vết.
 - RBAC `ADMIN`/`OPS`/`AUDITOR`: gateway chặn thô `/api/v1/admin/**`, service kiểm chi tiết.
 
-**PR2 — xử lý ca (đụng tiền):** `POST /resolve` ghi `REVERSAL` hoặc đánh dấu đã hoàn tay (đường mà
+**PR2 — xử lý ca (đụng tiền):** `POST /resolve` đánh dấu đã hoàn tay (đường mà
 [ADR-020](adr/ADR-020-topup-compensation-refund.md) đang nợ), **4-eyes** (GAP-A4), và audit vào
-**cùng transaction** với việc ghi tiền. Lưu ý: `REVERSAL` cần `entryId` mà txndb chưa lưu, và không
-áp dụng cho ca bị ledger từ chối (không có bút toán để đảo).
+**cùng transaction** với việc ghi tiền. Thay hai câu `UPDATE` tay trong runbook.
+
+> **`REVERSAL` bị hoãn sang sau PR3** ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments* A1).
+> Đối chiếu từng `failure_code` đang thực sự được ghi: REVERSAL chỉ áp dụng cho **đúng một ca**
+> (`REFUND_POSTED_CONFLICT`); mọi ca còn lại không có bút toán nào để đảo — ledger từ chối *trước
+> khi* ghi, hoặc lệnh ghi sổ chưa từng gửi. Và ca duy nhất đó cần `entryId` (txndb chưa lưu) cộng
+> bằng chứng từ bank-adapter để biết đảo hay nhận bút toán.
 
 **PR3 — ngữ cảnh chéo service:** raw response của provider và bút toán liên quan, qua `/internal`
 của bank-adapter và ledger.

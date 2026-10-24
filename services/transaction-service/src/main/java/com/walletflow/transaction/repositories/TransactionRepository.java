@@ -84,6 +84,33 @@ public interface TransactionRepository extends Repository<Transaction, UUID> {
                    @Param("failureCode") String failureCode,
                    @Param("failureReason") String failureReason);
 
+    /**
+     * Chốt một ca cần can thiệp bằng tay (2.5 PR2): đặt trạng thái cuối VÀ đóng dấu
+     * {@code resolved_at} trong cùng một câu.
+     *
+     * <p>Điều kiện {@code status = 'MANUAL_REVIEW' AND resolved_at IS NULL} là hàng rào chống hai
+     * người cùng chốt một ca, và chống chốt một ca mà saga đã tự xử lý xong trong lúc người vận hành
+     * đang gõ. Trả 0 ⇒ người gọi phải từ chối, không được ghi đè.
+     *
+     * @return 1 nếu vừa chốt, 0 nếu ca đã đổi trạng thái hoặc đã có người chốt trước
+     */
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE transactions
+               SET status = :status,
+                   failure_code = CAST(:failureCode AS VARCHAR),
+                   failure_reason = CAST(:failureReason AS TEXT),
+                   resolved_at = now(),
+                   updated_at = now()
+             WHERE tenant_id = :tenantId AND id = :id
+               AND status = 'MANUAL_REVIEW' AND resolved_at IS NULL
+            """, nativeQuery = true)
+    int resolveManualReview(@Param("tenantId") UUID tenantId,
+                            @Param("id") UUID id,
+                            @Param("status") String status,
+                            @Param("failureCode") String failureCode,
+                            @Param("failureReason") String failureReason);
+
     @Modifying
     @Query(value = """
             INSERT INTO transactions

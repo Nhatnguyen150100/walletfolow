@@ -92,7 +92,7 @@ class TransferApiIT {
     void reset() {
         // Không tự gửi lại khi nhận 503 (httpclient5 mặc định làm vậy kể cả với POST) — xem IdempotencyIT
         http.getRestTemplate().setRequestFactory(new JdkClientHttpRequestFactory());
-        jdbcTemplate.execute("TRUNCATE saga_state, transactions, idempotency_keys, outbox_event");
+        jdbcTemplate.execute("TRUNCATE resolution_requests, saga_state, transactions, idempotency_keys, outbox_event");
         wallets.reset();
         alice = UUID.randomUUID();
         aliceWallet = wallets.add(TENANT, alice, ECurrency.VND, EWalletStatus.ACTIVE);
