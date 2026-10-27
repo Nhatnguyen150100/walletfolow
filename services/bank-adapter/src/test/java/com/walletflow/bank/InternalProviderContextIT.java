@@ -55,9 +55,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Testcontainers
 class InternalProviderContextIT {
 
+    /** Số thẻ test công khai của Visa — qua được Luhn, nên nó CHỨNG MINH được nhánh che PAN. */
     private static final String PAN = "4111111111111111";
+
     private static final String SECURE_HASH = "9f2c1ab4d5e6f70812345678deadbeefcafebabe0011223344556677889900aabbccddeeff";
-    private static final String TOKEN = "tok_live_Zk39sJdQ81xYw";
+
+    /**
+     * Giá trị bịa, entropy thấp CÓ CHỦ Ý.
+     *
+     * <p>Masker che theo TÊN KHOÁ ({@code token}) chứ không theo hình dạng giá trị, nên một chuỗi
+     * trông-như-token-thật không làm test mạnh hơn một chút nào. Nó chỉ đổi lấy hai phiền toái: job
+     * "Secret scan" báo động giả (luật {@code generic-api-key} bắt đúng dòng này), và người đọc code
+     * phải dừng lại tự hỏi đây có phải secret thật không. Bản trước dùng tiền tố {@code tok_live_}
+     * của Stripe — tệ nhất ở cả hai mặt.
+     */
+    private static final String TOKEN = "token-gia-cho-test-khong-mo-duoc-gi";
 
     @SuppressWarnings("resource")
     @Container
