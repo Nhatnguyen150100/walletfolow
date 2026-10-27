@@ -222,6 +222,50 @@ Nên `alreadyResolved()` được gọi ngay sau khi khoá ở **cả bốn** ha
 lần, không gỡ và không sửa. Gỡ nó bằng một câu `UPDATE` là mở lại đúng cửa hoàn-tiền-hai-lần — và
 "sửa bằng SQL tay, không để lại dấu vết" chính là vấn đề mở đầu của ADR này.
 
+> **Đính chính (2026-10-27): bất biến trên bị vi phạm ở `onPosted` cho tới khi được sửa.**
+>
+> `alreadyResolved()` có mặt ở cả bốn handler như A5 mô tả, nhưng ở `onPosted` nó đứng **sau** một
+> nhánh `return` khác: `refundStarted(txn)` → `postedWhileRefunding()` → `return`. Một hàng rào nằm
+> sau một lối thoát thì không còn phủ mọi đường.
+>
+> Ca lọt qua: chốt một ca `REFUND_*` — saga những ca này đứng ở `BANK_REFUND`, nên `refundStarted`
+> trả true — rồi `LedgerPosted` tới muộn. `postedWhileRefunding` thấy trạng thái `FAILED`, rơi vào
+> nhánh `default` và **đặt lại ca về `MANUAL_REVIEW`** với `REFUND_POSTED_CONFLICT`. Ca đã xử lý
+> xong quay về hàng đợi như thể chưa ai đụng tới, mã kết cục của người vận hành bị ghi đè, và người
+> trực kế tiếp đọc runbook sẽ hoàn tay **lần thứ hai** số tiền vừa được hoàn.
+>
+> Vì sao bộ test của PR2 không bắt được: helper dựng ca đặt `current_step = 'POST_JOURNAL'`, nên mọi
+> test "chốt rồi event tới muộn" đều đi nhánh thường, nơi hàng rào có hiệu lực. Không test nào dựng
+> một ca ở `BANK_REFUND` — đúng hình dạng của những ca mà `MARK_REFUNDED_MANUALLY` sinh ra để xử lý.
+>
+> Sửa: đưa `alreadyResolved()` lên **ngay sau khi khoá**, trước mọi nhánh rẽ. Bài học tổng quát hơn
+> A5 một bậc: không chỉ "hàng rào phải ở mọi handler", mà **hàng rào phải là thứ đầu tiên sau khi
+> khoá** — một `return` chen lên trước nó sẽ vô hiệu hoá nó trong im lặng.
+>
+> **Câu "ở cả bốn handler" của A5 cũng chưa đủ chính xác**, và review độc lập tìm ra chỗ đó. Hai
+> handler trong số đó rẽ nhánh theo `operation` ngay từ đầu: `onBankCompleted`/`onBankFailed` chuyển
+> `REFUND` sang `onRefundCompleted`/`onRefundFailed` rồi `return` — **trước** cả lúc khoá. Hai
+> sub-handler ấy vì vậy chưa bao giờ chạm hàng rào. Về mặt *ghi* chúng vẫn an toàn (ca đã chốt là
+> `FAILED`, mà cả hai chỉ ghi khi `REFUNDING`), nhưng *tín hiệu* thì mất đúng ở ca tệ nhất: người
+> vận hành chốt một ca `REFUND_NO_RESPONSE` bằng cách hoàn tay, rồi lệnh hoàn tự động vẫn đang chạy
+> ở bank-adapter hoàn xong thật — khách nhận tiền hai lần, và nhánh `default` của
+> `onRefundCompletedLate` chỉ để lại một dòng `log.debug`. Nay cả hai sub-handler đều có hàng rào
+> ngay sau khi khoá. Phát biểu đúng của A5: **mọi đường mà một event có thể đi tới một ca, không
+> phải mọi `@Transactional` method.**
+>
+> **Đánh đổi phải biết — tín hiệu nhẹ đi một bậc.** Trước khi sửa, ca `LedgerPosted` muộn trên một ca
+> đã chốt đi qua `needsReview()`, nên nó tăng `walletflow.topup.manual_review` (alert
+> `TopupManualReview`, `severity: page`), ghi `failure_code = REFUND_POSTED_CONFLICT` và **nằm trong
+> hàng đợi admin** — ba đường để người ta thấy nó. Sau khi sửa chỉ còn
+> `walletflow.topup.result_conflict` (`TopupResultConflict`, `severity: ticket`, cửa sổ 1 giờ) và
+> một dòng log ERROR. Không ghi state là đúng, nên không lùi; nhưng hậu quả của ca này không nhẹ đi
+> theo. Bù lại bằng runbook `topup-stuck.md` **mục F** — mục riêng cho "xung đột trên một ca đã
+> chốt, không có hàng nào trong hàng đợi", kèm cách tra bằng log thay vì bằng API. Một alert riêng
+> mức `page` cho `alreadyResolved` là việc đáng làm tiếp.
+>
+> Test: `AdminResolveIT.chot_roi_thi_ledger_posted_muon_khong_mo_lai_ca_dang_hoan`,
+> `chot_roi_thi_hoan_tu_dong_xong_muon_van_keu`, `chot_roi_thi_loi_tu_choi_hoan_toi_muon_khong_ghi_de`.
+
 ### A6. Chỉ lệnh NẠP mới đánh dấu "đã hoàn tay" được
 
 `MARK_REFUNDED_MANUALLY` đòi `type = TOPUP` và có `provider_ref`. Chuyển tiền không có provider nào
