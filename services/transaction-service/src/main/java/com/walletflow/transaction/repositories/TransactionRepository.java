@@ -111,6 +111,36 @@ public interface TransactionRepository extends Repository<Transaction, UUID> {
                             @Param("failureCode") String failureCode,
                             @Param("failureReason") String failureReason);
 
+    /**
+     * Đổi mã của một ca CÒN MỞ, và chỉ khi mã hiện tại đúng như người gọi tưởng (2.5 PR4, ADR-022).
+     *
+     * <p>Khác {@link #transition}: câu kia chỉ ghi kết quả của một quyết định đã lấy dưới khoá, còn
+     * câu này tự mang theo điều kiện. Dùng ở đường nhận câu trả lời của ledger cho lệnh ĐẢO — nơi
+     * không có gì đảm bảo event tới đúng một lần hay đúng thứ tự:
+     * <ul>
+     *   <li>{@code resolved_at IS NULL} — ca đã chốt thì không ghi tiếp (ADR-021 A5);</li>
+     *   <li>{@code failure_code = :expectedCode} — một bản giao lại của cùng lời từ chối gặp mã đã
+     *       đổi và không làm gì, nên counter không tăng hai lần cho một sự cố.</li>
+     * </ul>
+     *
+     * @return 1 nếu vừa đổi, 0 nếu ca đã đóng hoặc đã ở mã khác — người gọi PHẢI phân biệt hai ca
+     */
+    @Modifying(clearAutomatically = true)
+    @Query(value = """
+            UPDATE transactions
+               SET failure_code = CAST(:failureCode AS VARCHAR),
+                   failure_reason = CAST(:failureReason AS TEXT),
+                   updated_at = now()
+             WHERE tenant_id = :tenantId AND id = :id
+               AND status = 'MANUAL_REVIEW' AND resolved_at IS NULL
+               AND failure_code = :expectedCode
+            """, nativeQuery = true)
+    int reclassifyOpenCase(@Param("tenantId") UUID tenantId,
+                           @Param("id") UUID id,
+                           @Param("expectedCode") String expectedCode,
+                           @Param("failureCode") String failureCode,
+                           @Param("failureReason") String failureReason);
+
     @Modifying
     @Query(value = """
             INSERT INTO transactions

@@ -102,6 +102,8 @@ public class SagaService {
     private final Counter topupResultConflicts;
     private final Counter topupRefundsStarted;
     private final Counter topupRefundsFailed;
+    /** Ledger từ chối một lệnh ĐẢO bút toán (ADR-022) — ví vẫn giữ khoản cộng nhầm, cần người. */
+    private final Counter reversalsRejected;
 
     public SagaService(TransactionRepository transactionRepository, SagaRepository sagaRepository,
                        LedgerCommandSender ledgerCommandSender, BankCommandSender bankCommandSender,
@@ -133,6 +135,9 @@ public class SagaService {
         this.topupRefundsStarted = meterRegistry.counter("walletflow.topup.refund_started");
         // Hoàn KHÔNG được: tiền của người dùng vẫn ở chỗ provider và chỉ người mới gỡ được.
         this.topupRefundsFailed = meterRegistry.counter("walletflow.topup.refund_failed");
+        // Mỗi lần tăng là một quyết định vận hành có 4-eyes vừa KHÔNG thực hiện được — hiếm, và mỗi
+        // lần đều cần người. Đăng ký lúc khởi động để series tồn tại ở 0.
+        this.reversalsRejected = meterRegistry.counter("walletflow.topup.reversal_rejected");
     }
 
     /**
@@ -479,6 +484,13 @@ public class SagaService {
 
     @Transactional
     public void onPosted(LedgerPostedEvent event) {
+        // REVERSAL mang cùng transactionId nhưng KHÁC type với giao dịch, nên `lockOurs` lọc nó ra và
+        // câu trả lời sẽ biến mất im lặng. Rẽ sớm: đây là câu trả lời cho một thao tác vận hành
+        // (ADR-022), không phải cho lệnh tiền gốc.
+        if (event.type() == EJournalType.REVERSAL) {
+            onReversalPosted(event);
+            return;
+        }
         Optional<Transaction> locked = lockOurs(event.transactionId(), event.type().name());
         if (locked.isEmpty()) {
             return;
@@ -560,6 +572,10 @@ public class SagaService {
 
     @Transactional
     public void onRejected(LedgerRejectedEvent event) {
+        if (event.type() == EJournalType.REVERSAL) {
+            onReversalRejected(event);
+            return;
+        }
         Optional<Transaction> locked = lockOurs(event.transactionId(), event.type().name());
         if (locked.isEmpty()) {
             return;
@@ -584,6 +600,100 @@ public class SagaService {
             case REFUNDING -> log.debug("Saga: {} đang hoàn tiền — bỏ qua LedgerRejected ({}) lặp",
                     txn.getId(), event.reasonCode());
         }
+    }
+
+    /**
+     * Ledger ĐÃ ĐẢO bút toán theo lệnh của người vận hành (ADR-022) — ca đóng ở đây, không phải lúc
+     * người duyệt bấm nút.
+     *
+     * <p>Đóng ở {@code FAILED} với {@code resolved_at}: lệnh nạp này thật sự không thành công — tiền
+     * đã hoàn cho người dùng, và nay phần ví được cộng nhầm cũng đã lấy lại. Phát
+     * {@code TransactionFailed} vì ca {@code MANUAL_REVIEW} chưa từng phát kết cục nào, và đối soát
+     * Phase 3 cần mọi giao dịch có một kết thúc.
+     */
+    private void onReversalPosted(LedgerPostedEvent event) {
+        Optional<Transaction> locked = lockTopup(event.transactionId());
+        if (locked.isEmpty()) {
+            return;
+        }
+        Transaction txn = locked.get();
+        if (txn.getResolvedAt() != null) {
+            // Hai ca rất khác nhau, đừng gộp: bản lặp của CHÍNH lần đóng này là bình thường, còn ca
+            // đã bị đóng bằng một đường khác (người vận hành vừa MARK_REFUNDED_MANUALLY trong lúc
+            // lệnh đảo đang bay) nghĩa là số dư ví vừa bị trừ thật mà kết cục ghi trên ca nói chuyện
+            // khác — phải có người nhìn.
+            if ("LEDGER_REVERSED".equals(txn.getFailureCode())) {
+                log.debug("Saga: bút toán đảo {} tới lặp cho ca {} đã đóng — bỏ qua",
+                        event.entryId(), txn.getId());
+            } else {
+                alreadyResolved(txn, "ledger ĐÃ ĐẢO bút toán " + event.entryId());
+            }
+            return;
+        }
+
+        int resolved = transactionRepository.resolveManualReview(txn.getTenantId(), txn.getId(),
+                ETransactionStatus.FAILED.name(), "LEDGER_REVERSED",
+                "Bút toán nạp đã được đảo bằng bút toán " + event.entryId()
+                        + " theo quyết định vận hành có 4-eyes");
+        if (resolved == 0) {
+            // Ca rời MANUAL_REVIEW giữa lúc gửi lệnh và lúc ledger trả lời. Bút toán đảo ĐÃ ghi rồi
+            // (ledger là nguồn sự thật), nên không ghi đè trạng thái — nhưng phải có người nhìn:
+            // số dư ví vừa đổi mà trạng thái giao dịch nói chuyện khác.
+            topupResultConflicts.increment();
+            log.error("Saga: ledger đã đảo bút toán ({}) cho {} nhưng ca không còn ở diện chờ người "
+                    + "(đang {}) — cần người đối chiếu số dư ví", event.entryId(), txn.getId(),
+                    txn.getStatus());
+            return;
+        }
+        sagaRepository.close(txn.getTenantId(), txn.getId(), "FAILED");
+        outboxPublisher.publish(
+                WalletTopics.EVT_TXN_FAILED,
+                notifyKey(txn),
+                stableEventId("txn-failed", txn.getId()),
+                "TransactionFailed",
+                new TransactionFailedEvent(txn.getId(), txn.getType(), txn.getInitiatedBy(),
+                        txn.getFromWallet(), txn.getToWallet(), txn.getAmountMinor(),
+                        txn.getCurrency(), "LEDGER_REVERSED"));
+        log.warn("Saga: ca {} đóng — bút toán nạp đã được đảo bằng {}", txn.getId(), event.entryId());
+    }
+
+    /**
+     * Ledger TỪ CHỐI lệnh đảo (ADR-022). Ca ở lại hàng đợi — đây là lý do {@code reverseLedgerEntry}
+     * cố ý không đóng ca lúc duyệt.
+     *
+     * <p>Ca thường gặp nhất là {@code INSUFFICIENT_FUNDS}: người dùng đã tiêu mất số tiền được cộng
+     * nhầm. Ledger từ chối là ĐÚNG — số dư âm là một trạng thái không hệ thống nào ở đây xử lý được,
+     * và tạo ra nó để "sổ sách cho đẹp" là đổi một vấn đề kế toán lấy một vấn đề vận hành lớn hơn.
+     * Việc thu hồi phần đó nằm ngoài phạm vi máy móc: nó là một khoản phải thu.
+     */
+    private void onReversalRejected(LedgerRejectedEvent event) {
+        Optional<Transaction> locked = lockTopup(event.transactionId());
+        if (locked.isEmpty()) {
+            return;
+        }
+        Transaction txn = locked.get();
+        if (alreadyResolved(txn, "ledger TỪ CHỐI đảo bút toán (" + event.reasonCode() + ")")) {
+            return;
+        }
+        // Câu UPDATE tự mang điều kiện thay vì tin vào ảnh chụp entity: `LedgerResultListener` cố ý
+        // không có bảng dedup, và posted/rejected đi trên HAI topic không có thứ tự. Một bản giao lại
+        // của lời từ chối này — hoặc một lời từ chối cũ tới sau khi lệnh đảo đã thành công — gặp mã
+        // đã đổi và không làm gì. Chỉ đếm khi thật sự ghi được, nếu không alert ReversalRejected
+        // (mức page) sẽ kêu nhiều lần cho đúng một sự cố.
+        int reclassified = transactionRepository.reclassifyOpenCase(txn.getTenantId(), txn.getId(),
+                ResolutionService.REVERSAL_SENT, ResolutionService.REVERSAL_REJECTED,
+                "Ledger từ chối đảo bút toán (" + event.reasonCode() + "): " + event.reason()
+                        + ". Ví vẫn đang giữ khoản được cộng nhầm.");
+        if (reclassified == 0) {
+            log.warn("Saga: bỏ qua lời từ chối đảo bút toán ({}) cho {} — ca không còn chờ câu trả lời "
+                    + "đó (đang {} / {})", event.reasonCode(), txn.getId(), txn.getStatus(),
+                    txn.getFailureCode());
+            return;
+        }
+        reversalsRejected.increment();
+        sagaRepository.close(txn.getTenantId(), txn.getId(), "MANUAL_REVIEW");
+        log.error("Saga: ledger TỪ CHỐI đảo bút toán cho {} ({}) — ví vẫn giữ khoản cộng nhầm, "
+                + "ca ở lại hàng đợi", txn.getId(), event.reasonCode());
     }
 
     /**

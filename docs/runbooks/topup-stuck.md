@@ -86,6 +86,8 @@ docker exec wf-postgres psql -U walletflow -d ledgerdb -c "
 | `REFUND_NO_RESPONSE` | Lệnh hoàn gửi đủ số lần mà không có hồi âm | E |
 | `REFUND_POSTED_CONFLICT` | Ledger ghi sổ TRONG KHI đang hoàn tiền | E |
 | `REFUND_AMOUNT_MISMATCH` | Xác nhận hoàn lệch số tiền/ví so với lần nạp | E |
+| `REVERSAL_SENT` | Đã duyệt đảo bút toán, đang chờ ledger trả lời | G |
+| `REVERSAL_REJECTED` | Ledger **từ chối** đảo — ví vẫn giữ khoản cộng nhầm | G |
 
 ## A — Ledger từ chối ghi sổ (tiền đã thu)
 
@@ -292,6 +294,58 @@ không nhẹ hơn.
 3. Ca thứ ba: không cần làm gì, ghi nhận để đếm.
 4. Mọi ca: tìm nguyên nhân gốc — lệnh hoàn tự động đáng lẽ phải dừng trước khi người vận hành chốt.
    Kiểm `TOPUP_REFUND_ENABLED` và phiên bản Flyway của mọi instance ledger.
+
+## G — Đảo bút toán (`REVERSAL`)
+
+Chỉ dùng cho **đúng một ca**: `REFUND_POSTED_CONFLICT` ở mục E bước 2 — ví đã được cộng VÀ tiền cũng
+đã hoàn cho người dùng. Mọi ca khác không có bút toán nào để đảo (ADR-021 A1); đừng dùng đường này
+"cho chắc".
+
+**Cách làm** (thay cho "mở issue, chờ 2.5" của bản cũ):
+
+1. `POST /api/v1/admin/transactions/{id}/resolve` với `action: "REVERSE_LEDGER_ENTRY"` và `reason`
+   giải thích được. Vai `OPS` hoặc `ADMIN`.
+2. Một `ADMIN` **khác** duyệt: `POST /api/v1/admin/transactions/resolutions/{requestId}/decision`.
+3. Hệ thống gửi lệnh đảo sang ledger. **Ca chưa đóng ở bước này** — nó chuyển sang `REVERSAL_SENT`.
+4. Khi ledger trả lời, ca tự đóng ở `LEDGER_REVERSED` (xong) hoặc quay lại hàng đợi với
+   `REVERSAL_REJECTED`.
+
+**Lời từ chối ở bước 1 nói đúng vấn đề, đọc kỹ thay vì thử lại:**
+
+| Mã | Nghĩa | Làm gì |
+|---|---|---|
+| `CONTEXT_UNAVAILABLE` | Không hỏi được ledger hoặc bank-adapter | **Đừng đoán.** Chờ service hồi rồi làm lại — đảo mà không xác minh là tạo ra mất mát thứ hai |
+| `REFUND_NOT_CONFIRMED` | Chưa có lần hoàn nào `SUCCEEDED` ở provider | Đảo lúc này là rút tiền khỏi ví trong khi khách **chưa** được trả lại. Xác nhận lần hoàn trước (mục E) |
+| `NO_ENTRY_TO_REVERSE` | Ledger chưa ghi bút toán nạp nào | Ca này không phải `REFUND_POSTED_CONFLICT` thật — phân loại lại |
+| `ALREADY_REVERSED` | Bút toán đã được đảo rồi | Đọc lại ca; nhiều khả năng ai đó vừa xử lý xong |
+| `NOT_A_POSTED_CONFLICT` | `failure_code` không phải `REFUND_POSTED_CONFLICT` | Đúng như tên — dùng mục tương ứng với mã thật |
+
+**`REVERSAL_REJECTED` — ledger từ chối đảo.** Alert `ReversalRejected`. Gần như luôn là
+`INSUFFICIENT_FUNDS`: người dùng đã **tiêu mất** khoản được cộng nhầm.
+
+Ledger từ chối là ĐÚNG, đừng tìm cách ép nó ghi. Số dư âm là trạng thái không nơi nào trong hệ thống
+xử lý được (ADR-022 §4), và sửa tay để "lấy lại cho bằng được" sẽ phá một bất biến để che một khoản
+lỗ. Khoản đó là **một khoản phải thu**, không phải một bút toán: mở issue mức nghiêm trọng, ghi rõ
+số tiền và ví, rồi xử lý theo quy trình thu hồi. Ca ở lại hàng đợi là đúng — nó chưa xong.
+
+**Thử lại sau khi `REVERSAL_REJECTED`** (ví được nạp lại tiền, nay đảo được): đề xuất lại bằng chính
+đường trên, **không cần sửa DB**. Hệ thống hỏi lại ledger và provider từ đầu, nên nếu bút toán đã bị
+đảo trong lúc đó thì bạn nhận `ALREADY_REVERSED` thay vì đảo lần hai.
+
+**`REVERSAL_SENT` đứng quá lâu (> vài phút).** Lệnh đảo mất trên đường và **không có retry tự động**
+(ADR-022 §5 — đánh đổi có chủ ý). Kiểm outbox và DLT trước (`outbox-stalled.md`, `dlt-not-empty.md`).
+Khi đã chắc lệnh cũ không bao giờ tới nơi, gỡ mã để đề xuất lại được:
+
+```bash
+docker exec wf-postgres psql -U walletflow -d txndb -c "
+  UPDATE transactions SET failure_code = 'REFUND_POSTED_CONFLICT'
+   WHERE id = '<id>' AND failure_code = 'REVERSAL_SENT';"
+```
+
+Đây là ca **duy nhất** ở mục này còn phải mở `psql`, và chỉ vì ta không phân biệt được "lệnh mất"
+với "lệnh đang trên đường". Nếu lệnh cũ tới sau đó thì vẫn an toàn: ledger idempotent theo
+`uk_journal_one_reversal`, nên hai lệnh cùng tới cũng chỉ ra **một** bút toán đảo, và lời từ chối
+đến muộn không kéo được ca đã đóng ngược về hàng đợi.
 
 ## Sau sự cố
 
