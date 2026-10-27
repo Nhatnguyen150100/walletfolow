@@ -12,6 +12,8 @@ import com.walletflow.transaction.services.SagaService;
 import com.walletflow.transaction.support.FakeWalletDirectory;
 import com.walletflow.transaction.support.FakeWalletDirectoryConfig;
 import com.walletflow.transaction.support.SagaFixture;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -95,6 +97,8 @@ class AdminResolveIT {
     SagaService sagaService;
     @Autowired
     AuditWriter auditWriter;
+    @Autowired
+    MeterRegistry meterRegistry;
 
     private UUID ops;
     private UUID admin;
@@ -360,6 +364,81 @@ class AdminResolveIT {
     }
 
     @Test
+    @DisplayName("⭐ Chốt một ca ĐANG Ở ĐƯỜNG HOÀN TIỀN rồi LedgerPosted tới muộn: ca vẫn ĐÓNG, không bị mở lại")
+    void chot_roi_thi_ledger_posted_muon_khong_mo_lai_ca_dang_hoan() {
+        // Khác test trên ở ĐÚNG MỘT điểm: saga đứng ở BANK_REFUND thay vì POST_JOURNAL — hình dạng
+        // thật của mọi ca REFUND_* (ADR-020). Chính cột đó làm `onPosted` rẽ sang nhánh
+        // `postedWhileRefunding` và thoát ra TRƯỚC khi chạm hàng rào `alreadyResolved`.
+        UUID txn = needsReviewRefunding("REFUND_DECLINED");
+        UUID requestId = propose(txn, ops, "OPS", "Hoàn tay qua portal", "VNP-RF-9");
+        decide(requestId, admin, "ADMIN", true, null);
+        assertThat(txnRow(txn).get("status")).as("tiền đề: ca đã được chốt").isEqualTo("FAILED");
+        double conflictsBefore = counter("walletflow.topup.result_conflict");
+        double reviewsBefore = counter("walletflow.topup.manual_review");
+
+        TenantContext.runWith(TENANT, () -> sagaService.onPosted(
+                SagaFixture.topupPosted(accepted(txn))));
+
+        assertThat(txnRow(txn).get("status"))
+                .as("ADR-021 A5: saga KHÔNG BAO GIỜ ghi tiếp vào một ca người vận hành đã chốt, bất kể "
+                        + "event nào tới và ca đang ở trạng thái nào. Mở lại ca này đưa nó về hàng đợi "
+                        + "như thể chưa ai xử lý — người trực kế tiếp sẽ hoàn tay LẦN HAI số tiền đã hoàn")
+                .isEqualTo("FAILED");
+        assertThat(txnRow(txn).get("failure_code"))
+                .as("mã phải giữ nguyên kết cục người vận hành đã ghi. Bị đổi thành "
+                        + "REFUND_POSTED_CONFLICT nghĩa là lần chốt đã bị xoá khỏi lịch sử của ca")
+                .isEqualTo("REFUNDED_MANUALLY");
+        assertThat(txnRow(txn).get("resolved_at")).isNotNull();
+        // Kiểm cả hàng saga: một bản sửa nửa vời (chặn ghi `transactions`, vẫn ghi `saga_state`) để
+        // lại hai hàng nói hai chuyện khác nhau — đúng thứ sinh ra SAGA_STATE_DESYNC về sau.
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT step_status FROM saga_state WHERE transaction_id = ?", String.class, txn))
+                .isEqualTo("FAILED");
+        // Tín hiệu DUY NHẤT còn lại cho ca này sau khi hàng rào chặn: ca không quay vào hàng đợi nữa,
+        // nên nếu counter này cũng im thì sự cố "ví được cộng VÀ tiền đã hoàn tay" trôi qua không ai thấy.
+        assertThat(counter("walletflow.topup.result_conflict") - conflictsBefore).isEqualTo(1);
+        assertThat(counter("walletflow.topup.manual_review") - reviewsBefore)
+                .as("ca đã chốt KHÔNG được tính là một ca cần người xử lý lần nữa")
+                .isZero();
+    }
+
+    @Test
+    @DisplayName("⭐ Chốt xong rồi lệnh hoàn TỰ ĐỘNG mới xong: không ghi đè ca, nhưng phải KÊU — tiền đã về hai lần")
+    void chot_roi_thi_hoan_tu_dong_xong_muon_van_keu() {
+        // Ca thật: REFUND_NO_RESPONSE (job quét bỏ cuộc) → người vận hành hoàn tay qua portal → rồi
+        // lệnh hoàn tự động vẫn đang chạy ở bank-adapter hoàn xong thật. Người dùng nhận tiền HAI LẦN.
+        UUID txn = needsReviewRefunding("REFUND_NO_RESPONSE");
+        UUID requestId = propose(txn, ops, "OPS", "Hoàn tay qua portal", "VNP-RF-10");
+        decide(requestId, admin, "ADMIN", true, null);
+        double conflictsBefore = counter("walletflow.topup.result_conflict");
+
+        TenantContext.runWith(TENANT, () -> sagaService.onBankCompleted(
+                SagaFixture.refundCompleted(accepted(txn))));
+
+        assertThat(txnRow(txn).get("status")).isEqualTo("FAILED");
+        assertThat(counter("walletflow.topup.result_conflict") - conflictsBefore)
+                .as("trước khi có hàng rào, ca này rơi vào nhánh default của onRefundCompletedLate "
+                        + "(trạng thái đã là FAILED chứ không còn MANUAL_REVIEW) và chỉ để lại log.debug")
+                .isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("Chốt xong rồi provider từ chối lệnh hoàn: không ghi đè ca đã đóng, vẫn để lại dấu")
+    void chot_roi_thi_loi_tu_choi_hoan_toi_muon_khong_ghi_de() {
+        UUID txn = needsReviewRefunding("REFUND_NO_RESPONSE");
+        UUID requestId = propose(txn, ops, "OPS", "Hoàn tay qua portal", "VNP-RF-11");
+        decide(requestId, admin, "ADMIN", true, null);
+        double conflictsBefore = counter("walletflow.topup.result_conflict");
+
+        TenantContext.runWith(TENANT, () -> sagaService.onBankFailed(
+                SagaFixture.refundFailed(accepted(txn), "REFUND_UNSUPPORTED")));
+
+        assertThat(txnRow(txn).get("failure_code")).isEqualTo("REFUNDED_MANUALLY");
+        assertThat(txnRow(txn).get("status")).isEqualTo("FAILED");
+        assertThat(counter("walletflow.topup.result_conflict") - conflictsBefore).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("⭐ Chốt xong rồi BankCompleted(CHARGE) lặp: KHÔNG gửi lệnh hoàn lần hai")
     void chot_roi_thi_bank_completed_lap_khong_hoan_lan_hai() {
         UUID txn = needsReview("ACCOUNT_CLOSED");
@@ -468,6 +547,21 @@ class AdminResolveIT {
     }
 
     private UUID needsReviewIn(UUID tenant, String failureCode) {
+        return needsReviewIn(tenant, failureCode, "POST_JOURNAL");
+    }
+
+    /**
+     * Ca đã vào ĐƯỜNG HOÀN TIỀN: saga đứng ở {@code BANK_REFUND}, không phải {@code POST_JOURNAL}.
+     *
+     * <p>Đây là hình dạng thật của mọi ca {@code REFUND_*} (ADR-020): lệnh hoàn đã được gửi rồi mới
+     * hỏng. Phân biệt với {@code POST_JOURNAL} là quan trọng vì {@code SagaService.onPosted} rẽ
+     * nhánh theo đúng cột này — {@code refundStarted()} đọc {@code current_step}.
+     */
+    private UUID needsReviewRefunding(String failureCode) {
+        return needsReviewIn(TENANT, failureCode, "BANK_REFUND");
+    }
+
+    private UUID needsReviewIn(UUID tenant, String failureCode, String currentStep) {
         UUID id = UUID.randomUUID();
         UUID wallet = wallets.add(tenant, UUID.randomUUID(), ECurrency.VND, EWalletStatus.ACTIVE);
         jdbcTemplate.update("""
@@ -480,8 +574,8 @@ class AdminResolveIT {
         jdbcTemplate.update("""
                 INSERT INTO saga_state (transaction_id, tenant_id, current_step, step_status,
                                         attempt_count, command_event_id, deadline_at, updated_at)
-                VALUES (?, ?, 'POST_JOURNAL', 'MANUAL_REVIEW', 1, ?, now(), now())
-                """, id, tenant, UUID.randomUUID());
+                VALUES (?, ?, ?, 'MANUAL_REVIEW', 1, ?, now(), now())
+                """, id, tenant, currentStep, UUID.randomUUID());
         return id;
     }
 
@@ -523,5 +617,11 @@ class AdminResolveIT {
 
     private Map<String, Object> txnRow(UUID txn) {
         return jdbcTemplate.queryForMap("SELECT * FROM transactions WHERE id = ?", txn);
+    }
+
+    /** 0 khi counter chưa từng được đăng ký — khác với "đã đăng ký và đang ở 0". */
+    private double counter(String name) {
+        Counter counter = meterRegistry.find(name).counter();
+        return counter == null ? 0 : counter.count();
     }
 }

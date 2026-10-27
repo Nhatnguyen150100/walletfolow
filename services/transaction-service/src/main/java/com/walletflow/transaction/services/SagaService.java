@@ -241,6 +241,15 @@ public class SagaService {
             return;
         }
         Transaction txn = locked.get();
+        // Hàng rào đứng ngay sau khoá, trước mọi nhánh rẽ (ADR-021 A5 *Đính chính*). Ca cần nó: người
+        // vận hành chốt một ca REFUND_NO_RESPONSE bằng cách hoàn tay, rồi lệnh hoàn tự động — vẫn đang
+        // chạy ở bank-adapter — hoàn xong thật. Tiền về HAI LẦN. Không có hàng rào thì ca này rơi vào
+        // nhánh `default` của onRefundCompletedLate (trạng thái đã là FAILED, không còn MANUAL_REVIEW)
+        // và chỉ để lại một dòng debug.
+        if (alreadyResolved(txn, "provider " + event.provider() + " xác nhận ĐÃ HOÀN (ref "
+                + event.providerRef() + ")")) {
+            return;
+        }
         if (txn.getStatus() != ETransactionStatus.REFUNDING) {
             onRefundCompletedLate(txn, event);
             return;
@@ -302,6 +311,12 @@ public class SagaService {
             return;
         }
         Transaction txn = locked.get();
+        // Hàng rào ngay sau khoá, cùng lý do như onRefundCompleted: ca đã chốt không được ghi tiếp, và
+        // một lời từ chối hoàn tới sau khi người đã hoàn tay vẫn là thông tin cần người biết.
+        if (alreadyResolved(txn, "provider " + event.provider() + " từ chối lệnh hoàn ("
+                + event.failureCode() + ")")) {
+            return;
+        }
         if (txn.getStatus() != ETransactionStatus.REFUNDING) {
             log.debug("Saga: bỏ qua lời từ chối hoàn tiền cho {} đang {} — không có lần hoàn nào đang chờ",
                     txn.getId(), txn.getStatus());
@@ -470,16 +485,18 @@ public class SagaService {
         }
         Transaction txn = locked.get();
 
+        // Đứng TRƯỚC `refundStarted`, không phải sau: một hàng rào nằm sau một nhánh `return` thì
+        // không còn phủ mọi đường. Ca từng lọt qua và vì sao nó nguy hiểm: ADR-021 A5 *Đính chính*.
+        if (alreadyResolved(txn, "ledger GHI SỔ bút toán " + event.entryId())) {
+            return;
+        }
+
         // Hàng rào TRƯỚC máy trạng thái: một giao dịch đã vào đường hoàn tiền thì không bao giờ được
         // COMPLETED, bất kể nó đang đứng ở đâu. Kiểm theo trạng thái thôi là không đủ — hoàn xong thì
         // trạng thái là FAILED, và `case FAILED` bên dưới cho "ledger thắng" (đúng với chuyển tiền,
         // nhưng ở đây là vừa cộng ví vừa đã trả tiền về thẻ, và còn báo THÀNH CÔNG cho người dùng).
         if (refundStarted(txn)) {
             postedWhileRefunding(txn, event);
-            return;
-        }
-
-        if (alreadyResolved(txn, "ledger GHI SỔ bút toán " + event.entryId())) {
             return;
         }
 

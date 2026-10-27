@@ -145,10 +145,13 @@ Nguyên nhân gần như luôn là trạng thái tài khoản: ví bị đóng g
 
 ## B — Hai bên nói lệch nhau
 
-`BANK_AMOUNT_MISMATCH` / `BANK_RESULT_CONFLICT` hoặc alert `TopupResultConflict` không kèm manual review.
+`BANK_AMOUNT_MISMATCH` / `BANK_RESULT_CONFLICT`.
 
 **Đây là bug, không phải sự cố vận hành.** Số tiền ta gửi đi và số tiền provider xác nhận không được
 phép lệch; một lần thu không được phép vừa thất bại vừa thành công.
+
+> ⚠️ Alert `TopupResultConflict` **không kèm** hàng nào trong hàng đợi thì KHÔNG thuộc mục này —
+> xem mục **F**. Đó là ca xung đột trên một giao dịch người vận hành ĐÃ CHỐT, và nó nặng hơn mục B.
 
 1. Lấy nguyên văn hai phía:
    ```bash
@@ -259,6 +262,36 @@ chiếu với portal trước khi quyết; mở issue như mục B.
 **Giao dịch `REFUNDING` mà `saga_state.current_step` không phải `BANK_REFUND`** (hoặc ngược lại): job quét
 không gửi lệnh nào và chuyển `SAGA_STATE_DESYNC`. Gần như luôn là hệ quả của việc mở lại ca theo mục D mà
 đặt nhầm bước. Đặt lại cho hai hàng **khớp nhau** rồi mở lại; đừng chỉ sửa một hàng.
+
+## F — Xung đột trên một ca ĐÃ CHỐT (không có hàng nào trong hàng đợi)
+
+**Hình dạng:** alert `TopupResultConflict` kêu, nhưng `GET /api/v1/admin/transactions/manual-review`
+không có hàng nào mới, và không `failure_code` nào đổi. Dấu duy nhất là một dòng log mức ERROR dạng
+`… mà người vận hành đã CHỐT lúc …`.
+
+**Vì sao nó trông như vậy:** saga cố ý KHÔNG ghi gì vào một ca đã chốt (ADR-021 A5) — ghi lại là mở
+đúng cửa hoàn-tiền-hai-lần. Nên ca không quay vào hàng đợi, và bạn phải tìm nó bằng log chứ không
+bằng API. Đổi lại, tín hiệu nhẹ hơn mục A/E một bậc (`ticket`, cửa sổ 1 giờ) trong khi hậu quả thì
+không nhẹ hơn.
+
+**Ba ca sinh ra nó, cả ba đều là tiền đã đi hai lần:**
+
+| Log nói | Nghĩa là |
+|---|---|
+| `ledger GHI SỔ bút toán …` | Ví **được cộng** sau khi ta đã hoàn tay → mất tiền của công ty |
+| `provider … xác nhận ĐÃ HOÀN …` | Lệnh hoàn tự động hoàn xong **sau** khi ta đã hoàn tay → khách nhận hai lần |
+| `provider … từ chối lệnh hoàn …` | Vô hại: lời từ chối tới sau khi ta đã tự hoàn tay rồi |
+
+**Làm gì:**
+
+1. Lấy `transactionId` từ log, mở `GET /api/v1/admin/transactions/{id}` — ô `ledger` và `provider`
+   cho thấy bút toán và các lần hoàn (2.5 PR3). **Đọc ô `unavailable` trước** (xem đầu runbook).
+2. Hai ca đầu: đối chiếu số tiền thật đã đi ở cả hai phía, rồi mở issue mức nghiêm trọng. **Không**
+   gỡ `resolved_at` để "mở lại ca" — trigger chặn, và gỡ được cũng là mở lại cửa hoàn hai lần.
+   Việc thu hồi là một quyết định có hai người ký, không phải một câu `UPDATE`.
+3. Ca thứ ba: không cần làm gì, ghi nhận để đếm.
+4. Mọi ca: tìm nguyên nhân gốc — lệnh hoàn tự động đáng lẽ phải dừng trước khi người vận hành chốt.
+   Kiểm `TOPUP_REFUND_ENABLED` và phiên bản Flyway của mọi instance ledger.
 
 ## Sau sự cố
 
