@@ -24,7 +24,7 @@ Hệ thống ví điện tử phân tán xây bằng **Java 21 · Spring Boot 3.
 | ledger-service | 8083 | Sổ cái double-entry (nguồn sự thật) | ✅ |
 | wallet-service | 8082 | Read model số dư (CQRS), dựng lại được từ sổ cái | ✅ |
 | transaction-service | 8084 | Nhận lệnh chuyển idempotent + Saga orchestration | ✅ |
-| bank-adapter | 8085 | Cổng thanh toán: thu tiền nạp ví idempotent, Resilience4j, VNPay sandbox — [ADR-016](docs/adr/ADR-016-bank-adapter-charge-model.md), [ADR-017](docs/adr/ADR-017-vnpay-session-expiry-log-masking.md) | 🟡 Phase 2 (2.2a mock ✅; 2.2b VNPay + hạn phiên + masking log) |
+| bank-adapter | 8085 | Cổng thanh toán: thu tiền nạp ví idempotent, nhận webhook, hoàn tiền, Resilience4j, VNPay sandbox — [ADR-016](docs/adr/ADR-016-bank-adapter-charge-model.md), [ADR-017](docs/adr/ADR-017-vnpay-session-expiry-log-masking.md), [ADR-018](docs/adr/ADR-018-webhook-ingestion.md), [ADR-020](docs/adr/ADR-020-topup-compensation-refund.md) | 🟡 Phase 2 (2.2 ✅, 2.3 webhook ✅, hạ tầng hoàn tiền ✅; `payout` chưa có — chờ 2.1 HOLD) |
 | notification-service | 8086 | Thông báo kết quả | ✂️ gộp vào webhook khách hàng (Phase 5.1) — [ADR-015](docs/adr/ADR-015-product-positioning.md) |
 
 **Hạ tầng:** PostgreSQL (DB-per-service), Redis, Apache Kafka, Jaeger, Prometheus + Grafana.

@@ -4,7 +4,8 @@
 > Master plan trả lời *"xây cái gì để học được bài toán khó"*.
 > Tài liệu này trả lời *"còn thiếu gì để tiền thật chạy qua được, và làm theo thứ tự nào"*.
 >
-> **Ngày:** 2026-10-16 · **Trạng thái code:** Phase 0 đóng · Phase 1 đang làm (1.0, 1.0b, 1.1 xong; 1.2a, 1.2b review)
+> **Ngày:** 2026-10-26 · **Trạng thái code:** Phase 0 đóng · Phase 1 đóng · Phase 2 đang làm
+> (2.2, 2.3, 2.4 top-up, 2.5 PR1+PR2 xong; còn 2.5 PR3 — 2.1 HOLD và phần rút tiền bị chặn ngoài code)
 
 ---
 
@@ -777,7 +778,7 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 > Tương ứng M4 của master plan, cộng phần webhook (master plan chưa đề cập nhưng là **phần khó
 > nhất trong thực tế**).
 
-### Trạng thái Phase 2 (cập nhật 2026-10-24)
+### Trạng thái Phase 2 (cập nhật 2026-10-26)
 
 | Mục | Trạng thái | PR |
 |---|---|---|
@@ -794,8 +795,9 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.4c (PR2) VNPay refund thật (`vnp_Command=refund`) | ⛔ chặn phía VNPay — merchant sandbox chưa dùng được `refund`; mọi ca vẫn hoàn tay qua portal | |
 | 2.5 (PR1) Khu vực vận hành — hàng đợi cần can thiệp, `audit_events` ở txndb, nền RBAC ADMIN/OPS/AUDITOR ([ADR-021](adr/ADR-021-admin-review-audit.md)) | ✅ | #39 |
 | 2.5 (PR2) Xử lý ca — `POST /resolve` đánh dấu đã hoàn tay + **4-eyes** (GAP-A4), audit CÙNG transaction với việc ghi tiền ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments*) | ✅ | #40 |
-| 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider + bút toán qua `/internal`; mở đường cho `REVERSAL` (cần `entryId`, xem ADR-021 *Amendments* A1) | ⬜ | |
-| (DoD Phase 2) `ChaosProviderIT` (Toxiproxy trước `querydr` của VNPay giả) — provider chết 5 phút: không mất tiền, không saga treo; `StuckSagaIT` cho điểm kết thúc phía saga ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*) | 🟡 `feat/phase-2-chaos-provider` | |
+| 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider (đã mask) + bút toán qua `/internal`, kèm nợ tenant của `SagaRepository`. **Chỉ đọc** | ⬜ | |
+| 2.5 (PR4) `REVERSAL` cho `REFUND_POSTED_CONFLICT` — đụng tiền, cần `entryId` + bằng chứng từ bank-adapter (ADR-021 *Amendments* A1), tách khỏi PR3 vì PR3 không đụng tiền | ⬜ | |
+| (DoD Phase 2) `ChaosProviderIT` (Toxiproxy trước `querydr` của VNPay giả) — provider chết 5 phút: không mất tiền, không saga treo; `StuckSagaIT` cho điểm kết thúc phía saga ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*) | ✅ | #41 |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 
 Đường găng nạp tiền: **2.2a → 2.2b → 2.3 → 2.4 (top-up)**. DoD ô "rút tiền" chưa đạt được khi 2.1 còn bị
@@ -939,13 +941,26 @@ ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định 
 
 ### ✅ Definition of Done — Phase 2
 
-- [ ] Nạp tiền thật qua sandbox VNPay/Stripe → số dư tăng đúng
-- [ ] Rút tiền → tiền bị giữ, không tiêu được, payout fail thì hoàn đủ
-- [ ] Webhook trùng/muộn/sai chữ ký đều xử lý đúng
+- [ ] Nạp tiền thật qua sandbox VNPay/Stripe → số dư tăng đúng — **code xong, chưa có bằng chứng**:
+  `VnPayChargeIT` chạy với VNPay giả trong process, chưa ai đi hết một lần nạp trên stack thật qua
+  sandbox thật. Đóng ô này bằng một lần E2E tay như 1.5a, có ảnh chụp/log lưu lại.
+- [ ] Rút tiền → tiền bị giữ, không tiêu được, payout fail thì hoàn đủ — ⛔ chặn bởi 2.1 HOLD
+  (chờ kết luận pháp lý, [ADR-015](adr/ADR-015-product-positioning.md)); `payout` chưa có trong
+  `PaymentProvider`.
+- [x] Webhook trùng/muộn/sai chữ ký đều xử lý đúng — `WebhookIT` (`chu_ky_sai_thi_khong_ghi_gi`,
+  `noi_dung_bi_sua_sau_khi_ky_bi_tu_choi`, `webhook_trung_chi_ghi_mot_lan`,
+  `gui_song_song_cung_payload_chi_ghi_mot_hang`) + `WebhookWorkerIT`
+  (`webhook_thanh_cong_toi_muon_khong_ghi_de_ma_keu`,
+  `webhook_noi_thanh_cong_ma_provider_noi_chua_thi_khong_ghi_tien`) ([ADR-018](adr/ADR-018-webhook-ingestion.md))
 - [x] Chaos test: provider chết 5 phút → không mất tiền, không saga treo — `ChaosProviderIT` +
   `StuckSagaIT.lenh_nap_het_luot_o_buoc_thu_thi_chuyen_nguoi_xu_ly`; "không treo" = trạng thái cuối hoặc
   `MANUAL_REVIEW` có alert ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*)
-- [ ] Không có thao tác đụng tiền nào không để lại audit
+- [x] Không có thao tác đụng tiền nào không để lại audit — `POST /resolve` ghi audit `MANDATORY`,
+  **cùng transaction** với việc ghi tiền: audit hỏng ⇒ tiền không được ghi (`AdminResolveIT`
+  — "Audit hỏng ⇒ TIỀN KHÔNG ĐƯỢC GHI", "Đường audit của thao tác đụng tiền là MANDATORY")
+  ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments* A4).
+  Còn hở: `resolution_requests` chưa append-only nên một câu SQL tay vẫn sửa được quyết định
+  (ADR-021 *Amendments* A7) — khác `audit_events` và `resolved_at`, hai bảng đã có trigger chặn.
 
 ### Nợ mang sang (phát hiện khi làm Phase 2)
 
@@ -953,7 +968,7 @@ ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định 
   — lệch chuẩn ADR-010 ("mọi query lọc theo tenant"). Không khai thác được hôm nay (`transaction_id` là
   UUID sinh phía ta và người gọi đều đã đọc hàng dưới khoá theo tenant), nên không chặn merge; nhưng nó là
   đúng loại giả định lặng lẽ sai đi khi có người thêm một đường gọi mới. Sửa cùng lúc cả ba, có test
-  cross-tenant — ghép vào 2.5 hoặc một PR vệ sinh riêng.
+  cross-tenant — **đã chốt ghép vào 2.5 PR3**.
 
 ---
 
