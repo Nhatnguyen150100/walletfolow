@@ -1,5 +1,6 @@
 package com.walletflow.bank.repositories;
 
+import com.walletflow.bank.dto.ProviderOperationRow;
 import com.walletflow.bank.entity.ProviderTransaction;
 import com.walletflow.common.event.EBankOperation;
 import org.springframework.data.jpa.repository.Modifying;
@@ -23,6 +24,47 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
 
     Optional<ProviderTransaction> findByTenantIdAndTransactionIdAndOperation(
             UUID tenantId, UUID transactionId, EBankOperation operation);
+
+    /**
+     * MỌI thao tác với provider thuộc một lệnh tiền, kèm câu trả lời thô — nguồn của
+     * {@code GET /internal/provider-transactions} mà người trực dùng để biết provider đã thu tiền của
+     * khách hay chưa (roadmap 2.5 PR3, ADR-021).
+     *
+     * <p>Native + projection vì {@code raw_response} không map trong entity, và không nên map: nó là
+     * một cột JSONB nặng chỉ cần ở đúng đường đọc này.
+     *
+     * <p>{@code CAST(... AS text)} trả về JSON đã được {@code jsonb} CHUẨN HOÁ lúc ghi — bỏ khoảng
+     * trắng, sắp lại thứ tự khoá, bỏ khoá trùng — chứ không phải nguyên văn byte provider gửi. Hệ quả
+     * phải biết: không dùng chuỗi này để kiểm lại chữ ký của provider. Muốn nguyên văn thì cột phải là
+     * {@code text}, và đó là một quyết định khác. Alias để trong nháy kép vì
+     * Postgres hạ chữ thường mọi định danh không trích dẫn — không có nháy kép thì {@code providerRef}
+     * thành {@code providerref} và projection không khớp được trường nào.
+     *
+     * <p>Dùng được {@code uk_provider_txn_tenant_txn_op (tenant_id, transaction_id, operation)} làm
+     * index: mệnh đề WHERE đúng là tiền tố của khoá, nên không cần thêm index nào cho đường này.
+     *
+     * <p>Sắp theo {@code created_at}: lần THU bao giờ cũng đứng trước lần HOÀN của chính nó, nên đọc
+     * từ trên xuống là đọc đúng trình tự câu chuyện. {@code id} chỉ để thứ tự tất định khi trùng mốc.
+     */
+    @Query(value = """
+            SELECT id,
+                   operation                   AS "operation",
+                   provider                    AS "provider",
+                   provider_ref                AS "providerRef",
+                   amount_minor                AS "amountMinor",
+                   currency                    AS "currency",
+                   status                      AS "status",
+                   failure_code                AS "failureCode",
+                   created_at                  AS "createdAt",
+                   updated_at                  AS "updatedAt",
+                   refund_of                   AS "refundOf",
+                   CAST(raw_response AS text)  AS "rawResponse"
+              FROM provider_transactions
+             WHERE tenant_id = :tenantId AND transaction_id = :transactionId
+             ORDER BY created_at, id
+            """, nativeQuery = true)
+    List<ProviderOperationRow> operationsOf(@Param("tenantId") UUID tenantId,
+                                            @Param("transactionId") UUID transactionId);
 
     /**
      * Tra lần thu từ mã tham chiếu của provider — đường DUY NHẤT suy ra tenant của một webhook, vì webhook

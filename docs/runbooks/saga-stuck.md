@@ -15,6 +15,17 @@ theo nó) và dùng `eventId` mới.
 
 ## Chẩn đoán — 3 phút
 
+> **Dùng API, đừng dùng `psql`.** Từ 2.5 PR3, `GET /api/v1/admin/transactions/{id}` (vai
+> `ADMIN`/`OPS`/`AUDITOR`) trả gộp bước 1 và 2: giao dịch + saga + ô `ledger` với bút toán đã ghi
+> (kèm `entryId`). Hàng đợi ở `GET /api/v1/admin/transactions/manual-review`. API để lại dấu vết
+> trong `audit_events`; `psql` thì không.
+>
+> ⚠️ Ô `ledger` **`null`** (tên `"ledger"` nằm trong `unavailable`) nghĩa là *không hỏi được ledger*,
+> KHÔNG phải "chưa ghi sổ" — cái sau là `entries: []`. Câu "ledger đã ghi sổ chưa" là câu quyết định
+> mọi bước phía dưới, nên gặp `null` thì hỏi lại hoặc rơi về `psql`, đừng đoán.
+>
+> Các câu `psql` giữ lại cho lúc transaction-service hỏng, và để đối chiếu.
+
 ```bash
 # 1. Các giao dịch đang chờ người xử lý
 docker exec wf-postgres psql -U walletflow -d txndb -c "

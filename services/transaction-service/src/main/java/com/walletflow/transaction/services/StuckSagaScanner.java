@@ -92,7 +92,7 @@ public class StuckSagaScanner {
     public int scan() {
         int handled = 0;
         while (handled < batchSize) {
-            AtomicReference<UUID> current = new AtomicReference<>();
+            AtomicReference<SagaState> current = new AtomicReference<>();
             try {
                 // Mỗi saga một transaction riêng: một saga lỗi không kéo cả lô rollback, và khoá hàng
                 // (SKIP LOCKED) được nhả ngay sau khi xử lý xong saga đó.
@@ -116,20 +116,21 @@ public class StuckSagaScanner {
      * rollback). Không làm vậy thì nó vẫn là saga quá hạn lâu nhất, đứng đầu hàng ở MỌI lượt quét, lỗi
      * lại, và mọi saga treo khác phía sau không bao giờ tới lượt — trong im lặng.
      */
-    private void postpone(UUID transactionId, RuntimeException failure) {
+    private void postpone(SagaState saga, RuntimeException failure) {
         scanFailures.increment();
-        log.error("Saga: xử lý saga {} lỗi — đẩy lùi hạn chót để không chặn các saga khác", transactionId, failure);
+        log.error("Saga: xử lý saga {} lỗi — đẩy lùi hạn chót để không chặn các saga khác",
+                saga.getTransactionId(), failure);
         transactionTemplate.executeWithoutResult(status ->
-                sagaRepository.postpone(transactionId, deadline.toSeconds()));
+                sagaRepository.postpone(saga.getTenantId(), saga.getTransactionId(), deadline.toSeconds()));
     }
 
-    private boolean handleNextOverdue(AtomicReference<UUID> current) {
+    private boolean handleNextOverdue(AtomicReference<SagaState> current) {
         Optional<SagaState> next = sagaRepository.lockNextOverdueAcrossTenants();
         if (next.isEmpty()) {
             return false;
         }
         SagaState saga = next.get();
-        current.set(saga.getTransactionId());
+        current.set(saga);
         TenantContext.runWith(saga.getTenantId(), () -> handle(saga));
         return true;
     }
@@ -157,7 +158,7 @@ public class StuckSagaScanner {
             // MANUAL_REVIEW phải đặt CẢ giao dịch về PROCESSING — xem runbook saga-stuck.md.)
             log.warn("Saga: {} còn SENT nhưng giao dịch là {} — đóng saga", saga.getTransactionId(),
                     found.map(t -> t.getStatus().name()).orElse("không tồn tại"));
-            sagaRepository.close(saga.getTransactionId(), "DONE");
+            sagaRepository.close(saga.getTenantId(), saga.getTransactionId(), "DONE");
             return;
         }
         Transaction txn = found.get();
@@ -173,7 +174,7 @@ public class StuckSagaScanner {
                     ETransactionStatus.MANUAL_REVIEW.name(), "SAGA_STATE_DESYNC",
                     "Giao dịch " + txn.getStatus() + " nhưng saga đứng ở bước " + saga.getCurrentStep()
                             + " — không gửi lại lệnh nào");
-            sagaRepository.close(txn.getId(), "MANUAL_REVIEW");
+            sagaRepository.close(txn.getTenantId(), txn.getId(), "MANUAL_REVIEW");
             manualReviews.increment();
             log.error("Saga: giao dịch {} đang {} nhưng saga ở bước {} — KHÔNG gửi lại lệnh nào, chuyển "
                     + "người xử lý", txn.getId(), txn.getStatus(), saga.getCurrentStep());
@@ -189,7 +190,7 @@ public class StuckSagaScanner {
         resend(saga, txn, newEventId);
         // Giãn dần: lần thử thứ n chờ n lần hạn chót — ledger đang quá tải thì không dội thêm
         long nextDeadline = deadline.toSeconds() * (saga.getAttemptCount() + 1L);
-        sagaRepository.recordRetry(txn.getId(), newEventId, nextDeadline);
+        sagaRepository.recordRetry(txn.getTenantId(), txn.getId(), newEventId, nextDeadline);
         retries.increment();
         log.warn("Saga: giao dịch {} quá hạn chưa có câu trả lời ở bước {} — gửi lại lần {} (eventId {})",
                 txn.getId(), saga.getCurrentStep(), saga.getAttemptCount() + 1, newEventId);
@@ -218,7 +219,7 @@ public class StuckSagaScanner {
                         ? ". Nguyên nhân phải hoàn: " + refundReason(txn) : "");
         transactionRepository.transition(txn.getTenantId(), txn.getId(),
                 ETransactionStatus.MANUAL_REVIEW.name(), silent.code(), why);
-        sagaRepository.close(txn.getId(), "MANUAL_REVIEW");
+        sagaRepository.close(txn.getTenantId(), txn.getId(), "MANUAL_REVIEW");
         manualReviews.increment();
         if (SagaService.STEP_BANK_REFUND.equals(saga.getCurrentStep())) {
             // Tiền của người dùng vẫn ở chỗ provider mà máy đã hết đường tự gỡ — đúng định nghĩa của

@@ -1,19 +1,27 @@
 package com.walletflow.transaction.services;
 
+import com.walletflow.common.bank.ProviderContext;
 import com.walletflow.common.exception.ResourceNotFoundException;
+import com.walletflow.common.ledger.TransactionEntries;
 import com.walletflow.common.tenant.TenantContext;
+import com.walletflow.transaction.client.LedgerEntriesClient;
+import com.walletflow.transaction.client.ProviderContextClient;
 import com.walletflow.transaction.dto.ManualReviewDetail;
 import com.walletflow.transaction.dto.ManualReviewItem;
+import com.walletflow.transaction.entity.SagaState;
 import com.walletflow.transaction.entity.Transaction;
 import com.walletflow.transaction.repositories.SagaRepository;
 import com.walletflow.transaction.repositories.TransactionRepository;
-import lombok.RequiredArgsConstructor;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -37,7 +45,6 @@ import java.util.UUID;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class AdminReviewService {
 
     /** Trần một trang. Hàng đợi khoẻ mạnh thì ngắn; dài tới mức này là đã có sự cố diện rộng. */
@@ -46,6 +53,31 @@ public class AdminReviewService {
     private final TransactionRepository transactionRepository;
     private final SagaRepository sagaRepository;
     private final AuditService auditService;
+    private final LedgerEntriesClient ledgerEntriesClient;
+    private final ProviderContextClient providerContextClient;
+    private final Counter ledgerUnavailable;
+    private final Counter bankUnavailable;
+
+    public AdminReviewService(TransactionRepository transactionRepository,
+                              SagaRepository sagaRepository,
+                              AuditService auditService,
+                              LedgerEntriesClient ledgerEntriesClient,
+                              ProviderContextClient providerContextClient,
+                              MeterRegistry meterRegistry) {
+        this.transactionRepository = transactionRepository;
+        this.sagaRepository = sagaRepository;
+        this.auditService = auditService;
+        this.ledgerEntriesClient = ledgerEntriesClient;
+        this.providerContextClient = providerContextClient;
+        // Suy giảm mềm (ADR-021 B2) đổi một lỗi ồn ào lấy một ô trống trên màn hình. Không đo thì một
+        // URL cấu hình sai sẽ làm MỌI lần xem thiếu ngữ cảnh, và không ai biết cho tới đúng lúc có sự cố
+        // thật — tức là đúng lúc công cụ này phải dùng được. Đăng ký lúc khởi động để series tồn tại ở 0
+        // (xem StuckSagaScanner): alert "tỉ lệ > 0 kéo dài" cần một đường 0 để so.
+        this.ledgerUnavailable = meterRegistry.counter("walletflow.admin.context_unavailable",
+                "service", ManualReviewDetail.SOURCE_LEDGER);
+        this.bankUnavailable = meterRegistry.counter("walletflow.admin.context_unavailable",
+                "service", ManualReviewDetail.SOURCE_BANK);
+    }
 
     public List<ManualReviewItem> queue(Operator actor, int limit) {
         int size = Math.clamp(limit, 1, MAX_PAGE_SIZE);
@@ -60,14 +92,21 @@ public class AdminReviewService {
     }
 
     /**
-     * Một ca, kèm trạng thái saga.
+     * Một ca, kèm trạng thái saga và ngữ cảnh từ ledger + bank-adapter (2.5 PR3, ADR-021 B1/B2).
      *
      * <p>Không giới hạn theo {@code initiated_by} như đường của khách hàng: người vận hành phải xem
      * được ca của bất kỳ ai TRONG TENANT của mình — đó chính là việc của họ. Ranh giới còn lại là
-     * tenant, và nó vẫn được giữ.
+     * tenant, và nó vẫn được giữ: hai client đều gắn tenant hiện tại vào lời gọi.
      *
      * <p>Trả 404 cho cả "không tồn tại" lẫn "của tenant khác", như mọi đường khác — và ghi dấu vết
      * cho cả hai ca đó trước khi ném, vì một chuỗi 404 liên tiếp chính là hình dạng của việc dò id.
+     * Ném TRƯỚC khi gọi sang hai service kia: một id không thuộc tenant này không được phép trở
+     * thành một truy vấn ở ledger hay bank-adapter.
+     *
+     * <p><b>Ba trạng thái, không phải hai.</b> Mỗi ô ngữ cảnh có thể là: có dữ liệu, rỗng (service
+     * trả lời và chưa có gì), hoặc {@code null} + tên trong {@code unavailable} (không hỏi được).
+     * Gộp hai cái sau là cách làm mất tiền của khách — xem ADR-021 B1 và runbook {@code
+     * topup-stuck.md}.
      */
     public ManualReviewDetail detail(Operator actor, UUID transactionId) {
         UUID tenantId = TenantContext.require();
@@ -77,10 +116,25 @@ public class AdminReviewService {
                             Map.of("reason", "NOT_FOUND_IN_TENANT"));
                     return new ResourceNotFoundException("Không tìm thấy giao dịch");
                 });
+        SagaState saga = sagaRepository.findByTenantIdAndTransactionId(tenantId, transactionId).orElse(null);
+
+        // Hai lời gọi HTTP NGOÀI mọi transaction DB — method này cố ý không có @Transactional.
+        Optional<TransactionEntries> ledger = ledgerEntriesClient.entriesOf(transactionId);
+        Optional<ProviderContext> provider = providerContextClient.contextOf(transactionId);
+
+        List<String> unavailable = new ArrayList<>(2);
+        if (ledger.isEmpty()) {
+            unavailable.add(ManualReviewDetail.SOURCE_LEDGER);
+            ledgerUnavailable.increment();
+        }
+        if (provider.isEmpty()) {
+            unavailable.add(ManualReviewDetail.SOURCE_BANK);
+            bankUnavailable.increment();
+        }
+
         auditService.record(actor, "VIEW_TRANSACTION", txn.getId().toString(),
-                Map.of("status", txn.getStatus().name()));
-        return ManualReviewDetail.of(txn,
-                sagaRepository.findByTenantIdAndTransactionId(tenantId, transactionId).orElse(null),
-                Instant.now());
+                Map.of("status", txn.getStatus().name(), "unavailable", unavailable));
+        return ManualReviewDetail.of(txn, saga, Instant.now(),
+                ledger.orElse(null), provider.orElse(null), List.copyOf(unavailable));
     }
 }

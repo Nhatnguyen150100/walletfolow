@@ -181,7 +181,7 @@ public class ResolutionService {
             throw new ConflictException("CASE_NO_LONGER_OPEN",
                     "Ca này không còn ở diện chờ người xử lý — đọc lại trước khi quyết");
         }
-        sagaRepository.close(txn.getId(), "FAILED");
+        sagaRepository.close(txn.getTenantId(), txn.getId(), "FAILED");
 
         // Mỗi lần chuyển trạng thái phát ĐÚNG MỘT event (bất biến của SagaService), và ca
         // MANUAL_REVIEW chưa từng phát gì — không có dòng này thì người dùng không bao giờ nhận kết
