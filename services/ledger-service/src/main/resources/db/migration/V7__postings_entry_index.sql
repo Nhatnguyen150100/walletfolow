@@ -1,0 +1,36 @@
+-- =====================================================================
+-- V7 — Index còn thiếu trên postings(tenant_id, entry_id) (roadmap 2.5 PR3)
+-- =====================================================================
+-- `postings.entry_id` có khoá ngoại tới `journal_entries(id)` từ V1 nhưng CHƯA BAO GIỜ có index. Tới giờ
+-- không ai thấy vì đường đọc duy nhất qua entry_id (`findByTenantIdAndEntryId`) chỉ chạy trên dữ liệu vừa
+-- ghi và vẫn còn vớt được bằng idx_postings_tenant.
+--
+-- 2.5 PR3 thêm một đường đọc mới: "mọi vế của mọi bút toán thuộc MỘT lệnh tiền" — join từ journal_entries
+-- (lọc được bằng uk_journal_tenant_txn_type) sang postings theo entry_id. Không có index này thì mỗi lần
+-- người trực mở một ca là một lần quét toàn bộ bảng postings — bảng lớn nhất hệ thống, và đúng vào lúc
+-- đang có sự cố thì nó vừa lớn nhất vừa bận nhất.
+--
+-- Đặt tenant_id lên trước: khớp luôn `findByTenantIdAndEntryId` (ADR-010 — mọi query lọc theo tenant), và
+-- một index chung phục vụ cả hai đường đọc thì rẻ hơn hai index.
+--
+-- Chỉ EXPAND: thêm index không đổi schema logic, bản app đang chạy không nhận ra khác biệt nào ngoài việc
+-- truy vấn nhanh hơn. An toàn khi rolling deploy theo cả hai chiều.
+--
+-- ============================ KHOÁ — ĐỌC TRƯỚC KHI DEPLOY ============================
+-- `CREATE INDEX` không CONCURRENTLY giữ SHARE trên `postings` suốt lúc build: chặn INSERT/UPDATE/DELETE,
+-- KHÔNG chặn SELECT. Với `postings` thì cửa sổ đó = quãng thời gian cả hệ thống không ghi sổ được. Phải
+-- deploy vào cửa sổ bảo trì, hoặc đo trước trên bản sao dữ liệu production.
+--
+-- CONCURRENTLY KHÔNG DÙNG ĐƯỢC Ở ĐÂY — đã thử và nó TREO VĨNH VIỄN, không phải suy đoán:
+--   pg_stat_activity cho thấy connection của Flyway nằm `idle in transaction` suốt quá trình migrate,
+--   còn `CREATE INDEX CONCURRENTLY` đứng chờ `Lock / virtualxid` của chính connection đó. CONCURRENTLY
+--   phải đợi MỌI transaction đang mở trên database kết thúc; transaction của Flyway chỉ kết thúc khi
+--   migration xong. Hai bên chờ nhau, không có timeout.
+--   `executeInTransaction=false` KHÔNG cứu được: nó chỉ bỏ transaction bọc quanh script này, không đụng
+--   tới transaction mà Flyway tự giữ. (V7 của bank-adapter gợi ý cách đó như một lối thoát — nó không
+--   phải lối thoát; đừng mất một đêm vì tin vào nó.)
+--
+-- Muốn dựng index mà không khoá thì phải chạy NGOÀI Flyway: `CREATE INDEX CONCURRENTLY` bằng psql trên
+-- DB đang chạy, rồi thêm một migration `CREATE INDEX IF NOT EXISTS` để các môi trường khác tự bắt kịp.
+-- Chưa làm vậy ở đây vì dữ liệu hiện tại còn nhỏ; khi `postings` đủ lớn thì đó là đường phải đi.
+CREATE INDEX IF NOT EXISTS idx_postings_tenant_entry ON postings (tenant_id, entry_id);

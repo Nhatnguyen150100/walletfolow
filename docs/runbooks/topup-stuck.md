@@ -38,10 +38,21 @@ chuyển `MANUAL_REVIEW` với `failure_code = 'REFUND_DECLINED'` và ca đó ph
 
 ## Chẩn đoán — 3 phút
 
-> Từ 2.5 PR1 có API thay cho bước 1 bên dưới, và nó **để lại dấu vết** (`audit_events`) trong khi
-> `psql` thì không: `GET /api/v1/admin/transactions/manual-review` (vai `ADMIN`/`OPS`/`AUDITOR`), và
-> `GET /api/v1/admin/transactions/{id}` cho một ca kèm trạng thái saga. Bước 2 và 3 vẫn phải dùng
-> `psql` cho tới 2.5 PR3.
+> **Dùng API, đừng dùng `psql`.** Từ 2.5 PR3, `GET /api/v1/admin/transactions/{id}` (vai
+> `ADMIN`/`OPS`/`AUDITOR`) trả cả ba bước bên dưới trong một lời gọi — giao dịch + saga, `provider`
+> (các lần thu/hoàn, `rawResponse` đã che dữ liệu nhạy cảm), và `ledger` (bút toán đã ghi, kèm
+> `entryId`). Hàng đợi: `GET /api/v1/admin/transactions/manual-review`. API **để lại dấu vết**
+> (`audit_events`) trong khi `psql` thì không.
+>
+> ⚠️ **Đọc ô `unavailable` trước khi quyết bất cứ điều gì.** Nó liệt kê service không hỏi được lần
+> này (`"ledger"` / `"bank"`). Service nào nằm trong đó thì ô tương ứng là `null` — nghĩa là **không
+> biết**, không phải "không có gì". Một ô `ledger` rỗng (`entries: []`) nghĩa là ledger đã trả lời
+> và chưa ghi gì → hoàn tiền được. Một ô `ledger` là `null` thì **tuyệt đối không hoàn**: hoàn một
+> lệnh đã ghi sổ là trả tiền hai lần. Gặp ca đó thì hỏi lại cho tới khi có câu trả lời, hoặc rơi về
+> `psql` bên dưới.
+>
+> Các câu `psql` giữ lại cho lúc chính transaction-service hỏng, và để đối chiếu khi API nói điều gì
+> khó tin.
 
 ```bash
 # 1. Các lệnh nạp đang chờ người xử lý — kèm mã tham chiếu phía provider

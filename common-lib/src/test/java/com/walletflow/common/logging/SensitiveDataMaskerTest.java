@@ -63,6 +63,31 @@ class SensitiveDataMaskerTest {
         assertThat(masked).isEqualTo("thẻ ***" + last4 + " bị từ chối");
     }
 
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"cvv", "cvc", "pin", "card_number", "cardNo", "account_number", "acctNo",
+            "email", "e_mail", "phone", "mobile", "msisdn"})
+    @DisplayName("⭐ PII khai tường minh trong JSON bị che — 2.5 PR3 đưa raw_response của provider ra khỏi DB")
+    void che_pii_theo_ten_khoa(String key) {
+        String masked = SensitiveDataMasker.mask("{\"" + key + "\": \"giatri-nhay-cam\", \"status\": \"OK\"}");
+
+        assertThat(masked).doesNotContain("giatri-nhay-cam");
+        // status phải sống sót: che mất thứ người trực cần đọc thì màn hình chữa cháy thành vô dụng
+        assertThat(masked).contains("\"status\": \"OK\"");
+    }
+
+    @Test
+    @DisplayName("⭐ Số tài khoản ngân hàng KHÔNG che được khi không có tên khoá — giới hạn đã biết, ghi lại để không ai tưởng là đã sạch")
+    void so_tai_khoan_tran_khong_che_duoc() {
+        // Dãy số này không qua Luhn và không có khoá đi kèm, nên không có dấu hiệu nào để phân biệt nó
+        // với một mã giao dịch. Đây là giới hạn mà javadoc của ProviderOperationView.rawResponse và
+        // ADR-021 B3 nói rõ; test ở đây để nó là một quyết định được ghi nhận, không phải một lỗ hổng
+        // bị bỏ quên.
+        String line = "chuyển tới 0123456789012 tại NH ABC";
+
+        assertThat(SensitiveDataMasker.mask(line)).isEqualTo(line);
+        assertThat(SensitiveDataMasker.passesLuhn("0123456789012")).as("tiền điều kiện").isFalse();
+    }
+
     @Test
     @DisplayName("Không che thứ vận hành cần đọc: dãy số không qua Luhn, số tiền, UUID, mã tham chiếu, chữ 'secret' không có giá trị")
     void khong_che_du_lieu_van_hanh() {

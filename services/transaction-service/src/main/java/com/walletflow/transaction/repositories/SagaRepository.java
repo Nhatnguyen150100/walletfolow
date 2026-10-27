@@ -11,6 +11,18 @@ import org.springframework.data.repository.query.Param;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * <b>Mọi câu lệnh ở đây lọc theo {@code tenant_id}</b>, trừ {@link #lockNextOverdueAcrossTenants()}
+ * vốn xuyên tenant có chủ ý (ADR-010).
+ *
+ * <p>{@code recordRetry} / {@code postpone} / {@code close} từng chỉ lọc theo {@code transaction_id}
+ * (nợ ghi trong roadmap §"Nợ mang sang", trả ở 2.5 PR3). Không ca nào khai thác được: khoá chính của
+ * {@code saga_state} là {@code transaction_id}, một UUID sinh phía ta, nên không có cách nào đoán ra
+ * id của tenant khác. Nhưng "an toàn nhờ một thuộc tính ở chỗ khác" là đúng loại giả định lặng lẽ
+ * sai đi — ngày có người thêm một đường gọi lấy {@code transactionId} từ đầu vào bên ngoài, ba câu
+ * UPDATE này sẽ sửa saga xuyên tenant và không có gì báo. Điều kiện tenant làm cho sự an toàn đó
+ * không còn phụ thuộc vào ai nhớ điều gì.
+ */
 public interface SagaRepository extends Repository<SagaState, UUID> {
 
     Optional<SagaState> findByTenantIdAndTransactionId(UUID tenantId, UUID transactionId);
@@ -51,9 +63,10 @@ public interface SagaRepository extends Repository<SagaState, UUID> {
                    attempt_count    = attempt_count + 1,
                    deadline_at      = now() + make_interval(secs => :deadlineSeconds),
                    updated_at       = now()
-             WHERE transaction_id = :transactionId AND step_status = 'SENT'
+             WHERE tenant_id = :tenantId AND transaction_id = :transactionId AND step_status = 'SENT'
             """, nativeQuery = true)
-    int recordRetry(@Param("transactionId") UUID transactionId,
+    int recordRetry(@Param("tenantId") UUID tenantId,
+                    @Param("transactionId") UUID transactionId,
                     @Param("eventId") UUID eventId,
                     @Param("deadlineSeconds") long deadlineSeconds);
 
@@ -122,15 +135,19 @@ public interface SagaRepository extends Repository<SagaState, UUID> {
     @Query(value = """
             UPDATE saga_state
                SET deadline_at = now() + make_interval(secs => :delaySeconds), updated_at = now()
-             WHERE transaction_id = :transactionId AND step_status = 'SENT'
+             WHERE tenant_id = :tenantId AND transaction_id = :transactionId AND step_status = 'SENT'
             """, nativeQuery = true)
-    int postpone(@Param("transactionId") UUID transactionId, @Param("delaySeconds") long delaySeconds);
+    int postpone(@Param("tenantId") UUID tenantId,
+                 @Param("transactionId") UUID transactionId,
+                 @Param("delaySeconds") long delaySeconds);
 
     /** Đóng saga: DONE | FAILED | MANUAL_REVIEW. */
     @Modifying
     @Query(value = """
             UPDATE saga_state SET step_status = :status, updated_at = now()
-             WHERE transaction_id = :transactionId
+             WHERE tenant_id = :tenantId AND transaction_id = :transactionId
             """, nativeQuery = true)
-    int close(@Param("transactionId") UUID transactionId, @Param("status") String status);
+    int close(@Param("tenantId") UUID tenantId,
+              @Param("transactionId") UUID transactionId,
+              @Param("status") String status);
 }

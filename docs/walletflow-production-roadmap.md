@@ -795,7 +795,7 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.4c (PR2) VNPay refund thật (`vnp_Command=refund`) | ⛔ chặn phía VNPay — merchant sandbox chưa dùng được `refund`; mọi ca vẫn hoàn tay qua portal | |
 | 2.5 (PR1) Khu vực vận hành — hàng đợi cần can thiệp, `audit_events` ở txndb, nền RBAC ADMIN/OPS/AUDITOR ([ADR-021](adr/ADR-021-admin-review-audit.md)) | ✅ | #39 |
 | 2.5 (PR2) Xử lý ca — `POST /resolve` đánh dấu đã hoàn tay + **4-eyes** (GAP-A4), audit CÙNG transaction với việc ghi tiền ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments*) | ✅ | #40 |
-| 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider (đã mask) + bút toán qua `/internal`, kèm nợ tenant của `SagaRepository`. **Chỉ đọc** | ⬜ | |
+| 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider (đã mask) + bút toán qua `/internal`, kèm nợ tenant của `SagaRepository`. **Chỉ đọc** | 🟡 `feat/phase-2-admin-cross-context` | |
 | 2.5 (PR4) `REVERSAL` cho `REFUND_POSTED_CONFLICT` — đụng tiền, cần `entryId` + bằng chứng từ bank-adapter (ADR-021 *Amendments* A1), tách khỏi PR3 vì PR3 không đụng tiền | ⬜ | |
 | (DoD Phase 2) `ChaosProviderIT` (Toxiproxy trước `querydr` của VNPay giả) — provider chết 5 phút: không mất tiền, không saga treo; `StuckSagaIT` cho điểm kết thúc phía saga ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*) | ✅ | #41 |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
@@ -964,11 +964,10 @@ ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định 
 
 ### Nợ mang sang (phát hiện khi làm Phase 2)
 
-- **`SagaRepository.recordRetry` / `postpone` / `close` lọc theo mỗi `transaction_id`, không có `tenant_id`**
-  — lệch chuẩn ADR-010 ("mọi query lọc theo tenant"). Không khai thác được hôm nay (`transaction_id` là
-  UUID sinh phía ta và người gọi đều đã đọc hàng dưới khoá theo tenant), nên không chặn merge; nhưng nó là
-  đúng loại giả định lặng lẽ sai đi khi có người thêm một đường gọi mới. Sửa cùng lúc cả ba, có test
-  cross-tenant — **đã chốt ghép vào 2.5 PR3**.
+- ~~**`SagaRepository.recordRetry` / `postpone` / `close` lọc theo mỗi `transaction_id`, không có
+  `tenant_id`**~~ — **đã trả ở 2.5 PR3.** Cả ba câu nay lọc tenant, mọi caller truyền tenant tường minh,
+  và `SagaTenantIsolationIT` chứng minh từng câu một (3 ca tenant sai → 0 hàng đổi, 3 ca đối chứng tenant
+  đúng → 1 hàng đổi). Xem [ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments* B5.
 
 ---
 

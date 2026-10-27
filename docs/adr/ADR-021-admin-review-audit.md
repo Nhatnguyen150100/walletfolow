@@ -288,6 +288,126 @@ sau, nghĩa là một quyết định vận hành **phủ quyết sổ cái** �
 - **`ck_resolution_decided` chưa đòi `checker_role IS NOT NULL`** khi đã quyết, và chưa cấm điền
   `checker_*` lúc còn `PENDING`.
 
+---
+
+## Amendments — 2026-10-26 (2.5 PR3)
+
+### B1. "Không có gì" và "không biết" phải là hai câu trả lời khác nhau
+
+Đây là quyết định hình thành cả PR3. Màn hình của người trực giờ ghép ba nguồn: saga (txndb), bút
+toán (ledgerdb), lần thu/hoàn (railsdb). Hai nguồn sau tới qua mạng, nên mỗi ô có **ba** trạng thái
+chứ không phải hai: có dữ liệu, không có dữ liệu, và *không hỏi được*.
+
+Gộp hai trạng thái sau thành một ô trống là cách làm mất tiền của khách. "Ledger chưa ghi gì" dẫn
+tới quyết định hoàn tiền; "không biết ledger đã ghi gì chưa" thì tuyệt đối không được hoàn — hoàn
+trên một lệnh đã ghi sổ là trả tiền hai lần. Hai câu đó trông giống hệt nhau trên một màn hình
+không phân biệt chúng, và người đọc nó đang ở giữa sự cố.
+
+Nên hợp đồng tách tường minh: danh sách rỗng = service đã trả lời và chưa có gì; `null` + tên
+service trong `unavailable` = không hỏi được. Cùng quy ước ở cả hai tầng — `Optional.empty()` của
+client nghĩa là "không hỏi được", không bao giờ nghĩa là "rỗng".
+
+### B2. Màn hình chữa cháy suy giảm mềm, không hỏng cả trang
+
+`HttpLedgerEntriesClient`/`HttpProviderContextClient` **không bao giờ ném** — ngược hẳn
+`HttpWalletDirectory`, vốn ném 503 vì lời gọi của nó quyết định một lệnh tiền có được nhận hay
+không. Ở đây lời gọi chỉ làm đầy một ô phụ, mà sự cố diện rộng chính là lúc hai service kia dễ chậm
+nhất. Làm hỏng hàng đợi can thiệp vì không lấy được ngữ cảnh là tước công cụ chữa cháy đúng lúc cần
+nó nhất. Bắt tới `RuntimeException` chứ không chỉ `RestClientException`: lời hứa "không bao giờ
+ném" không được kiểu dữ liệu nào bảo đảm, nên phải tự giữ nó.
+
+Đánh đổi: lỗi mạng trở nên *im lặng* ở tầng HTTP. Bù lại bằng ba đường — log mức WARN ở client,
+`unavailable` đi vào **dòng audit** của `VIEW_TRANSACTION` (người kiểm sổ sau này biết dữ liệu người
+trực thật sự nhìn thấy lúc quyết định là không đầy đủ), và một counter
+`walletflow.admin.context_unavailable{service}`.
+
+Counter là thứ không bỏ được: mặc định của `LEDGER_URL`/`BANK_URL` là `localhost`, nên một môi
+trường quên đặt biến sẽ cho **mọi** lần xem thiếu ngữ cảnh mà log và audit chỉ ghi lại sau khi đã
+hỏng. Đăng ký lúc khởi động để series tồn tại ở 0 — alert "tỉ lệ > 0 kéo dài" cần một đường 0 để so.
+
+### B3. `raw_response` được che bằng chính bộ quy tắc của đường log
+
+PR3 là lần đầu `raw_response` rời khỏi railsdb. Nó là nguyên văn thứ cổng thanh toán gửi về — ta
+không kiểm soát được nó chứa gì, và lịch sử của ngành cho thấy có lúc nó chứa cả số thẻ lẫn chữ ký.
+
+Che bằng `SensitiveDataMasker` (ADR-017), **không** viết bộ lọc thứ hai: hai bộ quy tắc che khác
+nhau nghĩa là một trong hai sẽ bị bỏ quên khi provider đổi định dạng. Đặt ở `ProviderContextService`
+chứ không ở controller, để một endpoint thêm sau này phải đi qua nó thay vì lặng lẽ không che.
+
+Cũng **không** chọn lọc ra vài trường thay cho raw: thứ người trực cần nhất là mã lỗi ta chưa từng
+lường trước, và mỗi lần "chọn ra vài trường" là một lần thứ đó biến mất. Mọi vai đọc được đều thấy
+cùng một bản đã che — không có đường xem bản chưa che, vì một đường như vậy sẽ phải tự canh.
+
+PR3 mở rộng masker thêm nhóm PII khai tường minh (`cvv`, `pin`, `card_number`, `account_no`,
+`email`, `phone`...): trước đó nó chỉ che bí mật và số thẻ qua Luhn, đủ cho log nhưng không đủ cho
+một API. **Che theo tên khoá, không theo hình dạng giá trị** — một regex bắt "thứ trông giống email"
+ở mọi vị trí sẽ che mất chính những địa chỉ cần đọc khi gỡ lỗi.
+
+Giới hạn phải nói thẳng, vì hợp đồng không được hứa rộng hơn thực tế: **số tài khoản ngân hàng
+không che được theo hình dạng** (dãy số không qua Luhn, không phân biệt được với mã giao dịch), và
+PII nằm trong text tự do (`vnp_OrderInfo`) hay dưới một tên khoá lạ thì lọt. Đây là lưới an toàn,
+không phải bảo đảm — javadoc của `ProviderOperationView.rawResponse` nói đúng chừng đó.
+
+### B4. Không thêm cột `entry_id` vào txndb
+
+A1 nói `entryId` "không nằm ở txndb". Đúng, nhưng không cần đưa nó vào: `postings.entry_id =
+journal_entries.id`, nên ledger tra được bút toán từ `(tenant, transactionId)` — khoá đã có sẵn
+`uk_journal_tenant_txn_type`. PR4 lấy `entryId` cho `REVERSAL` từ đúng đường đọc này.
+
+Tránh được một migration expand/backfill/contract trên bảng `transactions`, và quan trọng hơn: tránh
+sao chép một mẩu sự thật của ledger sang DB khác, nơi nó có thể lệch đi mà không ai biết (§5.1).
+
+Phải trả một món nợ ngầm: `postings.entry_id` có khoá ngoại từ V1 nhưng **chưa bao giờ có index** —
+ledger V7 thêm `(tenant_id, entry_id)`.
+
+V7 là migration **duy nhất trong PR này chạm được vào đường tiền**: `CREATE INDEX` giữ `SHARE` suốt
+lúc build, chặn mọi INSERT — và `postings` là bảng lớn nhất hệ thống mà **mọi** lần ghi sổ đều
+INSERT vào.
+
+Lối thoát hiển nhiên là `CREATE INDEX CONCURRENTLY` với `executeInTransaction=false`, và V7 của
+bank-adapter gợi ý đúng cách đó. **Nó không chạy được, đã thử:** `pg_stat_activity` cho thấy
+connection của Flyway nằm `idle in transaction` suốt quá trình migrate, còn `CREATE INDEX
+CONCURRENTLY` đứng chờ `Lock / virtualxid` của chính connection đó — CONCURRENTLY đợi mọi transaction
+đang mở, transaction của Flyway chỉ đóng khi migration xong, hai bên chờ nhau không timeout.
+`executeInTransaction=false` chỉ bỏ transaction bọc quanh *script*, không đụng tới transaction Flyway
+tự giữ.
+
+Nên V7 dùng `CREATE INDEX` thường, và **ghi cảnh báo deploy vào chính file migration** thay vì giả vờ
+đã an toàn. Khi `postings` đủ lớn, đường đúng là chạy `CONCURRENTLY` bằng `psql` ngoài Flyway rồi để
+migration `CREATE INDEX IF NOT EXISTS` bắt kịp. Ghi lại ở đây vì lời gợi ý trong V7 của bank-adapter
+sẽ dẫn người sau vào đúng cái bẫy này (migration đã commit nên không sửa được comment ở đó).
+
+### B5. Nợ tenant của `SagaRepository` trả ở đây
+
+`recordRetry`/`postpone`/`close` nay lọc `tenant_id`. Không ca nào khai thác được hôm nay (khoá
+chính là `transaction_id`, UUID sinh phía ta), nên đây là trả nợ chứ không phải vá lỗ hổng — nhưng
+"an toàn nhờ một thuộc tính ở chỗ khác" là đúng loại giả định lặng lẽ sai đi khi có người thêm một
+đường gọi mới.
+
+### B6. Còn mở sau PR3
+
+- **`REVERSAL` vẫn chưa làm** (PR4). PR3 chỉ dựng đường đọc mà nó cần; bản thân nó là thao tác đụng
+  tiền nên tách PR riêng, có 4-eyes và IT riêng.
+- **Hai lời gọi HTTP chạy tuần tự** trong `detail`. Xấu nhất là tổng hai timeout. Chấp nhận được
+  với một màn hình; nếu hàng đợi có màn hình danh sách kèm ngữ cảnh thì phải đổi.
+- **`/internal` vẫn tin `X-Tenant-Id` vì tin mạng** (GAP-B5). Nay có thêm hai đường đi qua giả định
+  đó, và đây là ranh giới duy nhất chặn dữ liệu khách này hiện trên màn hình khách khác. Phase 4
+  (mTLS) càng đáng làm hơn.
+- **Không có giới hạn số bút toán / thao tác trả về** — và không cần: `uk_journal_tenant_txn_type`
+  cho phép đúng một bút toán mỗi `(tenant, transactionId, type)`, `uk_provider_txn_tenant_txn_op`
+  đúng một hàng mỗi thao tác. Cả hai danh sách vì thế bị chặn trên bởi số giá trị của `EJournalType`
+  và `EBankOperation`. Ghi lại ở đây để lần sau không ai lo lại chuyện này.
+- **`accountRef` có thể `null`** khi một vế trỏ vào tài khoản đã mất hoặc lệch tenant (`LEFT JOIN`).
+  Cố ý: INNER JOIN sẽ làm chính cái vế hỏng đó biến mất, và "thiếu một vế" trông hệt như "tiền chưa
+  đi đâu" — đúng hiểu nhầm mà B1 sinh ra để chặn. Chưa có alert cho ca này, chỉ có log ERROR của
+  `warnIfUnbalanced`.
+- **Thiếu `X-Tenant-Id` trên `/internal` trả 500 `INTERNAL_ERROR`, không phải 4xx** (phát hiện khi
+  viết IT). `TenantFilter` cho request không header đi tiếp — có chủ ý, để khỏi phải liệt kê path
+  công khai lần thứ hai — rồi `TenantContext.require()` ném `IllegalStateException`. Nhất quán với
+  `/internal/accounts` đã có, và đúng phân loại: không có tenant trên một đường chỉ service nội bộ
+  gọi là lỗi lập trình hoặc một đường vào sai, không phải lỗi của người gọi. Body không lộ chi tiết
+  kỹ thuật. Đổi thành 4xx thì phải sửa ở common-lib và sẽ chạm mọi service — không làm trong PR3.
+
 ## Alternatives rejected
 
 - **Một `admin-service` riêng:** mọi dòng của hàng đợi thành một lời gọi mạng, cộng một module mới,

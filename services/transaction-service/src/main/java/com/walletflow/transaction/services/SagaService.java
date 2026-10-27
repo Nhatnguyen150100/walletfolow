@@ -158,7 +158,7 @@ public class SagaService {
         }
         // Hạn chót của bước thu tiền phải phủ được quãng người dùng ngồi trả tiền, nếu không job quét
         // coi lệnh là treo và gửi lại lệnh thu trong lúc trang thanh toán vẫn đang mở.
-        sagaRepository.postpone(txn.getId(), paymentDeadline.toSeconds());
+        sagaRepository.postpone(txn.getTenantId(), txn.getId(), paymentDeadline.toSeconds());
         log.info("Saga: lệnh nạp {} đã có phiên thanh toán {} ở {} — chờ người dùng trả tiền",
                 txn.getId(), event.providerRef(), event.provider());
     }
@@ -686,7 +686,7 @@ public class SagaService {
     private void complete(Transaction txn, LedgerPostedEvent event) {
         transactionRepository.transition(txn.getTenantId(), txn.getId(),
                 ETransactionStatus.COMPLETED.name(), null, null);
-        sagaRepository.close(txn.getId(), "DONE");
+        sagaRepository.close(txn.getTenantId(), txn.getId(), "DONE");
         outboxPublisher.publish(
                 WalletTopics.EVT_TXN_COMPLETED,
                 notifyKey(txn),
@@ -701,7 +701,7 @@ public class SagaService {
     private void fail(Transaction txn, String failureCode, String failureReason) {
         transactionRepository.transition(txn.getTenantId(), txn.getId(),
                 ETransactionStatus.FAILED.name(), failureCode, failureReason);
-        sagaRepository.close(txn.getId(), "FAILED");
+        sagaRepository.close(txn.getTenantId(), txn.getId(), "FAILED");
         outboxPublisher.publish(
                 WalletTopics.EVT_TXN_FAILED,
                 notifyKey(txn),
@@ -734,7 +734,7 @@ public class SagaService {
     private void needsReview(Transaction txn, String failureCode, String failureReason) {
         transactionRepository.transition(txn.getTenantId(), txn.getId(),
                 ETransactionStatus.MANUAL_REVIEW.name(), failureCode, failureReason);
-        sagaRepository.close(txn.getId(), "MANUAL_REVIEW");
+        sagaRepository.close(txn.getTenantId(), txn.getId(), "MANUAL_REVIEW");
         topupNeedsReview.increment();
     }
 

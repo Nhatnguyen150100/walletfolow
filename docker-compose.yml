@@ -224,6 +224,11 @@ services:
       <<: *common-env
       # API nội bộ của wallet-service — kiểm ví nguồn/ví nhận trước khi nhận lệnh
       WALLET_URL: http://wallet-service:8082
+      # API nội bộ của ledger và bank-adapter — ngữ cảnh cho màn hình người trực (2.5 PR3, ADR-021).
+      # Chỉ ĐỌC, và chỉ dùng ở đường admin: hai service này hỏng thì màn hình thiếu một ô, không hỏng
+      # đường tiền. Vì thế KHÔNG thêm chúng vào depends_on.
+      LEDGER_URL: http://ledger-service:8083
+      BANK_URL: http://bank-adapter:8085
       # Hoàn tiền tự động cho lệnh nạp đã thu được tiền mà không ghi sổ được (ADR-020). Mặc định TẮT:
       # chỉ an toàn khi mọi instance ledger đã lên V6 (hàng rào rejected_topups) — xem .env.example.
       TOPUP_REFUND_ENABLED: ${TOPUP_REFUND_ENABLED:-false}

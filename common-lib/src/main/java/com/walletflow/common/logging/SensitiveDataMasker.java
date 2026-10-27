@@ -19,15 +19,27 @@ public final class SensitiveDataMasker {
     static final String MASK = "***";
 
     /**
-     * {@code khoá=giá trị} / {@code "khoá": "giá trị"} với khoá là chữ ký hoặc bí mật: chữ ký VNPay, hash
-     * secret, mật khẩu, token, API key. Giá trị dừng ở dấu phân cách của query string, JSON hoặc khoảng trắng.
+     * {@code khoá=giá trị} / {@code "khoá": "giá trị"} với khoá là chữ ký, bí mật, hoặc dữ liệu cá nhân:
+     * chữ ký VNPay, hash secret, mật khẩu, token, API key, CVV/PIN, số thẻ hay số tài khoản khai tường
+     * minh, email, số điện thoại. Giá trị dừng ở dấu phân cách của query string, JSON hoặc khoảng trắng.
+     *
+     * <p>Nhóm sau (CVV, số tài khoản, email, điện thoại) thêm ở 2.5 PR3: tới đó, {@code raw_response} của
+     * cổng thanh toán mới lần đầu rời khỏi DB qua một API chứ không chỉ nằm trong log (ADR-021 B3).
+     *
+     * <p>Che theo TÊN KHOÁ chứ không theo hình dạng giá trị. Một regex bắt "thứ trông giống email" ở mọi
+     * vị trí sẽ che mất chính những địa chỉ cần đọc trong log lỗi; {@code "email": "..."} thì không nhập
+     * nhằng. Hệ quả phải biết: <b>số tài khoản ngân hàng không che được theo hình dạng</b> — nó là dãy số
+     * không qua Luhn, không phân biệt được với mã giao dịch hay số tiền, nên chỉ bắt được khi provider
+     * đặt tên khoá cho nó.
      *
      * <p>Khoá phải bắt đầu ở ĐẦU một cụm chữ/số (lookbehind) và tiền tố tối đa 40 ký tự: không thì regex thử
      * khớp ở mọi vị trí trong một cụm dài (payload base64) rồi backtrack — O(n²) trên mỗi dòng log, đúng loại
      * chậm mà ai cũng chỉ thấy khi production log một message lớn.
      */
     private static final Pattern SECRET_KEY_VALUE = Pattern.compile(
-            "(?i)(?<![a-z0-9_\\-])(vnp_SecureHash|[a-z0-9_\\-]{0,40}(?:secret|password|passwd|token|api[_-]?key))"
+            "(?i)(?<![a-z0-9_\\-])(vnp_SecureHash|[a-z0-9_\\-]{0,40}(?:secret|password|passwd|token|api[_-]?key"
+                    + "|cvv|cvc|pin|card[_-]?(?:no|num|number)|acc(?:t|ount)[_-]?(?:no|num|number)"
+                    + "|e[_-]?mail|phone|mobile|msisdn))"
                     + "(\"?\\s*[=:]\\s*\"?)([^&\\s\"',;}\\]]+)");
 
     private static final Pattern BEARER = Pattern.compile("(?i)\\b(Bearer)\\s+[A-Za-z0-9\\-._~+/]+=*");

@@ -32,6 +32,17 @@ walletflow:
     base-url: ${WALLET_URL:http://localhost:8082}
     connect-timeout: 1s
     read-timeout: 2s
+  ledger:
+    # API nội bộ của ledger — bút toán của một lệnh, cho màn hình người trực (2.5 PR3). Không qua gateway.
+    # Chỉ đường ĐỌC; mọi lệnh ghi sổ vẫn đi Kafka.
+    base-url: ${LEDGER_URL:http://localhost:8083}
+    connect-timeout: 1s
+    read-timeout: 2s
+  bank:
+    # API nội bộ của bank-adapter — các lần thu/hoàn của một lệnh, cho màn hình người trực (2.5 PR3).
+    base-url: ${BANK_URL:http://localhost:8085}
+    connect-timeout: 1s
+    read-timeout: 2s
   transaction:
     # Câu trả lời của một Idempotency-Key được giữ chừng này. Client gửi lại trong khoảng đó nhận
     # đúng câu trả lời cũ; quá hạn thì key được coi như mới.

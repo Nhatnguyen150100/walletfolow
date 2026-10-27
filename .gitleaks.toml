@@ -31,4 +31,17 @@ regexes = [
   # bắt buộc phải mang một chuỗi TRÔNG GIỐNG JWT thật thì mới chứng minh được masker che đúng.
   # common-lib/src/test/java/com/walletflow/common/logging/SensitiveDataMaskerTest.java
   '''eyJhbGciOiJSUzI1NiJ9\.eyJzdWIiOiJ1c2VyLTEifQ\.c2lnbmF0dXJlLWhlcmU''',
+
+  # ⚠️ Mục này miễn trừ một chuỗi CHỈ CÒN TRONG LỊCH SỬ, không còn trong code — và nó là một bài học
+  # chứ không phải một ngoại lệ bình thường.
+  #
+  # Fixture token của InternalProviderContextIT (2.5 PR3) ban đầu dùng tiền tố `tok_live_` của
+  # Stripe. Chuỗi bịa, không mở được gì, nhưng `generic-api-key` bắt đúng — và bắt ĐÚNG: một chuỗi
+  # mang tiền tố token LIVE của nhà cung cấp thật thì không ai nên viết vào repo. Commit sau đã đổi
+  # sang giá trị entropy thấp tự nói rõ nó là giả (masker che theo TÊN KHOÁ nên giá trị thế nào cũng
+  # chứng minh được), nhưng gitleaks quét cả LỊCH SỬ nên commit cũ vẫn đỏ.
+  #
+  # Viết lại lịch sử sẽ sạch hơn, nhưng force-push bị hook `guard-bash` chặn có chủ ý. Gỡ mục này
+  # được NGAY khi PR #44 đã squash-merge (commit 94ae78b lúc đó không còn trong lịch sử của master).
+  '''tok_live_Zk39sJdQ81xYw''',
 ]

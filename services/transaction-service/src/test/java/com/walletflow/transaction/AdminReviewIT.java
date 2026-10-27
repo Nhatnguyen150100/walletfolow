@@ -5,6 +5,7 @@ import com.walletflow.common.money.ECurrency;
 import com.walletflow.common.security.AuthHeaders;
 import com.walletflow.common.wallet.EWalletStatus;
 import com.walletflow.transaction.repositories.TransactionRepository;
+import com.walletflow.transaction.support.FakeCrossContextConfig;
 import com.walletflow.transaction.support.FakeWalletDirectory;
 import com.walletflow.transaction.support.FakeWalletDirectoryConfig;
 import org.junit.jupiter.api.BeforeEach;
@@ -61,7 +62,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
                 "walletflow.transaction.saga-scan.enabled=false",
                 "management.tracing.enabled=false"
         })
-@Import(FakeWalletDirectoryConfig.class)
+// FakeCrossContextConfig: chi tiết một ca giờ gọi sang ledger và bank-adapter. Thiếu nó, client HTTP
+// thật cố gọi localhost:8083/8085 và mỗi test chờ hết timeout (~3s).
+@Import({FakeWalletDirectoryConfig.class, FakeCrossContextConfig.class})
 @Testcontainers
 class AdminReviewIT {
 

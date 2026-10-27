@@ -60,6 +60,31 @@ public final class BankDb {
         return id;
     }
 
+    /**
+     * Dựng thẳng một hàng của THAO TÁC bất kỳ (CHARGE/REFUND) với {@code raw_response} tuỳ ý — để test đường
+     * đọc ngữ cảnh người trực kiểm được dữ liệu thô của provider (kể cả dữ liệu nhạy cảm, hoặc {@code null}
+     * khi provider chưa trả lời lần nào). Dựng bằng SQL vì service không bao giờ ghi ra những giá trị đó.
+     *
+     * @param createdSecondsAgo hàng được coi là tạo cách đây bấy nhiêu giây (để dựng thứ tự thời gian)
+     * @param refundOf          id lần thu mà hàng REFUND hoàn; bắt buộc có đúng khi {@code operation = REFUND}
+     * @param rawResponseJson   JSON thô; {@code null} = cột {@code raw_response} NULL
+     * @return id của hàng
+     */
+    public UUID insertOperation(UUID tenantId, UUID transactionId, String operation, String provider,
+                                String status, String providerRef, String failureCode, long amountMinor,
+                                UUID refundOf, String rawResponseJson, long createdSecondsAgo) {
+        UUID id = UUID.randomUUID();
+        jdbc.update("INSERT INTO provider_transactions (id, tenant_id, transaction_id, operation, provider, "
+                        + "idempotency_key, provider_ref, wallet_id, amount_minor, currency, status, failure_code, "
+                        + "refund_of, raw_request, raw_response, created_at, updated_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'VND', ?, ?, ?, CAST('{}' AS jsonb), "
+                        + "CAST(? AS jsonb), now() - make_interval(secs => ?), now() - make_interval(secs => ?))",
+                id, tenantId, transactionId, operation, provider, UUID.randomUUID().toString(), providerRef,
+                UUID.randomUUID(), amountMinor, status, failureCode, refundOf, rawResponseJson,
+                createdSecondsAgo, createdSecondsAgo);
+        return id;
+    }
+
     /** Hàng theo id (không lọc tenant — test đọc thẳng để chứng minh trạng thái thật trong DB). */
     public Map<String, Object> rowById(UUID id) {
         return jdbc.queryForMap("SELECT * FROM provider_transactions WHERE id = ?", id);

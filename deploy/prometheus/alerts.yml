@@ -134,6 +134,23 @@ groups:
             lời từ chối cũ. Hoàn tay qua portal theo provider_ref của lần THU (runbook mục E).
           runbook: docs/runbooks/topup-stuck.md
 
+      # Màn hình của người trực mất một nguồn ngữ cảnh (2.5 PR3, ADR-021 B2). Không phải sự cố tiền —
+      # nhưng nó làm hỏng công cụ dùng để xử lý sự cố tiền, nên phải biết TRƯỚC khi cần tới nó. Ca hay
+      # gặp nhất không phải mạng chập chờn mà là quên đặt LEDGER_URL/BANK_URL: lúc đó tỉ lệ là 100% và
+      # đứng im, trong khi log lẫn audit chỉ ghi lại sau khi đã hỏng.
+      - alert: AdminContextUnavailable
+        expr: increase(walletflow_admin_context_unavailable_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Màn hình người trực không hỏi được {{ $labels.service }} ({{ $value }} lần/15 phút)"
+          description: >-
+            Người trực đang thấy ô "{{ $labels.service }}" trống và KHÔNG được coi đó là "chưa có gì" —
+            runbook dạy phân biệt bằng trường unavailable. Kiểm LEDGER_URL/BANK_URL trước, rồi tới
+            sức khoẻ của service tương ứng.
+          runbook: docs/runbooks/topup-stuck.md
+
       # Hoàn tiền tự động là ca hệ thống TỰ xử lý được, nên một lần lẻ không đánh thức ai. Nhưng tần
       # suất tăng đột biến nghĩa là ledger đang từ chối hàng loạt (ví bị đóng hàng loạt? tài khoản
       # EXTERNAL_BANK bị đóng băng?) — thứ phải nhìn thấy trước khi khách hàng kêu.
