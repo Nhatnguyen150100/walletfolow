@@ -109,6 +109,14 @@ class EventContractTest {
                         // Lệnh ghi sổ của một lần nạp: tiền rời EXTERNAL_BANK và vào ví
                         new PostJournalCommand(UUID.randomUUID(), EJournalType.TOPUP, null,
                                 ECurrency.VND, legs)),
+                Arguments.of(WalletTopics.CMD_POST_JOURNAL, "PostJournal",
+                        // 2.5 PR4: lệnh ĐẢO bút toán (ADR-022). Loại DUY NHẤT mà `referenceId` khác
+                        // null — nó trỏ về bút toán bị đảo, và thiếu nó thì ledger từ chối dứt khoát.
+                        // Schema .v1 cho phép `referenceId` là uuid|null nhưng KHÔNG cưỡng chế được
+                        // "bắt buộc với REVERSAL" (không có if/then); fixture này là nơi ghim hình
+                        // dạng đúng để một thay đổi phá vỡ bị bắt ở contract test.
+                        new PostJournalCommand(UUID.randomUUID(), EJournalType.REVERSAL,
+                                UUID.randomUUID(), ECurrency.VND, legs)),
                 Arguments.of(WalletTopics.CMD_BANK_CHARGE, "BankCharge",
                         new BankChargeCommand(UUID.randomUUID(), wallet, 500_000, ECurrency.VND)),
                 Arguments.of(WalletTopics.CMD_BANK_CHARGE, "BankCharge",

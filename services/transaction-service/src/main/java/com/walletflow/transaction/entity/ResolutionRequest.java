@@ -70,6 +70,17 @@ public class ResolutionRequest {
     @Column
     private String evidence;
 
+    /**
+     * Bút toán sẽ bị đảo ({@code journal_entries.id}), chốt LÚC ĐỀ XUẤT; {@code null} với thao tác
+     * khác (V7, ADR-022).
+     *
+     * <p>Chốt lúc đề xuất chứ không tra lại lúc duyệt, để người duyệt nhìn đúng bút toán mà người đề
+     * xuất đã xem — tra lại có thể ra một bút toán khác, và 4-eyes lúc đó chỉ là hai người ký vào
+     * hai thứ khác nhau.
+     */
+    @Column(name = "target_entry_id")
+    private UUID targetEntryId;
+
     @Column(name = "decided_at")
     private Instant decidedAt;
 

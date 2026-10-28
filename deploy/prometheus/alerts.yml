@@ -134,6 +134,22 @@ groups:
             lời từ chối cũ. Hoàn tay qua portal theo provider_ref của lần THU (runbook mục E).
           runbook: docs/runbooks/topup-stuck.md
 
+      # Ledger TỪ CHỐI một lệnh đảo bút toán (2.5 PR4, ADR-022). Hai người đã ký vào một quyết định
+      # đụng tiền mà máy không thực hiện được — gần như luôn là INSUFFICIENT_FUNDS, tức là người dùng
+      # đã tiêu mất khoản được cộng nhầm. Ví vẫn giữ tiền của công ty và không còn đường tự động nào.
+      - alert: ReversalRejected
+        expr: increase(walletflow_topup_reversal_rejected_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $value }} lệnh đảo bút toán bị ledger từ chối ở {{ $labels.job }}"
+          description: >-
+            ĐỪNG tìm cách ép ledger ghi — số dư âm là trạng thái không nơi nào xử lý được. Khoản đó
+            là một khoản phải thu, không phải một bút toán. Ca ở lại hàng đợi với REVERSAL_REJECTED
+            là đúng; xem runbook mục G.
+          runbook: docs/runbooks/topup-stuck.md
+
       # Màn hình của người trực mất một nguồn ngữ cảnh (2.5 PR3, ADR-021 B2). Không phải sự cố tiền —
       # nhưng nó làm hỏng công cụ dùng để xử lý sự cố tiền, nên phải biết TRƯỚC khi cần tới nó. Ca hay
       # gặp nhất không phải mạng chập chờn mà là quên đặt LEDGER_URL/BANK_URL: lúc đó tỉ lệ là 100% và

@@ -29,10 +29,10 @@ public interface ResolutionRequestRepository extends Repository<ResolutionReques
     @Query(value = """
             INSERT INTO resolution_requests
                    (id, tenant_id, transaction_id, action, status, maker_id, maker_email, maker_role,
-                    reason, evidence, created_at, updated_at)
+                    reason, evidence, target_entry_id, created_at, updated_at)
             VALUES (:id, :tenantId, :transactionId, :action, 'PENDING', :makerId,
                     CAST(:makerEmail AS VARCHAR), :makerRole, :reason, CAST(:evidence AS TEXT),
-                    now(), now())
+                    CAST(:targetEntryId AS UUID), now(), now())
             ON CONFLICT DO NOTHING
             """, nativeQuery = true)
     int propose(@Param("id") UUID id,
@@ -43,7 +43,8 @@ public interface ResolutionRequestRepository extends Repository<ResolutionReques
                 @Param("makerEmail") String makerEmail,
                 @Param("makerRole") String makerRole,
                 @Param("reason") String reason,
-                @Param("evidence") String evidence);
+                @Param("evidence") String evidence,
+                @Param("targetEntryId") UUID targetEntryId);
 
     /**
      * Giao dịch của một yêu cầu, đọc KHÔNG khoá. Dùng để khoá theo đúng thứ tự thống nhất (saga →

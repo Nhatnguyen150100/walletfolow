@@ -98,7 +98,7 @@ Mỗi GAP có mã để tham chiếu từ phần Phase bên dưới. Cột **M�
 | **A1** | **Không có DLT thật.** Mặc định của Spring Kafka là `DefaultErrorHandler` với `FixedBackOff(0, 9)`: thử 10 lần, rồi **log và commit offset**. Nghĩa là một `PostJournalCommand` gặp lỗi kỹ thuật kéo dài (DB down 1 phút) sẽ **biến mất âm thầm** — giao dịch treo vĩnh viễn ở `PENDING`, không ai biết. | 🔴 Mất lệnh tiền | Phase 0 |
 | **A2** | Không có **available balance / HOLD**. Withdraw gửi lệnh ra ngân hàng rồi mới ghi sổ → trong khoảng chờ, user tiêu được số tiền đang rút. | 🔴 Double-spend | Phase 2 |
 | **A3** | Không có job **đối soát**. Không có cách nào phát hiện read-model lệch ledger hay `SUM ≠ 0`. | 🔴 Sai tiền không ai biết | Phase 3 |
-| **A4** | Ledger hỗ trợ `REVERSAL` nhưng **chưa ai gọi**. Không có quy trình hoàn/sửa giao dịch, không audit, không 4-eyes. | 🟠 Không sửa được sự cố | Phase 3 |
+| **A4** | ~~Ledger hỗ trợ `REVERSAL` nhưng **chưa ai gọi**. Không có quy trình hoàn/sửa giao dịch, không audit, không 4-eyes.~~ **Đóng ở 2.5**: PR2 cho `MARK_REFUNDED_MANUALLY` + 4-eyes + audit cùng transaction; PR4 cho `REVERSAL` ([ADR-022](adr/ADR-022-ledger-reversal-operation.md)). Còn lại: ví đã tiêu mất tiền thì máy hết đường — khoản phải thu, không phải bút toán. | ✅ | 2.5 |
 | **A5** | `outbox_event` không bao giờ được dọn; không có metric số hàng tồn đọng. | 🟠 Phình DB, mù lag | Phase 0 |
 | **A6** | Mọi topup/withdraw đều khoá hàng `EXTERNAL_BANK` → **tuần tự hoá toàn hệ thống** ở các luồng này (đã được ghi nhận là đánh đổi có chủ ý trong javadoc). | 🟡 Trần throughput | Phase 4 |
 | **A7** | Chưa có **phí (fee)**, chưa có hạn mức, chưa có multi-currency thực tế (chỉ seed VND). | 🟡 Thiếu nghiệp vụ | Phase 5 |
@@ -796,7 +796,8 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.5 (PR1) Khu vực vận hành — hàng đợi cần can thiệp, `audit_events` ở txndb, nền RBAC ADMIN/OPS/AUDITOR ([ADR-021](adr/ADR-021-admin-review-audit.md)) | ✅ | #39 |
 | 2.5 (PR2) Xử lý ca — `POST /resolve` đánh dấu đã hoàn tay + **4-eyes** (GAP-A4), audit CÙNG transaction với việc ghi tiền ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments*) | ✅ | #40 |
 | 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider (đã mask) + bút toán qua `/internal`, kèm nợ tenant của `SagaRepository`. **Chỉ đọc** | 🟡 `feat/phase-2-admin-cross-context` | |
-| 2.5 (PR4) `REVERSAL` cho `REFUND_POSTED_CONFLICT` — đụng tiền, cần `entryId` + bằng chứng từ bank-adapter (ADR-021 *Amendments* A1), tách khỏi PR3 vì PR3 không đụng tiền | ⬜ | |
+| 2.5 (PR4) `REVERSAL` cho `REFUND_POSTED_CONFLICT` (GAP-A4) — đảo bút toán có 4-eyes, ca chỉ đóng khi ledger trả lời ([ADR-022](adr/ADR-022-ledger-reversal-operation.md)) | 🟡 `feat/phase-2-admin-reversal` | |
+| fix — saga ghi tiếp vào ca người vận hành đã chốt (hàng rào `alreadyResolved` nằm sau một nhánh `return` ở 3 chỗ) | 🟡 `fix/phase-2-resolved-refund-guard` | |
 | (DoD Phase 2) `ChaosProviderIT` (Toxiproxy trước `querydr` của VNPay giả) — provider chết 5 phút: không mất tiền, không saga treo; `StuckSagaIT` cho điểm kết thúc phía saga ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*) | ✅ | #41 |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 

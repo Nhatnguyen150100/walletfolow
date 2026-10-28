@@ -165,6 +165,13 @@ nhận nó trong `LedgerPostedEvent` rồi bỏ đi), còn quyết định đún
 thuộc lần hoàn ở bank-adapter đã xong chưa, dữ liệu thuộc railsdb (PR3). Nên PR2 làm phần thay được
 SQL tay, REVERSAL chờ PR3.
 
+> **Cập nhật (2026-10-27): đã làm ở PR4 — [ADR-022](ADR-022-ledger-reversal-operation.md).** Phạm vi
+> "đúng một ca" ở trên giữ nguyên và đã thành điều kiện cưỡng chế trong code. `entryId` lấy qua
+> `/internal/entries` của ledger chứ không thêm cột vào txndb (ADR-021 B4); bằng chứng lần hoàn lấy
+> qua `/internal/provider-transactions`. Điều PR2 chưa lường được: thao tác này **không kết thúc khi
+> người duyệt bấm nút** — ledger có quyền từ chối — nên ca không được đóng lúc duyệt, ngược với
+> `MARK_REFUNDED_MANUALLY`.
+
 ### A2. 4-eyes chỉ cho thao tác ĐỤNG TIỀN
 
 `MARK_REFUNDED_MANUALLY` cần hai người: `OPS` hoặc `ADMIN` đề xuất, một `ADMIN` **khác** duyệt. Mở

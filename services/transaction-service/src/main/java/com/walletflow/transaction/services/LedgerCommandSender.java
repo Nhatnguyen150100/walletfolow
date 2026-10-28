@@ -80,4 +80,38 @@ public class LedgerCommandSender {
                         List.of(new Leg(EXTERNAL_BANK, -amountMinor),
                                 new Leg(walletId.toString(), amountMinor))));
     }
+
+    /**
+     * Lệnh ĐẢO một bút toán nạp đã ghi nhầm (2.5 PR4, ADR-022): hai vế của {@link #sendTopup} đổi
+     * dấu, nên ví bị ghi nợ đúng số đã được cộng và {@code EXTERNAL_BANK} nhận lại.
+     *
+     * <p><b>Vế phải đối xứng CHÍNH XÁC với bút toán gốc</b> — ledger cưỡng chế điều đó
+     * ({@code REVERSAL_MISMATCH}, ADR-011 §6) và đó là hàng rào thật, không phải hình thức: một
+     * "REVERSAL" trỏ vào bút toán có thật nhưng mang vế tuỳ ý là một đường rút tiền khỏi ví bất kỳ,
+     * kể cả ví đang bị đóng băng. Vì vậy số tiền ở đây phải lấy từ chính hàng giao dịch, đừng bao
+     * giờ nhận từ đầu vào của người gọi API.
+     *
+     * <p>Cùng {@code transactionId} với lệnh nạp gốc: khoá idempotency của ledger là
+     * {@code (tenant, transactionId, type)}, nên {@code REVERSAL} không va với {@code TOPUP} đã có
+     * mà vẫn tự chống ghi hai lần cho chính nó. Lớp thứ hai là
+     * {@code uk_journal_one_reversal (tenant_id, reference_id)} — mỗi bút toán chỉ đảo được MỘT lần,
+     * kể cả khi có hai lệnh đảo được gửi từ hai nơi.
+     *
+     * @param originalEntryId bút toán bị đảo; thành {@code reference_id} của bút toán mới, và là thứ
+     *                        duy nhất nối hai bút toán với nhau khi đối soát
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void sendReversal(UUID transactionId, UUID originalEntryId, UUID walletId,
+                             long amountMinor, ECurrency currency, UUID eventId) {
+        outboxPublisher.publish(
+                WalletTopics.CMD_POST_JOURNAL,
+                // Cùng key với lệnh nạp gốc: lệnh đảo phải đi SAU nó trên cùng partition, không bao
+                // giờ vượt lên trước.
+                walletId.toString(),
+                eventId,
+                "PostJournal",
+                new PostJournalCommand(transactionId, EJournalType.REVERSAL, originalEntryId, currency,
+                        List.of(new Leg(walletId.toString(), -amountMinor),
+                                new Leg(EXTERNAL_BANK, amountMinor))));
+    }
 }
