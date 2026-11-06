@@ -778,7 +778,7 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 > Tương ứng M4 của master plan, cộng phần webhook (master plan chưa đề cập nhưng là **phần khó
 > nhất trong thực tế**).
 
-### Trạng thái Phase 2 (cập nhật 2026-10-26)
+### Trạng thái Phase 2 (cập nhật 2026-11-06)
 
 | Mục | Trạng thái | PR |
 |---|---|---|
@@ -795,10 +795,11 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.4c (PR2) VNPay refund thật (`vnp_Command=refund`) | ⛔ chặn phía VNPay — merchant sandbox chưa dùng được `refund`; mọi ca vẫn hoàn tay qua portal | |
 | 2.5 (PR1) Khu vực vận hành — hàng đợi cần can thiệp, `audit_events` ở txndb, nền RBAC ADMIN/OPS/AUDITOR ([ADR-021](adr/ADR-021-admin-review-audit.md)) | ✅ | #39 |
 | 2.5 (PR2) Xử lý ca — `POST /resolve` đánh dấu đã hoàn tay + **4-eyes** (GAP-A4), audit CÙNG transaction với việc ghi tiền ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments*) | ✅ | #40 |
-| 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider (đã mask) + bút toán qua `/internal`, kèm nợ tenant của `SagaRepository`. **Chỉ đọc** | 🟡 `feat/phase-2-admin-cross-context` | |
-| 2.5 (PR4) `REVERSAL` cho `REFUND_POSTED_CONFLICT` (GAP-A4) — đảo bút toán có 4-eyes, ca chỉ đóng khi ledger trả lời ([ADR-022](adr/ADR-022-ledger-reversal-operation.md)) | 🟡 `feat/phase-2-admin-reversal` | |
-| fix — saga ghi tiếp vào ca người vận hành đã chốt (hàng rào `alreadyResolved` nằm sau một nhánh `return` ở 3 chỗ) | 🟡 `fix/phase-2-resolved-refund-guard` | |
+| 2.5 (PR3) Ngữ cảnh chéo service — raw response của provider (đã mask) + bút toán qua `/internal`, kèm nợ tenant của `SagaRepository`. **Chỉ đọc** | ✅ | #44 |
+| 2.5 (PR4) `REVERSAL` cho `REFUND_POSTED_CONFLICT` (GAP-A4) — đảo bút toán có 4-eyes, ca chỉ đóng khi ledger trả lời ([ADR-022](adr/ADR-022-ledger-reversal-operation.md)) | ✅ | #45 |
+| fix — saga ghi tiếp vào ca người vận hành đã chốt (hàng rào `alreadyResolved` nằm sau một nhánh `return` ở 3 chỗ) | ✅ | #43 |
 | (DoD Phase 2) `ChaosProviderIT` (Toxiproxy trước `querydr` của VNPay giả) — provider chết 5 phút: không mất tiền, không saga treo; `StuckSagaIT` cho điểm kết thúc phía saga ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*) | ✅ | #41 |
+| (DoD Phase 2) Kịch bản + runbook đi hết một lần nạp trên sandbox VNPay thật, ghi bằng chứng ([runbook](runbooks/e2e-topup-sandbox.md)) | 🟡 `chore/phase-2-e2e-topup-vnpay` | |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 
 Đường găng nạp tiền: **2.2a → 2.2b → 2.3 → 2.4 (top-up)**. DoD ô "rút tiền" chưa đạt được khi 2.1 còn bị
@@ -945,6 +946,9 @@ ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định 
 - [ ] Nạp tiền thật qua sandbox VNPay/Stripe → số dư tăng đúng — **code xong, chưa có bằng chứng**:
   `VnPayChargeIT` chạy với VNPay giả trong process, chưa ai đi hết một lần nạp trên stack thật qua
   sandbox thật. Đóng ô này bằng một lần E2E tay như 1.5a, có ảnh chụp/log lưu lại.
+  Thủ tục đã sẵn: `scripts/e2e/topup-vnpay.sh` + [runbook](runbooks/e2e-topup-sandbox.md), bằng chứng
+  ghi vào `docs/evidence/phase-2-topup-vnpay/`. **Còn thiếu đúng một thứ: một lần chạy tay trên
+  merchant sandbox thật** — kịch bản không tự tick ô này.
 - [ ] Rút tiền → tiền bị giữ, không tiêu được, payout fail thì hoàn đủ — ⛔ chặn bởi 2.1 HOLD
   (chờ kết luận pháp lý, [ADR-015](adr/ADR-015-product-positioning.md)); `payout` chưa có trong
   `PaymentProvider`.
