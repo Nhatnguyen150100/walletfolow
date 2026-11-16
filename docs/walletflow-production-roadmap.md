@@ -988,8 +988,9 @@ ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định 
 
 | Mục | Trạng thái | PR |
 |---|---|---|
-| 3.1 (PR1) Đối soát tầng 1 + tầng 2 — bất biến sổ cái, read model vs ledger, bảng `reconciliation_runs`/`reconciliation_breaks` mỗi service, 3 metric + 3 alert + runbook ([ADR-023](adr/ADR-023-reconciliation-internal.md)) | 🟡 `feat/phase-3-reconciliation-internal` | |
-| 3.1 (PR2) Đối soát tầng 3 — sao kê/settlement của provider | ⬜ chưa rõ VNPay sandbox có cho tải settlement file không; quyết trước khi bắt đầu | |
+| 3.1 (PR1) Đối soát tầng 1 + tầng 2 — bất biến sổ cái, read model vs ledger, bảng `reconciliation_runs`/`reconciliation_breaks` mỗi service, 4 metric + 5 alert + runbook ([ADR-023](adr/ADR-023-reconciliation-internal.md), *Amendments* A5 sửa con số) | ✅ | `211326d` (đẩy thẳng `master`, không qua PR) |
+| 3.1 (PR2a) Đối soát bank-adapter ↔ sổ cái — tiền ròng qua `EXTERNAL_BANK` vs `provider_transactions`, hai chiều quét, không cần sao kê ([ADR-024](adr/ADR-024-reconciliation-provider-ledger.md)) | 🟡 `feat/phase-3-reconciliation-provider-ledger` | |
+| 3.1 (PR2b) Đối soát tầng 3 — sao kê/settlement của provider ↔ `provider_transactions` | ⬜ chưa rõ VNPay sandbox có cho tải settlement file không; quyết trước khi bắt đầu | |
 
 Phase 2 vẫn **chưa đóng**: hai ô DoD còn trống đều nằm ngoài tầm code (một lần nạp tay trên merchant
 sandbox thật, và 2.1 HOLD chờ kết luận pháp lý). 3.1 không phụ thuộc cả hai nên làm được ngay.
@@ -1018,6 +1019,11 @@ không sửa cái bug đã làm lệch. Kèm một phép so rẻ không qua mạ
 `wallet_entries`), và hai hàng rào chống báo động giả vì read model là eventually consistent (chỉ
 soi ví đã yên quá `settle-window`, và đọc lại lần thứ hai trước khi ghi break).
 
+> **Tầng 3 tách đôi** ([ADR-024](adr/ADR-024-reconciliation-provider-ledger.md)): **PR2a** so
+> `provider_transactions` ↔ ledger — không cần sao kê, bắt được "tiền vào mà không ghi sổ" và "ghi sổ ảo"
+> theo sổ của bank-adapter (`PROVIDER_MONEY_NOT_POSTED`, `POSTED_WITHOUT_PROVIDER_MONEY`). **PR2b** so sao
+> kê provider ↔ `provider_transactions` — phần còn lại của mô tả bên dưới, chờ VNPay.
+
 **Tầng 3 — Đối soát ngoài** (mỗi đêm, sau khi provider chốt sổ): tải sao kê/settlement file của
 provider → so từng giao dịch với `provider_transactions` **và** với ledger. Bốn loại lệch:
 - provider có, ta không có → **tiền vào mà không ghi sổ** (nghiêm trọng nhất)
@@ -1029,12 +1035,15 @@ provider → so từng giao dịch với `provider_transactions` **và** với l
 trạng thái xử lý, người xử lý). **Break phải được đóng bởi người**, không tự biến mất. Mỗi service
 giữ bộ bảng của mình, cùng hình dạng (ADR-023 §1) — báo cáo tổng hợp ở 3.2 gộp hai nguồn.
 
-**Metrics:** `walletflow_reconciliation_breaks{type}`, `walletflow_ledger_imbalance_minor`,
-`walletflow_reconciliation_last_success_timestamp` (alert nếu job **không chạy** — job đối soát chết
-âm thầm còn tệ hơn không có).
+**Metrics:** `walletflow_reconciliation_breaks{tier}`, `walletflow_ledger_imbalance_minor`,
+`walletflow_reconciliation_last_success_timestamp{tier}` (alert nếu job **không chạy** — job đối soát chết
+âm thầm còn tệ hơn không có), `walletflow_reconciliation_failures_total{tier}`, và riêng tầng bank
+`walletflow_reconciliation_provider_ledger_open{type}`. `tier` ∈ `ledger` / `wallet` / `bank`.
 
-**Test chứng minh:** `ReconciliationIT` — cố ý làm lệch (UPDATE thẳng `wallets`, chèn
-`provider_transactions` không có bút toán) → job phát hiện đúng loại, đúng số tiền, và alert bắn.
+**Test chứng minh:** không có một `ReconciliationIT` chung — mỗi tầng một bộ: `LedgerInvariantIT` (tầng
+1), `WalletReconciliationIT` + `WalletReconciliationLimitsIT` (tầng 2, `UPDATE` thẳng `wallets`),
+`ProviderLedgerReconciliationIT` (PR2a, chèn `provider_transactions` không có bút toán và ngược lại) —
+cố ý làm lệch → job phát hiện đúng loại, đúng số tiền.
 
 ## 3.2 — Báo cáo & sổ sách · 2 ngày
 
@@ -1051,7 +1060,9 @@ giữ bộ bảng của mình, cùng hình dạng (ADR-023 §1) — báo cáo t�
 - `docs/runbooks/` — mỗi alert có **một** runbook: triệu chứng → chẩn đoán → cách xử lý → cách leo thang.
   Tối thiểu: `dlt-not-empty.md` ✅, `outbox-stalled.md` ✅, `reconciliation-break.md` ✅ (3.1 PR1),
   `saga-stuck.md` ✅, `payment-provider-down.md` ✅, `restore.md` ✅ — còn thiếu **API đóng break** +
-  màn hình cho người trực, hiện `reconciliation-break.md` phải đóng bằng SQL tay (không có audit).
+  màn hình cho người trực, hiện `reconciliation-break.md` phải đóng bằng SQL tay (không có audit). Gấp
+  hơn sau 3.1 PR2a: mỗi lần hoàn tay qua portal VNPay để lại một break `PROVIDER_MONEY_NOT_POSTED` phải
+  đóng bằng tay ([ADR-024](adr/ADR-024-reconciliation-provider-ledger.md) §5).
 - Script điều tra: "giao dịch X đã đi qua những đâu" — gom log + trace + bút toán + provider response
   theo `transactionId`.
 

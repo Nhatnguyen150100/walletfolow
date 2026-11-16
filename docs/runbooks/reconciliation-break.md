@@ -1,12 +1,18 @@
-# Runbook — `LedgerImbalance` / `ReconciliationBreakOpen` / `ReconciliationStale`
+# Runbook — đối soát: `LedgerImbalance` / `PostedWithoutProviderMoney` / `ReconciliationBreakOpen` / `ReconciliationStale*` / `ReconciliationRunFailed`
 
-> Ba alert, ba mức độ khác nhau, **một bảng để nhìn**: `reconciliation_breaks`.
+> Bảy alert, ba mức độ khác nhau, **một bảng để nhìn**: `reconciliation_breaks` — mỗi service một bộ
+> (ledgerdb = tầng 1, walletdb = tầng 2, railsdb = bank-adapter ↔ sổ cái). Nhãn `tier` của alert
+> (`ledger` / `wallet` / `bank`) nói phải mở DB nào.
 >
-> - `LedgerImbalance` — **page.** Sổ cái tự mâu thuẫn. Tiền tự sinh hoặc bốc hơi.
-> - `ReconciliationStale` — **page.** Không ai đang kiểm tiền. Hệ thống trông sạch vì không ai nhìn.
-> - `ReconciliationBreakOpen` — **ticket.** Có chỗ lệch chờ người kết luận.
+> - `LedgerImbalance` — **page.** Sổ cái tự mâu thuẫn. Tiền tự sinh hoặc bốc hơi. (mục A)
+> - `PostedWithoutProviderMoney` — **page.** Sổ cái ghi tiền vào mà provider không thu. (mục E)
+> - `ReconciliationStaleLedger` / `ReconciliationStaleWallet` / `ReconciliationStaleBank` — **page.**
+>   Không ai đang kiểm tiền. Hệ thống trông sạch vì không ai nhìn. (mục C)
+> - `ReconciliationBreakOpen` — **ticket.** Có chỗ lệch chờ người kết luận. (mục B, E)
+> - `ReconciliationRunFailed` — **ticket.** Một lượt quét bỏ dở. (mục C)
 >
-> Bối cảnh thiết kế: [ADR-023](../adr/ADR-023-reconciliation-internal.md), roadmap 3.1.
+> Bối cảnh thiết kế: [ADR-023](../adr/ADR-023-reconciliation-internal.md) (tầng 1, 2),
+> [ADR-024](../adr/ADR-024-reconciliation-provider-ledger.md) (bank-adapter ↔ sổ cái), roadmap 3.1.
 
 ## Luật bất di bất dịch
 
@@ -115,20 +121,31 @@ sao*. Theo thứ tự:
 
 ---
 
-## C. `ReconciliationStale` — job đối soát chết (page)
+## C. `ReconciliationStale*` (page) / `ReconciliationRunFailed` (ticket) — job đối soát chết hoặc bỏ dở
+
+Mở DB theo nhãn `tier`: `ledger` → `ledgerdb`, `wallet` → `walletdb`, `bank` → `railsdb`.
 
 ```bash
 docker exec wf-postgres psql -U walletflow -d ledgerdb -c \
   "SELECT kind, window_start, status, started_at, finished_at, checked_count, break_count, failure_message
      FROM reconciliation_runs ORDER BY window_start DESC LIMIT 10;"
-# rồi lặp lại với -d walletdb
+# rồi lặp lại với -d walletdb / -d railsdb
 ```
+
+`ReconciliationRunFailed` bắn ngay khi một lượt kết thúc `FAILED` — không đợi mốc thành công già đi.
+Đọc `failure_message` của hàng `FAILED` mới nhất:
+
+| `failure_message` có | Nghĩa | Làm gì |
+|---|---|---|
+| `Chạm trần số chỗ lệch` | Lệch **diện rộng**, quét chưa hết. | **Leo thang ngay**, đừng chờ lượt sau: projector hỏng, restore nhầm một DB cũ, hoặc (tầng bank) saga ngừng ghi sổ hàng loạt. |
+| `N lô hỏng; lỗi đầu tiên: ... Không hỏi được sổ cái` | Service không gọi được ledger ở vài lô. Các lô khác vẫn được soi. | Kiểm ledger-service còn sống, kiểm `LEDGER_URL`. Lượt sau tự soi lại các lô đã bỏ. |
+| `chiều ngược, trang sau ...` (tầng bank) | Không lấy được trang bút toán nạp — chiều ngược dừng giữa chừng, các lệnh phía sau **chưa** được soi lượt này. | Như trên. |
 
 | Thấy gì | Nghĩa | Làm gì |
 |---|---|---|
 | Hàng `RUNNING` bỏ lại | Lượt đó chết giữa chừng (process bị giết, OOM). **Cửa sổ đó không tự chạy lại** — đúng thiết kế. | Xem log quanh `started_at`. Lượt kế tiếp (cửa sổ sau) chạy bình thường. **Restart service KHÔNG ép quét lại được**: cửa sổ tính bằng `floor(now / interval)` nên restart trong cùng giờ (tầng 1) / cùng ngày (tầng 2) vẫn ra đúng cửa sổ đã bị chiếm, và lượt mới bỏ qua im lặng. Thật sự cần quét ngay thì đổi `window_start` của chính hàng `RUNNING` đó sang một giá trị cũ rồi restart. |
 | Hàng `FAILED` | Lỗi kỹ thuật, `failure_message` nói rõ. Hay gặp nhất: wallet-service không gọi được ledger. | Sửa nguyên nhân kỹ thuật. |
-| Không có hàng nào gần đây | Job không chạy. | Kiểm `walletflow.{ledger,wallet}.reconciliation.enabled` — có ai tắt nó không? Kiểm service còn sống không. |
+| Không có hàng nào gần đây | Job không chạy. | Kiểm `walletflow.{ledger,wallet,bank}.reconciliation.enabled` — có ai tắt nó không? Kiểm service còn sống không. |
 | `absent(...)` trong alert | Metric biến mất hẳn — service không khởi động được, hoặc Prometheus không scrape được. | [`service-down.md`](service-down.md) |
 
 > Cờ `enabled: false` trong production là một quyết định phải có người ký. Tắt đối soát = quay lại
@@ -139,7 +156,8 @@ docker exec wf-postgres psql -U walletflow -d ledgerdb -c \
 ## D. Đóng một break
 
 Chỉ đóng khi **đã hiểu nguyên nhân** và đã xử lý (hoặc đã mở issue có chủ sở hữu). Hiện chưa có API
-đóng break — đóng bằng SQL, và ghi `closed_by` là **id người thật**, không phải một UUID tuỳ ý:
+đóng break — đóng bằng SQL **trong đúng DB của tầng đó** (`-d ledgerdb` / `walletdb` / `railsdb`), và
+ghi `closed_by` là **id người thật**, không phải một UUID tuỳ ý:
 
 ```bash
 docker exec wf-postgres psql -U walletflow -d walletdb -c \
@@ -154,7 +172,83 @@ docker exec wf-postgres psql -U walletflow -d walletdb -c \
 > **Nợ đã biết:** API đóng break + màn hình cho người trực thuộc 3.3 (công cụ vận hành). Tới lúc đó
 > thao tác này là SQL tay — và vì vậy nó **không** để lại `audit_events`. Ghi lại vào issue.
 
+---
+
+## E. Tầng bank — tiền qua cửa ngoài lệch sổ cái (`PostedWithoutProviderMoney` page, `ReconciliationBreakOpen{tier="bank"}` ticket)
+
+Job: `ProviderLedgerReconciler` ở bank-adapter, mỗi ngày. Mỗi lệnh tiền: **tiền ròng provider giữ**
+(thu thành công − hoàn thành công, theo `provider_transactions`) so với **tiền ròng sổ cái ghi qua
+`EXTERNAL_BANK`**. Chỉ so lệnh đã yên quá `settle-window` (1 giờ) — lệnh vừa thu xong mà chưa vào sổ
+là bình thường. Máy **không bao giờ tự sửa** ở tầng này (`auto_repaired` luôn `false`).
+
+### Chẩn đoán
+
+```bash
+docker exec wf-postgres psql -U walletflow -d railsdb -c \
+  "SELECT tenant_id, type, subject, expected_minor AS provider, actual_minor AS so_cai, delta_minor,
+          times_seen, first_seen_at, detail
+     FROM reconciliation_breaks WHERE status = 'OPEN' ORDER BY first_seen_at;"
+```
+
+`subject` = `<transactionId>:<currency>`. `delta_minor = sổ cái − provider`.
+
+| `type` | Nghĩa | Mức |
+|---|---|---|
+| `PROVIDER_MONEY_NOT_POSTED` | `delta < 0` — provider giữ tiền nhiều hơn sổ cái ghi. **Khách đã trả mà ví chưa nhận đủ.** | ticket |
+| `POSTED_WITHOUT_PROVIDER_MONEY` | `delta > 0` — sổ cái ghi vào nhiều hơn provider thu. **Tiền vào ví mà không ai trả.** | **page** |
+
+Ghép ngữ cảnh một lệnh (cùng hai đường người trực đã dùng ở 2.5 PR3):
+
+```bash
+# Phía provider — mọi thao tác + raw response đã che
+curl -s -H "X-Tenant-Id: <tenant>" "http://bank-adapter:8085/internal/provider-transactions?transactionId=<txn>"
+# Phía sổ cái — mọi bút toán, đủ hai vế
+curl -s -H "X-Tenant-Id: <tenant>" "http://ledger-service:8083/internal/entries?transactionId=<txn>"
+# Saga — trạng thái và failure_code
+docker exec wf-postgres psql -U walletflow -d txndb -c \
+  "SELECT status, failure_code, resolved_at FROM transactions WHERE id = '<txn>';"
+```
+
+### Xử lý — `PROVIDER_MONEY_NOT_POSTED`
+
+| Saga đang ở | Nguyên nhân | Làm gì |
+|---|---|---|
+| `FAILED` với `failure_code = REFUNDED_MANUALLY` | Đã hoàn tay qua portal provider — bank-adapter **không có hàng `REFUND`** cho lần hoàn đó, nên sổ của adapter vẫn tin là tiền còn. Đây là nguyên nhân **đã biết** (ADR-024 §5). | Đối chiếu portal provider: lần hoàn có thật và đúng số tiền ⇒ đóng break (mục D), `closed_note` ghi mã hoàn trên portal + id `resolution_requests`. Không có ⇒ khách **chưa** được hoàn: xử lý như hàng dưới. |
+| `MANUAL_REVIEW` | Ca đang chờ người ([topup-stuck.md](topup-stuck.md)). Break chỉ là tín hiệu thứ hai cho cùng một ca. | Xử lý ca theo topup-stuck.md; đóng break SAU KHI ca đã chốt. |
+| `COMPLETED` | Sổ cái ghi **thiếu** so với số provider thu (lệch số tiền). | Leo thang — sai số tiền ở đường ghi sổ. Không tự nạp bù. |
+| Không có hàng saga / trạng thái khác | Không giải thích được. | Leo thang. |
+
+### Xử lý — `POSTED_WITHOUT_PROVIDER_MONEY` (page)
+
+Saga chỉ gửi lệnh ghi sổ sau khi bank-adapter tự `getStatus` xác nhận lần thu, nên chỉ có **một**
+nguyên nhân đã biết. `detail` nói bank-adapter có hàng cho lệnh này hay không.
+
+1. **Khoá ví nhận tiền** trước khi điều tra — số tiền đó có thể bị tiêu ngay.
+2. **Xem saga trước** (lệnh `txndb` ở trên). `MANUAL_REVIEW` với `failure_code = REFUND_POSTED_CONFLICT` ⇒
+   ca đã biết: lệnh nạp tới ledger SAU khi saga đã hoàn tiền (adapter: thu + hoàn = ròng 0; sổ cái: còn
+   bút toán nạp). Xử lý bằng `REVERSE_LEDGER_ENTRY` qua `POST /resolve` (4-eyes,
+   [ADR-022](../adr/ADR-022-ledger-reversal-operation.md)) theo [topup-stuck.md](topup-stuck.md); break tự
+   khớp ở lượt sau khi bút toán đảo đã ghi — đóng nó, `closed_note` trỏ id `resolution_requests`.
+3. Bank-adapter **không có hàng nào** ⇒ có lệnh ghi sổ đi vòng qua saga (lệnh Kafka gõ tay, hoặc bug).
+   Tìm nguồn của bút toán qua `transaction_id` trong log + trace. **Trên stack dev/E2E** đây là chuyện
+   thường: `scripts/e2e/seed-topup.sh` và `lib.sh topup` nạp tiền thẳng bằng lệnh `PostJournal TOPUP`, không
+   qua bank-adapter — mỗi lần nạp như vậy thành một break loại này. Không bao giờ xảy ra ở môi trường thật
+   nếu không ai gửi lệnh tay.
+4. Bank-adapter có hàng nhưng lần thu `FAILED` ⇒ lần thu bị lật trạng thái **sau** khi đã ghi sổ, hoặc
+   saga ghi sổ dựa trên một kết quả không phải của adapter. Đối chiếu portal provider: nếu tiền **có**
+   về thì sổ của adapter sai (leo thang, không sửa tay `provider_transactions`); nếu **không** thì đảo
+   bút toán bằng `REVERSAL` qua `POST /resolve` (4-eyes, [ADR-022](../adr/ADR-022-ledger-reversal-operation.md)).
+5. Đóng break chỉ sau khi đã đảo bút toán hoặc đã chứng minh tiền có thật.
+
+Alert page tự tắt trong ~5 phút sau khi break được đóng (gauge làm mới theo
+`walletflow.bank.reconciliation.gauge-refresh`, không chờ lượt quét ngày hôm sau).
+
+> **Chưa phủ ở tầng này** (đã có alert riêng): `FAILED(EXPIRED)` mà tiền về muộn
+> (`ExpiredChargeNeedsReview`) và lần thu lệch số tiền còn treo `PENDING` (`ProviderAmountMismatch`) —
+> sổ của adapter chưa ghi nhận chúng là "đã thu", nên phép so này không thấy. Sao kê provider (3.1 PR2b)
+> sẽ phủ.
+
 ## Leo thang
 
 1. Trực ca → 2. Chủ sở hữu ledger-service → 3. Trưởng nhóm.
-`LedgerImbalance` leo thẳng bước 2, không chờ hết ca.
+`LedgerImbalance` và `PostedWithoutProviderMoney` leo thẳng bước 2, không chờ hết ca.

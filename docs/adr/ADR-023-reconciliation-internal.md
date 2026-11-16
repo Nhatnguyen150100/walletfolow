@@ -201,6 +201,17 @@ nhầm một bản walletdb cũ) không có trần sẽ biến chính lượt đ
 - **Chưa có API đóng break** — runbook đóng bằng SQL tay, nên thao tác đó **không** để lại
   `audit_events`. `ReconciliationBreakRepository.close`/`findOpen` đã có sẵn, chờ controller ở 3.3.
 
+### A5. Sửa con số + tầng 3 tách đôi (2026-11-16, 3.1 PR2a)
+
+- *Consequences* ghi "ba metric", thực tế PR1 ra **bốn**: thêm counter
+  `walletflow.reconciliation.failures{tier}` ở A2. Alert là **năm**: `LedgerImbalance`,
+  `ReconciliationBreakOpen`, `ReconciliationStaleLedger`, `ReconciliationStaleWallet`,
+  `ReconciliationRunFailed`. Nhãn của gauge break là `tier`, không phải `type` như roadmap §3.1 viết.
+- `ReconciliationRunFailed` lúc ra đời chưa có mục runbook — nay có ở `reconciliation-break.md` mục C.
+- Tầng 3 tách đôi: phần so `provider_transactions` ↔ sổ cái **không cần sao kê** đã làm ở
+  [ADR-024](ADR-024-reconciliation-provider-ledger.md); dòng "Chưa phủ: … đối soát `provider_transactions`
+  ↔ ledger" ở *Consequences* đã được trả. Phần sao kê provider vẫn chờ PR2b.
+
 ## Alternatives rejected
 
 - **Một service đối soát riêng (:8086)** — sạch về khái niệm, nhưng thêm module, failsafe, gate

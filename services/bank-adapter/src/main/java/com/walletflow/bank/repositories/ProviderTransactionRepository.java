@@ -1,5 +1,6 @@
 package com.walletflow.bank.repositories;
 
+import com.walletflow.bank.dto.ChargeCheckRow;
 import com.walletflow.bank.dto.ProviderOperationRow;
 import com.walletflow.bank.entity.ProviderTransaction;
 import com.walletflow.common.event.EBankOperation;
@@ -405,4 +406,74 @@ public interface ProviderTransactionRepository extends Repository<ProviderTransa
              WHERE status = 'PENDING' AND expires_at <= now() - make_interval(secs => :graceSeconds)
             """, nativeQuery = true)
     long countOverdue(@Param("graceSeconds") long graceSeconds);
+
+    // ------------------------------------------------------------------
+    // Đối soát bank-adapter ↔ sổ cái (roadmap 3.1 PR2a, ADR-024)
+    // ------------------------------------------------------------------
+
+    /**
+     * Một lần THU gộp với mọi lần HOÀN của chính lệnh đó — phần chung của {@link #scanChargesAcrossTenants}
+     * và {@link #recheckCharge}, để hai lần đọc của cùng một phép so không thể tính tiền ròng theo hai
+     * cách khác nhau.
+     *
+     * <p>Tra lần hoàn theo {@code (tenant_id, transaction_id, operation)} — đúng tiền tố của
+     * {@code uk_provider_txn_tenant_txn_op}, không cần index mới. Giả định lần hoàn cùng loại tiền với lần
+     * thu: {@code RefundService} chỉ hoàn đúng số đã thu của chính hàng đó ({@code refund_of}).
+     */
+    String CHARGE_CHECK_SELECT = """
+            SELECT c.id             AS "chargeId",
+                   c.tenant_id      AS "tenantId",
+                   c.transaction_id AS "transactionId",
+                   c.currency       AS "currency",
+                   (CASE WHEN c.status = 'SUCCEEDED' THEN c.amount_minor ELSE 0 END)
+                       - COALESCE(r.refunded, 0)                              AS "netInMinor",
+                   (c.status IN ('NEW', 'PENDING') OR COALESCE(r.in_flight, false)) AS "inFlight",
+                   GREATEST(c.updated_at, COALESCE(r.last_changed, c.updated_at))   AS "lastChangedAt"
+              FROM provider_transactions c
+              LEFT JOIN LATERAL (
+                   SELECT SUM(x.amount_minor) FILTER (WHERE x.status = 'SUCCEEDED') AS refunded,
+                          BOOL_OR(x.status IN ('NEW', 'PENDING'))                    AS in_flight,
+                          MAX(x.updated_at)                                         AS last_changed
+                     FROM provider_transactions x
+                    WHERE x.tenant_id = c.tenant_id AND x.transaction_id = c.transaction_id
+                      AND x.operation = 'REFUND'
+              ) r ON true
+            """;
+
+    /**
+     * Một trang lệnh tiền XUYÊN tenant, theo con trỏ trên id hàng THU — chiều xuôi của đối soát.
+     *
+     * <p>Mọi lần thu, kể cả {@code FAILED}: một lần thu thất bại mà sổ cái vẫn có bút toán nạp là đúng
+     * loại lỗi phải bắt, và chiều ngược không thấy được nó (bank-adapter CÓ biết lệnh này). Hàng còn đang
+     * chạy hay chưa yên được lọc ở Java — để {@code checked_count} và log nói được đã bỏ qua bao nhiêu.
+     *
+     * <p>Quét theo khoá chính nên không cần index mới; quét toàn bộ mỗi lượt (ADR-024 §7 — nợ: tăng dần).
+     */
+    @Query(value = CHARGE_CHECK_SELECT + """
+             WHERE c.operation = 'CHARGE' AND c.id > :afterId
+             ORDER BY c.id
+             LIMIT :limit
+            """, nativeQuery = true)
+    List<ChargeCheckRow> scanChargesAcrossTenants(@Param("afterId") UUID afterId, @Param("limit") int limit);
+
+    /** Đọc lại MỘT lệnh trước khi ghi break (ADR-023 §4, hàng rào thứ hai). */
+    @Query(value = CHARGE_CHECK_SELECT + """
+             WHERE c.tenant_id = :tenantId AND c.transaction_id = :transactionId AND c.operation = 'CHARGE'
+            """, nativeQuery = true)
+    Optional<ChargeCheckRow> recheckCharge(@Param("tenantId") UUID tenantId,
+                                           @Param("transactionId") UUID transactionId);
+
+    /**
+     * Trong số các lệnh cho trước, lệnh nào bank-adapter CÓ hàng (bất kể thao tác, trạng thái) — chiều
+     * ngược của đối soát dùng để biết bút toán nạp nào không có cổng nào đứng sau.
+     *
+     * <p>"Có hàng" chứ không "có lần thu thành công": lệnh bank-adapter biết thì chiều xuôi đã so nó rồi.
+     * Hai chiều phủ hai tập RỜI nhau, nên một lệnh lệch không bao giờ bị ghi break hai lần trong một lượt.
+     */
+    @Query(value = """
+            SELECT DISTINCT transaction_id FROM provider_transactions
+             WHERE tenant_id = :tenantId AND transaction_id IN (:transactionIds)
+            """, nativeQuery = true)
+    List<UUID> knownTransactionIds(@Param("tenantId") UUID tenantId,
+                                   @Param("transactionIds") Collection<UUID> transactionIds);
 }

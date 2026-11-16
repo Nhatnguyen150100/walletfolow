@@ -102,8 +102,8 @@ class ProviderResilienceIT {
     }
 
     @Test
-    @DisplayName("Job @Scheduled chạy trên scheduler 4 thread của Spring Boot — không dùng chung thread hẹn giờ timeout")
-    void job_dinh_ky_chay_tren_scheduler_bon_thread() {
+    @DisplayName("Job @Scheduled chạy trên scheduler 6 thread của Spring Boot — không dùng chung thread hẹn giờ timeout")
+    void job_dinh_ky_chay_tren_scheduler_sau_thread() {
         // Bean tên `taskScheduler` là thứ @Scheduled dùng. Một bean ScheduledExecutorService khác trong context
         // làm Spring Boot bỏ qua scheduler của nó (spring.task.scheduling.pool.size mất tác dụng) và @Scheduled
         // rơi vào executor đó — outbox relay và job đối chiếu tranh nhau một thread.
@@ -111,7 +111,8 @@ class ProviderResilienceIT {
                 .as("Spring Boot phải tạo taskScheduler; không có nghĩa là một bean ScheduledExecutorService đã chặn nó")
                 .isTrue();
         assertThat(context.getBean("taskScheduler")).isInstanceOfSatisfying(ThreadPoolTaskScheduler.class,
-                scheduler -> assertThat(scheduler.getPoolSize()).isEqualTo(4));
+                // 6 từ 3.1 PR2a (ADR-024 §6): thêm lượt đối soát chạy lâu + nhịp làm mới gauge
+                scheduler -> assertThat(scheduler.getPoolSize()).isEqualTo(6));
     }
 
     @Test
