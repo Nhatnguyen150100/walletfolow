@@ -45,6 +45,30 @@ public class FakeLedger implements LedgerClient {
         return Optional.ofNullable(statement);
     }
 
+    /**
+     * Số dư theo lô, suy ra từ chính các sao kê đã khai — KHÔNG phải một kho dữ liệu thứ hai.
+     *
+     * <p>Quan trọng: ledger thật tính số dư bằng {@code SUM(postings)}, nên một fake trả số dư rời
+     * rạc với danh sách dòng sẽ cho test "chạy đúng" trên một thế giới không tồn tại. Ở đây hai thứ
+     * luôn nhất quán vì cùng một nguồn.
+     *
+     * <p>Ref chưa khai thì KHÔNG có mặt trong map — đúng hợp đồng của {@code LedgerClient}: khác hẳn
+     * với số dư 0.
+     */
+    @Override
+    public Map<String, Long> balancesOf(ECurrency currency, List<String> refs) {
+        UUID tenantId = TenantContext.require();
+        Map<String, Long> balances = new java.util.LinkedHashMap<>();
+        for (String ref : refs) {
+            AccountStatement statement = statements.get(key(tenantId, ref));
+            if (statement != null && statement.currency() == currency) {
+                balances.put(ref, statement.balanceMinor());
+            }
+        }
+        duringRead.run();
+        return balances;
+    }
+
     private static String key(UUID tenantId, String ref) {
         return tenantId + "/" + ref;
     }

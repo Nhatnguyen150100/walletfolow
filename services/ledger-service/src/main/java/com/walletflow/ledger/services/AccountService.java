@@ -3,6 +3,8 @@ package com.walletflow.ledger.services;
 import com.walletflow.common.event.OpenAccountCommand;
 import com.walletflow.common.exception.BadRequestException;
 import com.walletflow.common.exception.ResourceNotFoundException;
+import com.walletflow.common.ledger.AccountBalance;
+import com.walletflow.common.ledger.AccountBalancesRequest;
 import com.walletflow.common.ledger.AccountStatement;
 import com.walletflow.common.ledger.StatementLine;
 import com.walletflow.common.money.ECurrency;
@@ -94,6 +96,38 @@ public class AccountService {
 
         return new AccountStatement(account.getId(), account.getExternalRef(), account.getCurrency(),
                 account.getStatus(), account.getStatusVersion(), lines);
+    }
+
+    /**
+     * Số dư của NHIỀU tài khoản cùng loại tiền — phục vụ đối soát tầng 2 (roadmap 3.1, ADR-023 §3).
+     *
+     * <p>Ref không có tài khoản thì KHÔNG có mặt trong kết quả, và đó là một câu trả lời có nghĩa
+     * chứ không phải lỗi: bên đối soát đọc nó thành "ledger chưa có tài khoản cho ví này". Vì vậy
+     * không ném {@code ResourceNotFoundException} như {@link #statementOf} — một ví chưa mở xong
+     * trong một lô 500 ví không được làm hỏng cả lô.
+     *
+     * <p>{@code REPEATABLE_READ} như {@link #statementOf}: cả lô phải là ảnh chụp của sổ tại MỘT
+     * thời điểm, nếu không thì hai ví trong cùng một lô được so với hai trạng thái sổ khác nhau.
+     */
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public List<AccountBalance> balancesOf(AccountBalancesRequest request) {
+        UUID tenantId = TenantContext.require();
+        if (request == null || request.currency() == null) {
+            throw new BadRequestException("Thiếu currency");
+        }
+        List<String> refs = request.refs();
+        if (refs == null || refs.isEmpty()) {
+            throw new BadRequestException("Phải có ít nhất một accountRef");
+        }
+        if (refs.size() > AccountBalancesRequest.MAX_REFS) {
+            throw new BadRequestException("TOO_MANY_ACCOUNT_REFS",
+                    "Tối đa " + AccountBalancesRequest.MAX_REFS + " accountRef mỗi lượt, nhận "
+                            + refs.size());
+        }
+
+        return postingRepository.balancesOf(tenantId, request.currency().name(), refs).stream()
+                .map(row -> new AccountBalance(row.getAccountRef(), row.getBalanceMinor()))
+                .toList();
     }
 
     /**

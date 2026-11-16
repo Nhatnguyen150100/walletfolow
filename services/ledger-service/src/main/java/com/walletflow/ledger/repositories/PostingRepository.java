@@ -1,12 +1,15 @@
 package com.walletflow.ledger.repositories;
 
+import com.walletflow.ledger.dto.BalanceRow;
 import com.walletflow.ledger.dto.EntryLineRow;
+import com.walletflow.ledger.dto.ImbalanceRow;
 import com.walletflow.ledger.dto.StatementRow;
 import com.walletflow.ledger.entity.Posting;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -107,6 +110,54 @@ public interface PostingRepository extends Repository<Posting, UUID> {
             """)
     List<EntryLineRow> entryLinesOf(@Param("tenantId") UUID tenantId,
                                     @Param("transactionId") UUID transactionId);
+
+    /**
+     * Tổng posting của MỌI nhóm {@code (tenant, currency)} — phép kiểm tầng 1 của đối soát
+     * (roadmap 3.1, ADR-023 §2). Nhóm nào khác 0 là tiền tự sinh hoặc bốc hơi trong sổ của một khách.
+     *
+     * <p>Native vì {@code currency} nằm ở {@code accounts}, không có ở {@code postings} lẫn
+     * {@code journal_entries} — câu SQL trong roadmap §3.1 join nhầm bảng.
+     *
+     * <p><b>Cố ý KHÔNG có {@code HAVING SUM(...) <> 0}.</b> Trả về mọi nhóm rồi lọc trong Java tốn
+     * thêm vài chục hàng (số nhóm = số tenant × số loại tiền, luôn nhỏ) nhưng đổi lại job biết nó
+     * đã soi BAO NHIÊU nhóm chỉ với MỘT lượt quét. Có {@code HAVING} thì {@code checked_count} phải
+     * đếm bằng một câu thứ hai — tức là quét {@code postings}, bảng lớn nhất hệ thống, hai lần mỗi
+     * giờ cho cùng một câu hỏi.
+     *
+     * <p>Điều kiện join có {@code a.tenant_id = p.tenant_id}: một vế trỏ vào tài khoản LỆCH TENANT
+     * bị loại khỏi phép kiểm này. Đó là lý do phải chạy kèm {@link #totalOfSystem()} — xem javadoc
+     * của nó.
+     */
+    @Query(value = """
+            SELECT p.tenant_id AS "tenantId", a.currency AS "currency", SUM(p.amount_minor) AS "totalMinor"
+              FROM postings p
+              JOIN accounts a ON a.id = p.account_id AND a.tenant_id = p.tenant_id
+             GROUP BY p.tenant_id, a.currency
+             ORDER BY p.tenant_id, a.currency
+            """, nativeQuery = true)
+    List<ImbalanceRow> sumByTenantAndCurrency();
+
+    /**
+     * Số dư của NHIỀU tài khoản cùng loại tiền trong một lượt — nguồn của
+     * {@code POST /internal/accounts/balances}, dùng cho đối soát tầng 2 (ADR-023 §3).
+     *
+     * <p>{@code LEFT JOIN} chứ không INNER: một tài khoản vừa mở, chưa có posting nào, phải trả về
+     * {@code 0} chứ không được BIẾN MẤT khỏi kết quả. Nếu nó biến mất, bên đối soát không phân biệt
+     * được "ví này số dư 0, khớp" với "ledger không có tài khoản cho ví này" — hai kết luận hoàn
+     * toàn khác nhau, và chỉ cái thứ hai là một break.
+     *
+     * <p>Lọc tenant ở CẢ HAI bảng, cùng lý do như {@link #statementOf}.
+     */
+    @Query(value = """
+            SELECT a.external_ref AS "accountRef", COALESCE(SUM(p.amount_minor), 0) AS "balanceMinor"
+              FROM accounts a
+              LEFT JOIN postings p ON p.account_id = a.id AND p.tenant_id = :tenantId
+             WHERE a.tenant_id = :tenantId AND a.currency = :currency AND a.external_ref IN (:refs)
+             GROUP BY a.external_ref
+            """, nativeQuery = true)
+    List<BalanceRow> balancesOf(@Param("tenantId") UUID tenantId,
+                                @Param("currency") String currency,
+                                @Param("refs") Collection<String> refs);
 
     long countByTenantId(UUID tenantId);
 

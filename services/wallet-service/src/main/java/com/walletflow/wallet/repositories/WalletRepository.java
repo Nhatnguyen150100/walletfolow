@@ -1,6 +1,7 @@
 package com.walletflow.wallet.repositories;
 
 import com.walletflow.common.money.ECurrency;
+import com.walletflow.wallet.dto.WalletCheckRow;
 import com.walletflow.wallet.entity.Wallet;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Limit;
@@ -113,4 +114,68 @@ public interface WalletRepository extends Repository<Wallet, UUID> {
              ORDER BY w.createdAt
             """)
     List<Wallet> findPendingCreatedBeforeAcrossTenants(@Param("before") Instant before, Limit limit);
+
+    /**
+     * Một lô ví ĐÃ YÊN cùng tổng lịch sử của chúng — nguồn của đối soát tầng 2 (ADR-023 §3, §4).
+     * Chạy ở MỌI tenant; người gọi phải xử lý từng ví trong {@code TenantContext} của chính ví đó.
+     *
+     * <p><b>{@code updated_at < :settledBefore} là hàng rào chống báo động giả.</b> Read model là
+     * eventually consistent: một ví vừa nhận bút toán vài giây trước có thể đang ở giữa quãng
+     * projector cập nhật, và so nó lúc đó cho ra "lệch" trong khi không có gì sai
+     * ({@code WalletRebuildService} đã ghi rõ điều này ở javadoc). Alert kêu oan thì bị tắt, và lúc
+     * đó nó không bắt được sự cố thật nữa.
+     *
+     * <p>Phân trang bằng CON TRỎ trên khoá chính ({@code id > :afterId}) chứ không OFFSET: lượt quét
+     * kéo dài và ví mới được tạo trong lúc đó sẽ xô lệch mọi trang sau nếu dùng offset — cùng lý lẽ
+     * với cột {@code seq} của {@code wallet_entries}.
+     *
+     * <p>{@code LEFT JOIN} để ví chưa có giao dịch nào vẫn ra một hàng với tổng 0, chứ không biến
+     * mất khỏi phép đối soát.
+     *
+     * <p>Điều kiện join có {@code e.tenant_id = w.tenant_id} tuy {@code wallet_id} đã đủ định danh:
+     * một hàng lịch sử ghi sai tenant sẽ bị LOẠI khỏi tổng thay vì được cộng im lặng — và đó đúng
+     * là loại hỏng mà đối soát sinh ra để bắt. Cùng lý lẽ với {@code PostingRepository.balancesOf}
+     * bên ledger (ADR-010: mọi query lọc theo tenant).
+     */
+    @Query(value = """
+            SELECT w.id            AS "walletId",
+                   w.tenant_id     AS "tenantId",
+                   w.currency      AS "currency",
+                   w.status        AS "status",
+                   w.balance_minor AS "balanceMinor",
+                   COALESCE(SUM(e.amount_minor), 0) AS "entriesSumMinor"
+              FROM wallets w
+              LEFT JOIN wallet_entries e ON e.wallet_id = w.id AND e.tenant_id = w.tenant_id
+             WHERE w.updated_at < :settledBefore AND w.id > :afterId
+             GROUP BY w.id, w.tenant_id, w.currency, w.status, w.balance_minor
+             ORDER BY w.id
+             LIMIT :batchSize
+            """, nativeQuery = true)
+    List<WalletCheckRow> scanSettledAcrossTenants(@Param("settledBefore") Instant settledBefore,
+                                                  @Param("afterId") UUID afterId,
+                                                  @Param("batchSize") int batchSize);
+
+    /**
+     * Đọc lại HAI con số của đúng một ví — lần so thứ hai trước khi ghi break (ADR-023 §4).
+     *
+     * <p>Hàng rào {@code updated_at} ở {@link #scanSettledAcrossTenants} chặn phần lớn báo động
+     * giả, nhưng một ví có thể nhận bút toán đúng vào lúc job đang đọc nó. Đọc lại một lần nữa biến
+     * "vừa lệch lúc tôi nhìn" thành "vẫn lệch" — chỉ cái thứ hai mới đáng gọi người.
+     *
+     * <p>Cố ý KHÔNG lọc {@code updated_at}: ví vừa đổi trong lúc quét vẫn phải đọc lại được, và nếu
+     * lần đọc thứ hai cho thấy đã khớp thì đó chính là câu trả lời ta cần.
+     */
+    @Query(value = """
+            SELECT w.id            AS "walletId",
+                   w.tenant_id     AS "tenantId",
+                   w.currency      AS "currency",
+                   w.status        AS "status",
+                   w.balance_minor AS "balanceMinor",
+                   COALESCE(SUM(e.amount_minor), 0) AS "entriesSumMinor"
+              FROM wallets w
+              LEFT JOIN wallet_entries e ON e.wallet_id = w.id AND e.tenant_id = w.tenant_id
+             WHERE w.id = :walletId
+             GROUP BY w.id, w.tenant_id, w.currency, w.status, w.balance_minor
+            """, nativeQuery = true)
+    Optional<WalletCheckRow> recheck(@Param("walletId") UUID walletId);
 }

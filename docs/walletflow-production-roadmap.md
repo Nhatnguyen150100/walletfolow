@@ -97,7 +97,7 @@ Mỗi GAP có mã để tham chiếu từ phần Phase bên dưới. Cột **M�
 |---|---|---|---|
 | **A1** | **Không có DLT thật.** Mặc định của Spring Kafka là `DefaultErrorHandler` với `FixedBackOff(0, 9)`: thử 10 lần, rồi **log và commit offset**. Nghĩa là một `PostJournalCommand` gặp lỗi kỹ thuật kéo dài (DB down 1 phút) sẽ **biến mất âm thầm** — giao dịch treo vĩnh viễn ở `PENDING`, không ai biết. | 🔴 Mất lệnh tiền | Phase 0 |
 | **A2** | Không có **available balance / HOLD**. Withdraw gửi lệnh ra ngân hàng rồi mới ghi sổ → trong khoảng chờ, user tiêu được số tiền đang rút. | 🔴 Double-spend | Phase 2 |
-| **A3** | Không có job **đối soát**. Không có cách nào phát hiện read-model lệch ledger hay `SUM ≠ 0`. | 🔴 Sai tiền không ai biết | Phase 3 |
+| **A3** | ~~Không có job **đối soát**. Không có cách nào phát hiện read-model lệch ledger hay `SUM ≠ 0`.~~ **Hai tầng nội bộ đã đóng ở 3.1 PR1** ([ADR-023](adr/ADR-023-reconciliation-internal.md)): tầng 1 kiểm `SUM = 0` theo `(tenant, currency)` và toàn cục mỗi giờ, tầng 2 so read model với ledger mỗi đêm và tự dựng lại. Còn lại: **tầng 3** (đối soát với sao kê provider). | 🟠 còn tầng 3 | Phase 3 |
 | **A4** | ~~Ledger hỗ trợ `REVERSAL` nhưng **chưa ai gọi**. Không có quy trình hoàn/sửa giao dịch, không audit, không 4-eyes.~~ **Đóng ở 2.5**: PR2 cho `MARK_REFUNDED_MANUALLY` + 4-eyes + audit cùng transaction; PR4 cho `REVERSAL` ([ADR-022](adr/ADR-022-ledger-reversal-operation.md)). Còn lại: ví đã tiêu mất tiền thì máy hết đường — khoản phải thu, không phải bút toán. | ✅ | 2.5 |
 | **A5** | `outbox_event` không bao giờ được dọn; không có metric số hàng tồn đọng. | 🟠 Phình DB, mù lag | Phase 0 |
 | **A6** | Mọi topup/withdraw đều khoá hàng `EXTERNAL_BANK` → **tuần tự hoá toàn hệ thống** ở các luồng này (đã được ghi nhận là đánh đổi có chủ ý trong javadoc). | 🟡 Trần throughput | Phase 4 |
@@ -799,7 +799,7 @@ lỗi với không tồn tại. Thêm: 100 lệnh song song từ ví đủ cho 1
 | 2.5 (PR4) `REVERSAL` cho `REFUND_POSTED_CONFLICT` (GAP-A4) — đảo bút toán có 4-eyes, ca chỉ đóng khi ledger trả lời ([ADR-022](adr/ADR-022-ledger-reversal-operation.md)) | ✅ | #45 |
 | fix — saga ghi tiếp vào ca người vận hành đã chốt (hàng rào `alreadyResolved` nằm sau một nhánh `return` ở 3 chỗ) | ✅ | #43 |
 | (DoD Phase 2) `ChaosProviderIT` (Toxiproxy trước `querydr` của VNPay giả) — provider chết 5 phút: không mất tiền, không saga treo; `StuckSagaIT` cho điểm kết thúc phía saga ([ADR-017](adr/ADR-017-vnpay-session-expiry-log-masking.md) *Amendment 3*) | ✅ | #41 |
-| (DoD Phase 2) Kịch bản + runbook đi hết một lần nạp trên sandbox VNPay thật, ghi bằng chứng ([runbook](runbooks/e2e-topup-sandbox.md)) | 🟡 `chore/phase-2-e2e-topup-vnpay` | |
+| (DoD Phase 2) Kịch bản + runbook đi hết một lần nạp trên sandbox VNPay thật, ghi bằng chứng ([runbook](runbooks/e2e-topup-sandbox.md)) | ✅ *thủ tục* — ô DoD vẫn trống, chờ một lần chạy tay trên merchant sandbox thật | #47 |
 | 2.1 HOLD + phần withdraw của 2.4 | ⛔ chờ kết luận pháp lý ([ADR-015](adr/ADR-015-product-positioning.md)) | |
 
 Đường găng nạp tiền: **2.2a → 2.2b → 2.3 → 2.4 (top-up)**. DoD ô "rút tiền" chưa đạt được khi 2.1 còn bị
@@ -964,8 +964,11 @@ ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định 
   **cùng transaction** với việc ghi tiền: audit hỏng ⇒ tiền không được ghi (`AdminResolveIT`
   — "Audit hỏng ⇒ TIỀN KHÔNG ĐƯỢC GHI", "Đường audit của thao tác đụng tiền là MANDATORY")
   ([ADR-021](adr/ADR-021-admin-review-audit.md) *Amendments* A4).
-  Còn hở: `resolution_requests` chưa append-only nên một câu SQL tay vẫn sửa được quyết định
-  (ADR-021 *Amendments* A7) — khác `audit_events` và `resolved_at`, hai bảng đã có trigger chặn.
+  ~~Còn hở: `resolution_requests` chưa append-only nên một câu SQL tay vẫn sửa được quyết định
+  (ADR-021 *Amendments* A7)~~ — **đã trả ở 3.1 PR1**: trigger chặn `UPDATE` sau khi đã quyết, chặn
+  `DELETE`, và đóng băng nội dung đề xuất lúc còn `PENDING`; `ck_resolution_decided` nay đòi thêm
+  `checker_role`. Chứng minh bằng `ResolutionRequestAppendOnlyIT`
+  ([ADR-023](adr/ADR-023-reconciliation-internal.md) §8).
 
 ### Nợ mang sang (phát hiện khi làm Phase 2)
 
@@ -981,18 +984,39 @@ ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định 
 > **Mục tiêu:** mỗi sáng có một báo cáo **chứng minh** tiền không sai. Đây là ranh giới thật giữa
 > "hệ thống chạy được" và "hệ thống dám cho khách hàng dùng".
 
+### Trạng thái Phase 3 (cập nhật 2026-11-16)
+
+| Mục | Trạng thái | PR |
+|---|---|---|
+| 3.1 (PR1) Đối soát tầng 1 + tầng 2 — bất biến sổ cái, read model vs ledger, bảng `reconciliation_runs`/`reconciliation_breaks` mỗi service, 3 metric + 3 alert + runbook ([ADR-023](adr/ADR-023-reconciliation-internal.md)) | 🟡 `feat/phase-3-reconciliation-internal` | |
+| 3.1 (PR2) Đối soát tầng 3 — sao kê/settlement của provider | ⬜ chưa rõ VNPay sandbox có cho tải settlement file không; quyết trước khi bắt đầu | |
+
+Phase 2 vẫn **chưa đóng**: hai ô DoD còn trống đều nằm ngoài tầm code (một lần nạp tay trên merchant
+sandbox thật, và 2.1 HOLD chờ kết luận pháp lý). 3.1 không phụ thuộc cả hai nên làm được ngay.
+
 ## 3.1 — Đối soát 3 tầng (GAP-A3) · 6 ngày 🔴
 
-**Tầng 1 — Bất biến nội tại ledger** (chạy mỗi giờ):
+> **Hình dạng thật sau PR1** ([ADR-023](adr/ADR-023-reconciliation-internal.md)): tầng 1 + tầng 2 đã
+> làm; tầng 3 tách sang PR2. Hai khác biệt so với mô tả ban đầu bên dưới — câu SQL join sai bảng
+> (`currency` nằm ở `accounts`, không có ở `postings` lẫn `journal_entries`), và bảng break **mỗi
+> service một bộ** chứ không một bộ chung, để không phá DB-per-service.
+
+**Tầng 1 — Bất biến nội tại ledger** (chạy mỗi giờ) — câu đúng:
 ```sql
-SELECT tenant_id, currency, SUM(amount_minor) FROM postings p
-JOIN journal_entries j ON p.entry_id = j.id GROUP BY 1, 2;   -- PHẢI = 0
+SELECT p.tenant_id, a.currency, SUM(p.amount_minor)
+  FROM postings p JOIN accounts a ON a.id = p.account_id AND a.tenant_id = p.tenant_id
+ GROUP BY 1, 2;   -- PHẢI = 0
 ```
-Khác 0 ⇒ **báo động đỏ**, gọi người ngay. Tiền tự sinh hoặc bốc hơi.
+Khác 0 ⇒ **báo động đỏ**, gọi người ngay. Tiền tự sinh hoặc bốc hơi. Chạy KÈM phép kiểm toàn hệ
+thống (`SUM` không nhóm): một vế trỏ vào tài khoản đã mất hoặc lệch tenant bị `JOIN` loại khỏi câu
+trên, nên hai phép kiểm bắt hai loại lỗi khác nhau.
 
 **Tầng 2 — Read model vs sự thật** (chạy mỗi đêm): với mỗi ví,
 `wallets.balance_minor == SUM(postings)`. Lệch ⇒ ghi `reconciliation_breaks`, alert, và **tự động
-rebuild** projection (ledger luôn thắng).
+rebuild** projection (ledger luôn thắng) — nhưng **break vẫn mở**: rebuild chép lại con số đúng, nó
+không sửa cái bug đã làm lệch. Kèm một phép so rẻ không qua mạng (`balance_minor` vs tổng
+`wallet_entries`), và hai hàng rào chống báo động giả vì read model là eventually consistent (chỉ
+soi ví đã yên quá `settle-window`, và đọc lại lần thứ hai trước khi ghi break).
 
 **Tầng 3 — Đối soát ngoài** (mỗi đêm, sau khi provider chốt sổ): tải sao kê/settlement file của
 provider → so từng giao dịch với `provider_transactions` **và** với ledger. Bốn loại lệch:
@@ -1002,7 +1026,8 @@ provider → so từng giao dịch với `provider_transactions` **và** với l
 - cả hai có nhưng **trạng thái khác** → webhook lạc
 
 **Bảng `reconciliation_runs` + `reconciliation_breaks`** (ngày, loại, số lượng, tổng chênh lệch,
-trạng thái xử lý, người xử lý). **Break phải được đóng bởi người**, không tự biến mất.
+trạng thái xử lý, người xử lý). **Break phải được đóng bởi người**, không tự biến mất. Mỗi service
+giữ bộ bảng của mình, cùng hình dạng (ADR-023 §1) — báo cáo tổng hợp ở 3.2 gộp hai nguồn.
 
 **Metrics:** `walletflow_reconciliation_breaks{type}`, `walletflow_ledger_imbalance_minor`,
 `walletflow_reconciliation_last_success_timestamp` (alert nếu job **không chạy** — job đối soát chết
@@ -1024,8 +1049,9 @@ trạng thái xử lý, người xử lý). **Break phải được đóng bởi
 - **DLT replay tool**: xem message trong DLT, sửa/replay có chọn lọc về topic gốc, có audit.
   (Không có công cụ này thì DLT chỉ là nơi chôn message.)
 - `docs/runbooks/` — mỗi alert có **một** runbook: triệu chứng → chẩn đoán → cách xử lý → cách leo thang.
-  Tối thiểu: `dlt-not-empty.md`, `outbox-stalled.md`, `reconciliation-break.md`,
-  `saga-stuck.md`, `provider-down.md`, `restore.md`.
+  Tối thiểu: `dlt-not-empty.md` ✅, `outbox-stalled.md` ✅, `reconciliation-break.md` ✅ (3.1 PR1),
+  `saga-stuck.md` ✅, `payment-provider-down.md` ✅, `restore.md` ✅ — còn thiếu **API đóng break** +
+  màn hình cho người trực, hiện `reconciliation-break.md` phải đóng bằng SQL tay (không có audit).
 - Script điều tra: "giao dịch X đã đi qua những đâu" — gom log + trace + bút toán + provider response
   theo `transactionId`.
 

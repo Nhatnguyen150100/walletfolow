@@ -26,6 +26,14 @@ spring:
     consumer:
       group-id: ledger-service   # mỗi service 1 group để nhận đủ event
       auto-offset-reset: earliest
+  task:
+    scheduling:
+      pool:
+        # Mặc định Spring chỉ có MỘT thread cho mọi @Scheduled. Lượt đối soát quét cả bảng (và ở
+        # wallet-service còn gọi HTTP sang ledger cho từng lô) mà chiếm thread đó thì outbox relay
+        # đứng theo — event ghi sổ ra trễ đúng bằng thời gian quét, và alert OutboxStalled bắn mỗi
+        # lượt khi dữ liệu lớn lên. Cùng lý lẽ với bank-adapter.
+        size: 4
 
 walletflow:
   ledger:
@@ -33,6 +41,15 @@ walletflow:
     # khởi động — idempotent, chạy lại không sao. Phân cách bằng dấu phẩy. Phase 5 thay bằng API
     # onboarding gọi cùng SystemAccountProvisioner.
     provision-tenants: ${LEDGER_PROVISION_TENANTS:00000000-0000-0000-0000-000000000001}
+    # Đối soát tầng 1 — bất biến SUM(postings) = 0 (roadmap 3.1, ADR-023). Tắt nó nghĩa là quay lại
+    # trạng thái GAP-A3: tiền sai mà không ai biết. Chỉ tắt trong test cần kiểm soát thời điểm quét.
+    reconciliation:
+      enabled: ${LEDGER_RECONCILIATION_ENABLED:true}
+      # Vừa là nhịp chạy VỪA là độ dài cửa sổ giành lượt giữa các instance — một property cho cả hai
+      # để chúng không bao giờ lệch nhau (xem LedgerInvariantReconciler).
+      interval: PT1H
+      # Lượt đầu lùi lại để không quét ngay giữa lúc service vừa khởi động
+      initial-delay: PT1M
 
 eureka:
   client:

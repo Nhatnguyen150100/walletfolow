@@ -390,6 +390,97 @@ groups:
             VNPAY_HASH_SECRET đã lộ và xoay khoá.
           runbook: docs/runbooks/payment-provider-down.md
 
+      # -------------------------------------------------------------
+      # 🔴 Bất biến vàng SUM(postings) = 0 bị phá (roadmap 3.1, ADR-023)
+      # -------------------------------------------------------------
+      # Đây là alert nghiêm trọng NGANG DltNotEmpty, và theo một nghĩa thì hơn: DLT nói "một lệnh tiền
+      # chưa chạy", còn cái này nói "tiền đã tự sinh hoặc bốc hơi trong sổ cái". Không có error budget
+      # cho bất biến này (roadmap §3.4) nên ngưỡng là KHÁC 0, không phải "vượt một mức nào đó".
+      - alert: LedgerImbalance
+        expr: max by (job) (walletflow_ledger_imbalance_minor) > 0
+        for: 0m          # không chờ: sổ cái lệch một đồng cũng là sổ cái sai
+        labels:
+          severity: page
+        annotations:
+          summary: "Sổ cái LỆCH {{ $value }} minor ở {{ $labels.job }}"
+          description: >-
+            Tổng posting khác 0. Tiền tự sinh hoặc bốc hơi. KHÔNG sửa bảng ledger (append-only, có
+            trigger chặn) — tìm bút toán gây lệch trong reconciliation_breaks rồi quyết bằng REVERSAL.
+          runbook: docs/runbooks/reconciliation-break.md
+
+      # Chỗ lệch chưa có người xử lý. Dùng gauge (break đang mở) chứ không increase(): một break tồn
+      # tại cho tới khi CÓ NGƯỜI đóng nó, nên alert phải kêu suốt quãng đó chứ không tắt sau cửa sổ.
+      # 1 giờ để một lượt đối soát vừa phát hiện vừa tự dựng lại read model không gọi người lúc 3 giờ sáng.
+      - alert: ReconciliationBreakOpen
+        expr: max by (job, tier) (walletflow_reconciliation_breaks) > 0
+        for: 1h
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} chỗ lệch đối soát (tầng {{ $labels.tier }}) đang chờ người ở {{ $labels.job }}"
+          description: >-
+            Xem reconciliation_breaks có status = OPEN. Với tầng wallet, auto_repaired = true nghĩa là
+            số dư đã đúng lại — việc còn lại là tìm nguyên nhân, break không tự đóng.
+          runbook: docs/runbooks/reconciliation-break.md
+
+      # -------------------------------------------------------------
+      # 🔴 Chính JOB đối soát chết
+      # -------------------------------------------------------------
+      # "Job đối soát chết âm thầm còn tệ hơn không có job" (roadmap §3.1): hệ thống trông sạch đúng vì
+      # không ai kiểm nữa.
+      #
+      # TÁCH HAI RULE THEO TẦNG, không gộp: hai tầng có chu kỳ chênh nhau 24 lần (ledger 1h, wallet 24h).
+      # Một ngưỡng chung lấy theo tầng chậm sẽ cho phép job kiểm BẤT BIẾN VÀNG chết hơn hai ngày mới kêu.
+      #
+      # `absent()` cũng phải MANG NHÃN: absent(X) chỉ bằng 1 khi không còn series nào của X, nên một
+      # biểu thức chung sẽ im lặng khi ledger-service chết mà wallet-service vẫn sống — đúng cái ca
+      # alert này sinh ra để bắt.
+      - alert: ReconciliationStaleLedger
+        expr: |
+          (time() - max(walletflow_reconciliation_last_success_timestamp{tier="ledger"}) > 3 * 3600)
+          or absent(walletflow_reconciliation_last_success_timestamp{tier="ledger"})
+        for: 10m
+        labels:
+          severity: page
+          tier: ledger
+        annotations:
+          summary: "Đối soát sổ cái (tầng 1) không có lượt thành công nào trong 3 giờ"
+          description: >-
+            Bất biến SUM(postings) = 0 đang KHÔNG được kiểm. Xem reconciliation_runs ở ledgerdb: hàng
+            RUNNING bỏ lại = một lượt chết giữa chừng (cửa sổ đó KHÔNG tự chạy lại); hàng FAILED = lỗi
+            kỹ thuật, đọc failure_message.
+          runbook: docs/runbooks/reconciliation-break.md
+
+      - alert: ReconciliationStaleWallet
+        expr: |
+          (time() - max(walletflow_reconciliation_last_success_timestamp{tier="wallet"}) > 50 * 3600)
+          or absent(walletflow_reconciliation_last_success_timestamp{tier="wallet"})
+        for: 10m
+        labels:
+          severity: page
+          tier: wallet
+        annotations:
+          summary: "Đối soát read model (tầng 2) không có lượt thành công nào trong hai đêm"
+          description: >-
+            Read model đang không được so với sổ cái. Ngưỡng là HAI chu kỳ: lỡ một đêm còn chờ được,
+            lỡ hai đêm là có gì đó hỏng thật. Xem reconciliation_runs ở walletdb.
+          runbook: docs/runbooks/reconciliation-break.md
+
+      # Một LƯỢT hỏng (lô lỗi, hoặc chạm trần số chỗ lệch). Khác hai alert trên: ở đó mốc thành công
+      # phải GIÀ ĐI mới kêu — hàng giờ với tầng 1, hàng ngày với tầng 2. Counter này kêu ngay trong
+      # đêm, nên một lượt quét bỏ dở không lặng lẽ trôi qua tới tận lần hỏng thứ hai.
+      - alert: ReconciliationRunFailed
+        expr: increase(walletflow_reconciliation_failures_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Một lượt đối soát (tầng {{ $labels.tier }}) kết thúc FAILED ở {{ $labels.job }}"
+          description: >-
+            Đọc failure_message của hàng FAILED mới nhất trong reconciliation_runs. "Chạm trần số chỗ
+            lệch" nghĩa là lệch DIỆN RỘNG và quét chưa hết — ca đó leo thang ngay, đừng chờ lượt sau.
+          runbook: docs/runbooks/reconciliation-break.md
+
   - name: walletflow-availability
     interval: 30s
     rules:

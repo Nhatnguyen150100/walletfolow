@@ -25,6 +25,14 @@ spring:
     consumer:
       group-id: wallet-service   # group riêng: nhận ĐỦ event của ledger, độc lập với consumer khác
       auto-offset-reset: earliest
+  task:
+    scheduling:
+      pool:
+        # Mặc định Spring chỉ có MỘT thread cho mọi @Scheduled. Lượt đối soát quét cả bảng (và ở
+        # wallet-service còn gọi HTTP sang ledger cho từng lô) mà chiếm thread đó thì outbox relay
+        # đứng theo — event ghi sổ ra trễ đúng bằng thời gian quét, và alert OutboxStalled bắn mỗi
+        # lượt khi dữ liệu lớn lên. Cùng lý lẽ với bank-adapter.
+        size: 4
 
 walletflow:
   ledger:
@@ -37,6 +45,24 @@ walletflow:
       # Ví PENDING quá lâu thì gửi lại lệnh mở tài khoản (ledger trả lời idempotent — ADR-011)
       after: PT2M
       interval-ms: 60000
+    # Đối soát tầng 2 — read model so với sổ cái (roadmap 3.1, ADR-023)
+    reconciliation:
+      enabled: ${WALLET_RECONCILIATION_ENABLED:true}
+      # Vừa là nhịp chạy VỪA là độ dài cửa sổ giành lượt. Một lượt mỗi 24 giờ: phép so này gọi
+      # ledger cho mọi ví, nặng hơn hẳn tầng 1.
+      # LƯU Ý: `fixedDelay` tính từ lúc khởi động, nên lượt chạy vào GIỜ SERVICE ĐƯỢC DEPLOY + 24h,
+      # không phải ban đêm. Muốn đúng khung giờ thấp điểm thì phải chuyển sang cron (chưa làm).
+      interval: PT24H
+      initial-delay: PT2M
+      # Chỉ soi ví đã YÊN lâu hơn khoảng này. Read model là eventually consistent, nên so một ví vừa
+      # nhận bút toán vài giây trước sẽ báo lệch trong khi không có gì sai (ADR-023 §4).
+      settle-window: PT1M
+      # Số ví mỗi lô. Trần cứng là AccountBalancesRequest.MAX_REFS (500) — ledger từ chối lô lớn hơn.
+      batch-size: 200
+      # Trần số chỗ lệch mỗi lượt. Lệch DIỆN RỘNG (projector hỏng, restore nhầm bản DB cũ) là ca
+      # phải có người, không phải ca để máy tự sửa hàng chục nghìn lần — mỗi break kéo theo một lời
+      # gọi ledger và một transaction ghi. Chạm trần thì dừng quét và kêu.
+      max-breaks-per-run: 500
 
 eureka:
   client:

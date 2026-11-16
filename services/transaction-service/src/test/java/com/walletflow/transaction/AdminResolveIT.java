@@ -176,9 +176,15 @@ class AdminResolveIT {
         UUID requestId = propose(txn, ops, "OPS", "Hoàn tay", null);
 
         // Đi vòng qua mọi kiểm tra của Java: chốt chặn cuối phải là ràng buộc ở DB.
+        //
+        // Câu UPDATE phải thoả MỌI ràng buộc khác, chỉ phạm đúng 4-eyes — nếu không, nó bị từ chối
+        // vì một lý do khác và test không còn chứng minh được điều nó nói. Cụ thể: `checker_role`
+        // là bắt buộc khi đã quyết (ck_resolution_decided, siết ở V8 — ADR-021 A7), nên thiếu nó
+        // thì câu lệnh có thể nổ ở CHECK kia. Postgres KHÔNG cam kết thứ tự kiểm các CHECK, vì vậy
+        // cách duy nhất chắc chắn là làm cho 4-eyes là ràng buộc DUY NHẤT bị phạm.
         assertThatThrownBy(() -> jdbcTemplate.update(
-                "UPDATE resolution_requests SET checker_id = maker_id, status = 'APPROVED', "
-                        + "decided_at = now() WHERE id = ?", requestId))
+                "UPDATE resolution_requests SET checker_id = maker_id, checker_role = 'ADMIN', "
+                        + "status = 'APPROVED', decided_at = now() WHERE id = ?", requestId))
                 .hasMessageContaining("ck_resolution_four_eyes");
     }
 
