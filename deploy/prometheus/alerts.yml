@@ -466,6 +466,42 @@ groups:
             lỡ hai đêm là có gì đó hỏng thật. Xem reconciliation_runs ở walletdb.
           runbook: docs/runbooks/reconciliation-break.md
 
+      # Đối soát bank-adapter ↔ sổ cái (3.1 PR2a, ADR-024). Chu kỳ ngày như tầng 2 nên cùng ngưỡng hai đêm.
+      - alert: ReconciliationStaleBank
+        expr: |
+          (time() - max(walletflow_reconciliation_last_success_timestamp{tier="bank"}) > 50 * 3600)
+          or absent(walletflow_reconciliation_last_success_timestamp{tier="bank"})
+        for: 10m
+        labels:
+          severity: page
+          tier: bank
+        annotations:
+          summary: "Đối soát bank-adapter ↔ sổ cái không có lượt thành công nào trong hai đêm"
+          description: >-
+            Tiền qua cửa ngoài (provider) đang KHÔNG được so với sổ cái — một lần thu không vào sổ sẽ
+            không ai thấy. Xem reconciliation_runs ở railsdb (DB của bank-adapter); lỗi hay gặp nhất là bank-adapter không gọi
+            được ledger (LEDGER_URL).
+          runbook: docs/runbooks/reconciliation-break.md
+
+      # 🔴 Sổ cái ghi tiền vào mà provider không thu (ADR-024 §6). Tách khỏi ReconciliationBreakOpen
+      # (ticket) vì với loại này người dùng TIÊU ĐƯỢC số tiền không ai trả, ngay bây giờ. Nguyên nhân đã
+      # biết duy nhất là REFUND_POSTED_CONFLICT (lệnh nạp tới ledger sau khi đã hoàn); còn lại là lệnh ghi
+      # sổ đi vòng qua saga.
+      # Chiều ngược lại (PROVIDER_MONEY_NOT_POSTED) để ticket: nó có nguyên nhân đã biết là hoàn tay qua
+      # portal, page mỗi lần như thế là alert fatigue.
+      - alert: PostedWithoutProviderMoney
+        expr: max by (job) (walletflow_reconciliation_provider_ledger_open{type="POSTED_WITHOUT_PROVIDER_MONEY"}) > 0
+        for: 0m
+        labels:
+          severity: page
+          tier: bank
+        annotations:
+          summary: "{{ $value }} lệnh tiền có bút toán nạp mà provider không thu"
+          description: >-
+            Sổ cái ghi tiền qua EXTERNAL_BANK nhiều hơn provider đã thu. Xem reconciliation_breaks ở
+            railsdb (DB của bank-adapter) với type = POSTED_WITHOUT_PROVIDER_MONEY. Cân nhắc khoá ví liên quan trước khi điều tra.
+          runbook: docs/runbooks/reconciliation-break.md
+
       # Một LƯỢT hỏng (lô lỗi, hoặc chạm trần số chỗ lệch). Khác hai alert trên: ở đó mốc thành công
       # phải GIÀ ĐI mới kêu — hàng giờ với tầng 1, hàng ngày với tầng 2. Counter này kêu ngay trong
       # đêm, nên một lượt quét bỏ dở không lặng lẽ trôi qua tới tận lần hỏng thứ hai.

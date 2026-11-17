@@ -31,9 +31,16 @@ spring:
         # Mặc định Spring chỉ có MỘT thread cho mọi @Scheduled. Job đối chiếu gọi provider (mỗi lời gọi tới
         # resilience.timeout) mà chiếm thread đó thì outbox relay đứng theo — người dùng không nhận được URL
         # thanh toán và kết quả thu tiền trễ đúng lúc provider đang chậm.
-        size: 4
+        # 6 từ 3.1 PR2a: thêm lượt đối soát bank ↔ sổ cái (chạy lâu, hàng nghìn lời gọi ledger timeout 5s)
+        # và nhịp làm mới gauge — giữ chỗ cho outbox relay kể cả khi mọi job dài cùng chạy.
+        size: 6
 
 walletflow:
+  # Đường ĐỌC sang sổ cái — chỉ đối soát dùng (ADR-024). bank-adapter vẫn không ghi gì vào sổ cái.
+  ledger:
+    base-url: ${LEDGER_URL:http://localhost:8083}
+    connect-timeout: 2s
+    read-timeout: 5s
   bank:
     # BẮT BUỘC, không có mặc định: `mock` (máy dev/test) | `vnpay` (ADR-017). Thiếu biến thì service KHÔNG
     # khởi động. Một mặc định ở đây là cách MockProvider lọt lên môi trường thật và "thu" tiền giả —
@@ -94,6 +101,25 @@ walletflow:
       # walletflow.bank.webhook.abandoned — ca cần người đối soát. Không có trần thì một hàng không bao giờ
       # xử lý được sẽ ở lại tồn đọng mãi và dìm chết tín hiệu của gauge unprocessed.
       max-attempts: 10
+    # Đối soát bank-adapter ↔ sổ cái (roadmap 3.1 PR2a, ADR-024): tiền ròng qua cửa ngoài theo
+    # provider_transactions phải khớp tiền sổ cái ghi qua EXTERNAL_BANK, từng lệnh một. Chỉ phát hiện, không
+    # bao giờ tự sửa. Kết quả ở reconciliation_runs / reconciliation_breaks của railsdb.
+    reconciliation:
+      enabled: true
+      # Quét TOÀN BỘ mỗi lượt (chưa tăng dần — nợ ở ADR-024), nên chu kỳ ngày như tầng 2.
+      interval: PT24H
+      initial-delay: PT5M
+      # Chỉ so lệnh đã yên: saga ghi sổ SAU KHI lần thu chốt, qua outbox → Kafka → transaction-service → ledger.
+      # Bình thường vài giây; 1 giờ che cả lúc một service trong chuỗi đó khởi động lại. Ngắn quá thì mỗi lần
+      # deploy transaction-service sinh một loạt break giả; dài quá thì chỉ chậm phát hiện thêm một lượt.
+      settle-window: PT1H
+      # Trần trên của ledger cho mỗi lời gọi là 500 (kiểm lúc khởi động)
+      batch-size: 200
+      # Chạm trần thì dừng quét và gọi người — lệch diện rộng là ca phải có người (ADR-023 *Amendments* A3)
+      max-breaks-per-run: 500
+      # Nhịp đọc lại số break đang mở cho gauge, TÁCH khỏi lượt quét: alert page PostedWithoutProviderMoney
+      # phải tắt trong vài phút sau khi người trực đóng break, không phải sau lượt quét ngày hôm sau.
+      gauge-refresh: PT5M
     # Chỉ có tác dụng khi provider = vnpay. Mọi biến VNPAY_* BẮT BUỘC, không có mặc định — kể cả URL: URL
     # sandbox lọt lên môi trường thật là "thu" tiền giả mà cộng tiền thật (profile prod từ chối sandbox).
     vnpay:

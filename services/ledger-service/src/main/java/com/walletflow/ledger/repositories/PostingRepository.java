@@ -2,6 +2,7 @@ package com.walletflow.ledger.repositories;
 
 import com.walletflow.ledger.dto.BalanceRow;
 import com.walletflow.ledger.dto.EntryLineRow;
+import com.walletflow.ledger.dto.ExternalMovementRow;
 import com.walletflow.ledger.dto.ImbalanceRow;
 import com.walletflow.ledger.dto.StatementRow;
 import com.walletflow.ledger.entity.Posting;
@@ -158,6 +159,35 @@ public interface PostingRepository extends Repository<Posting, UUID> {
     List<BalanceRow> balancesOf(@Param("tenantId") UUID tenantId,
                                 @Param("currency") String currency,
                                 @Param("refs") Collection<String> refs);
+
+    /**
+     * Tiền RÒNG mỗi lệnh tiền đã đưa vào hệ thống qua {@code EXTERNAL_BANK}, theo từng loại tiền —
+     * phía sổ cái của đối soát bank-adapter ↔ sổ cái (roadmap 3.1 PR2a, ADR-024 §2).
+     *
+     * <p>{@code -SUM} vì một lần nạp ghi NỢ {@code EXTERNAL_BANK}: tiền rời "thế giới bên ngoài" để
+     * vào ví. Cố ý KHÔNG lọc theo loại bút toán: {@code REVERSAL} của một lần nạp tự triệt tiêu nó, và
+     * bất cứ bút toán nào khác chạm {@code EXTERNAL_BANK} cũng là tiền qua cửa ngoài — tức là đúng thứ
+     * phải khớp với provider. Lọc theo loại sẽ giấu đúng bút toán lạ cần bắt.
+     *
+     * <p>Lệnh không có vế nào ở {@code EXTERNAL_BANK} KHÔNG có mặt trong kết quả: INNER JOIN ở đây là
+     * chủ ý, người gọi hiểu "vắng" là 0. Một vế trỏ vào tài khoản đã mất cũng biến mất — ca đó là việc
+     * của tầng 1 ({@link #totalOfSystem}), không phải của phép so này.
+     *
+     * <p>Lọc tenant ở CẢ BA bảng, cùng lý do như {@link #statementOf}. Đi được bằng
+     * {@code uk_journal_tenant_txn_type} và {@code idx_postings_tenant_entry} (V7), không cần index mới.
+     */
+    @Query(value = """
+            SELECT j.transaction_id AS "transactionId", a.currency AS "currency",
+                   -SUM(p.amount_minor) AS "netInMinor"
+              FROM journal_entries j
+              JOIN postings p ON p.entry_id = j.id AND p.tenant_id = :tenantId
+              JOIN accounts a ON a.id = p.account_id AND a.tenant_id = :tenantId
+             WHERE j.tenant_id = :tenantId AND j.transaction_id IN (:transactionIds)
+               AND a.external_ref = 'EXTERNAL_BANK' AND a.type = 'SYSTEM'
+             GROUP BY j.transaction_id, a.currency
+            """, nativeQuery = true)
+    List<ExternalMovementRow> externalMovementsOf(@Param("tenantId") UUID tenantId,
+                                                  @Param("transactionIds") Collection<UUID> transactionIds);
 
     long countByTenantId(UUID tenantId);
 
