@@ -35,6 +35,10 @@ jwt:
   # 15 phút: access token không thu hồi được, nên thời hạn ngắn chính là cơ chế thu hồi.
   access-ttl-seconds: ${JWT_ACCESS_TTL_SECONDS:900}
   refresh-ttl-days: ${JWT_REFRESH_TTL_DAYS:30}
+  # Khoá HMAC băm refresh token trước khi lưu. Cũng KHÔNG có mặc định (bất biến §6): một khoá mặc
+  # định trong repo nghĩa là ai đọc repo cũng dựng lại được hash của mọi refresh token trong DB, và
+  # hash lúc đó chỉ còn là một phép mã hoá công khai chứ không bảo vệ gì.
+  refresh-secret-key: ${JWT_REFRESH_SECRET_KEY}
 
 auth:
   # Tenant mà endpoint đăng ký/đăng nhập công khai phục vụ (roadmap 1.0b). Đây là ĐỊNH DANH, không
