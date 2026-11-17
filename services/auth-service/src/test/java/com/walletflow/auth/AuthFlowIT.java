@@ -76,6 +76,9 @@ class AuthFlowIT {
                 () -> Base64.getEncoder().encodeToString(KEY_PAIR.getPrivate().getEncoded()));
         registry.add("jwt.public-key",
                 () -> Base64.getEncoder().encodeToString(KEY_PAIR.getPublic().getEncoded()));
+        // Khoá HMAC băm refresh token — không có mặc định trong application.yml (bất biến §6), nên
+        // test phải tự cấp, y như hai khoá RSA ở trên.
+        registry.add("jwt.refresh-secret-key", () -> "khoa-hmac-chi-dung-trong-test-khong-phai-bi-mat");
     }
 
     @LocalServerPort

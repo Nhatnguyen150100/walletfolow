@@ -2,14 +2,15 @@ package com.walletflow.auth.service;
 
 import com.walletflow.auth.entity.RefreshToken;
 import com.walletflow.auth.repository.RefreshTokenRepository;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.security.MessageDigest;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
@@ -35,7 +36,6 @@ import java.util.UUID;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class RefreshTokenService {
 
   public static final String REASON_ROTATED = "ROTATED";
@@ -49,6 +49,27 @@ public class RefreshTokenService {
 
   @Value("${jwt.refresh-ttl-days}")
   private int refreshTtlDays;
+
+  /**
+   * Khoá HMAC để băm refresh token. KHÔNG được là {@code static}: Spring không inject {@code @Value}
+   * vào field tĩnh — nó im lặng để nguyên {@code null}, và mọi lần băm sẽ ném NPE (bị
+   * {@code catch (Exception)} ở {@link #hash} đổi thành "Không băm được refresh token"). Tức là cả
+   * đường đăng nhập/refresh chết, mà build vẫn xanh nếu không có IT chạm tới.
+   *
+   * <p>Không có giá trị mặc định (bất biến §6): thiếu {@code JWT_REFRESH_SECRET_KEY} thì service
+   * phải KHÔNG khởi động, chứ không được tự chọn một khoá yếu.
+   */
+  private final String secretKey;
+
+  public RefreshTokenService(RefreshTokenRepository refreshTokenRepository,
+                             @Value("${jwt.refresh-secret-key}") String secretKey) {
+    if (secretKey == null || secretKey.isBlank()) {
+      throw new IllegalStateException(
+          "jwt.refresh-secret-key rỗng — đặt JWT_REFRESH_SECRET_KEY trước khi khởi động (ADR-009)");
+    }
+    this.refreshTokenRepository = refreshTokenRepository;
+    this.secretKey = secretKey;
+  }
 
   /** Giá trị thô CHỈ tồn tại ở đây và trong response; database chỉ giữ hash của nó. */
   public record Issued(String rawToken, RefreshToken stored) {
@@ -118,10 +139,20 @@ public class RefreshTokenService {
    * gian đó. Dùng BCrypt ở đây chỉ làm mỗi lần refresh chậm thêm hàng trăm mili giây mà không mua
    * về thêm gì.
    */
-  private static String hash(String rawToken) {
+  private String hash(String rawToken) {
     try {
-      return HexFormat.of().formatHex(
-          MessageDigest.getInstance("SHA-256").digest(rawToken.getBytes()));
+      Mac mac = Mac.getInstance("HmacSHA256");
+
+      SecretKeySpec key = new SecretKeySpec(
+          secretKey.getBytes(StandardCharsets.UTF_8),
+          "HmacSHA256"
+      );
+
+      mac.init(key);
+
+      byte[] bytes = mac.doFinal(rawToken.getBytes(StandardCharsets.UTF_8));
+
+      return HexFormat.of().formatHex(bytes);
     } catch (Exception e) {
       throw new IllegalStateException("Không băm được refresh token", e);
     }
