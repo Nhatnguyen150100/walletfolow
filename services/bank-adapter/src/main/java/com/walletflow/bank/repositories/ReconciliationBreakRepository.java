@@ -57,16 +57,27 @@ public interface ReconciliationBreakRepository extends Repository<Reconciliation
                @Param("actual") long actualMinor,
                @Param("detail") String detail);
 
-    /** Đóng một break. {@code WHERE status = 'OPEN'} để gọi lại không ghi đè người đóng lần đầu. */
+    /**
+     * Đóng một break (ADR-025 §3). {@code WHERE status = 'OPEN'} để gọi lại không ghi đè người đóng
+     * lần đầu — câu lệnh idempotent, lần thứ hai thấy 0 hàng.
+     *
+     * <p><b>Lọc {@code tenant_id} dù {@code id} đã là khoá chính.</b> Id break là UUID nên "không
+     * đoán được", nhưng không-đoán-được chưa bao giờ là mô hình bảo mật của ADR-010 — và đúng loại
+     * lỗi này đã phải trả một lần ở {@code SagaRepository} (ADR-021 B5). Tenant sai ⇒ 0 hàng đổi,
+     * người gọi dịch thành "không có break đó".
+     *
+     * @return 1 nếu vừa đóng, 0 nếu không có break đang mở nào khớp (sai id, sai tenant, hoặc đã đóng)
+     */
     @Transactional
     @Modifying(clearAutomatically = true)
     @Query(value = """
             UPDATE reconciliation_breaks
                SET status = 'CLOSED', closed_at = now(), closed_by = :closedBy,
                    closed_note = :note, updated_at = now()
-             WHERE id = :id AND status = 'OPEN'
+             WHERE id = :id AND tenant_id = :tenantId AND status = 'OPEN'
             """, nativeQuery = true)
     int close(@Param("id") UUID id,
+              @Param("tenantId") UUID tenantId,
               @Param("closedBy") UUID closedBy,
               @Param("note") String note);
 

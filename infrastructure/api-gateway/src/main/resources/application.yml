@@ -61,6 +61,25 @@ spring:
                 redis-rate-limiter.replenishRate: 10
                 redis-rate-limiter.burstCapacity: 20
 
+        # Hàng đợi chỗ lệch đối soát (roadmap 3.3, ADR-025). Cùng service và cùng mô hình vai với
+        # `transaction-admin`, nhưng là một route RIÊNG vì nó là một tiền tố đường dẫn khác —
+        # `/api/v1/admin/transactions/**` không khớp `/api/v1/admin/reconciliation/**`, và thiếu
+        # route thì lời gọi qua được kiểm vai rồi chết 404 ở gateway.
+        #
+        # Rate limit NGANG `transaction-admin` (10/20), không chặt hơn: một lần mở màn hình này đã
+        # fan-out sang ba service phía sau, và người trực hay bấm tải lại trong lúc đang có sự cố —
+        # siết ở đây là chặn đúng người đang chữa cháy.
+        - id: transaction-admin-reconciliation
+          uri: lb://TRANSACTION-SERVICE
+          predicates:
+            - Path=/api/v1/admin/reconciliation/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@userKeyResolver}"
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+
         # ----- Các route sau sẽ hoạt động khi service tương ứng ra đời (milestone sau) -----
         # Lệnh ghi tiền: rate limit theo user đã xác thực (chống spam giao dịch)
         - id: transaction-service

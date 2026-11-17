@@ -49,6 +49,19 @@ public record Operator(UUID id, String email, String role, String ip) {
                 "Vai này chỉ được đọc, không đề xuất được thao tác xử lý");
     }
 
+    /**
+     * Người ĐÓNG một chỗ lệch đối soát (roadmap 3.3, ADR-025 §3).
+     *
+     * <p>Dùng chung tập vai với {@link #requireProposer} và đó là một quyết định, không phải tiện
+     * tay: đóng break KHÔNG tạo chuyển động tiền nào — nó ghi lại một phán đoán ("đã hiểu nguyên
+     * nhân") — nên nó không cần 4-eyes, nhưng cũng không được để {@code AUDITOR} làm. Một vai kiểm
+     * toán mà sửa được chính thứ mình kiểm toán thì mất ý nghĩa.
+     */
+    public static Operator requireBreakCloser(UUID id, String email, String role, String ip) {
+        return require(id, email, role, ip, MAY_PROPOSE,
+                "Vai này chỉ được đọc, không đóng được chỗ lệch đối soát");
+    }
+
     /** Người DUYỆT — nửa thứ hai của 4-eyes. Còn một điều kiện nữa: không được là người đề xuất. */
     public static Operator requireApprover(UUID id, String email, String role, String ip) {
         return require(id, email, role, ip, MAY_APPROVE,

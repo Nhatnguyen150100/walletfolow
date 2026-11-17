@@ -111,7 +111,7 @@ Mỗi GAP có mã để tham chiếu từ phần Phase bên dưới. Cột **M�
 | **B2** | Access token sống **24 giờ**, không refresh token, không logout, không thu hồi. Mất token = mất ví trong 1 ngày. | 🔴 | Phase 0–1 |
 | **B3** | `JwtAuthenticationFilter` **bỏ qua hoàn toàn** với path công khai → header `X-User-Id` do client tự gửi đi thẳng xuống downstream trên các path đó. Hiện chưa khai thác được (chưa có endpoint tiền công khai), nhưng quy tắc đúng là **strip vô điều kiện trên mọi path**. | 🟠 Bẫy chờ nổ | Phase 0 |
 | **B4** | `spring.cloud.gateway.discovery.locator.enabled: true` → **mọi** service đăng ký Eureka tự động có đường vào qua `/{service-id}/**`, kể cả service không định public. | 🟠 | Phase 0 |
-| **B5** | `ledger-service` map cổng `8083` ra host. Service nội bộ **tin tuyệt đối** header `X-User-*`. Lộ mạng = bypass xác thực hoàn toàn. | 🔴 | Phase 0 / 4 |
+| **B5** | `ledger-service` map cổng `8083` ra host. Service nội bộ **tin tuyệt đối** header `X-User-*`. Lộ mạng = bypass xác thực hoàn toàn. **Nặng thêm từ 3.3 PR1**: `/internal/**` nay có đường **GHI** đầu tiên (`POST /internal/reconciliation/breaks/{id}/close`) — ai chạm được mạng cụm thì xoá được một tín hiệu đối soát mà không để lại audit ([ADR-025](adr/ADR-025-break-closing-admin.md) Consequences; runbook có phép đối chiếu phát hiện). | 🔴 | Phase 0 / 4 |
 | **B6** | Không TLS, không mTLS, không network policy, không quản lý bí mật (Vault / External Secrets / SOPS). | 🔴 | Phase 4 |
 | **B7** | Không audit log, không mã hoá PII, không chính sách mật khẩu / khoá tài khoản / MFA. | 🟠 | Phase 1, 5 |
 
@@ -984,12 +984,13 @@ ghi `MANUAL_REVIEW`, chúng chỉ là metric + log. Cần một quyết định 
 > **Mục tiêu:** mỗi sáng có một báo cáo **chứng minh** tiền không sai. Đây là ranh giới thật giữa
 > "hệ thống chạy được" và "hệ thống dám cho khách hàng dùng".
 
-### Trạng thái Phase 3 (cập nhật 2026-11-16)
+### Trạng thái Phase 3 (cập nhật 2026-11-17)
 
 | Mục | Trạng thái | PR |
 |---|---|---|
 | 3.1 (PR1) Đối soát tầng 1 + tầng 2 — bất biến sổ cái, read model vs ledger, bảng `reconciliation_runs`/`reconciliation_breaks` mỗi service, 4 metric + 5 alert + runbook ([ADR-023](adr/ADR-023-reconciliation-internal.md), *Amendments* A5 sửa con số) | ✅ | `211326d` (đẩy thẳng `master`, không qua PR) |
-| 3.1 (PR2a) Đối soát bank-adapter ↔ sổ cái — tiền ròng qua `EXTERNAL_BANK` vs `provider_transactions`, hai chiều quét, không cần sao kê ([ADR-024](adr/ADR-024-reconciliation-provider-ledger.md)) | 🟡 `feat/phase-3-reconciliation-provider-ledger` | |
+| 3.1 (PR2a) Đối soát bank-adapter ↔ sổ cái — tiền ròng qua `EXTERNAL_BANK` vs `provider_transactions`, hai chiều quét, không cần sao kê ([ADR-024](adr/ADR-024-reconciliation-provider-ledger.md)) | ✅ | #48 |
+| 3.3 (PR1) Đóng break có dấu vết — hàng đợi gom ba nguồn + `POST .../close`, audit ở txndb, sửa lỗi `close()` thiếu tenant ([ADR-025](adr/ADR-025-break-closing-admin.md)) | 🟡 `feat/phase-3-break-admin` | |
 | 3.1 (PR2b) Đối soát tầng 3 — sao kê/settlement của provider ↔ `provider_transactions` | ⬜ chưa rõ VNPay sandbox có cho tải settlement file không; quyết trước khi bắt đầu | |
 
 Phase 2 vẫn **chưa đóng**: hai ô DoD còn trống đều nằm ngoài tầm code (một lần nạp tay trên merchant
@@ -1059,10 +1060,11 @@ cố ý làm lệch → job phát hiện đúng loại, đúng số tiền.
   (Không có công cụ này thì DLT chỉ là nơi chôn message.)
 - `docs/runbooks/` — mỗi alert có **một** runbook: triệu chứng → chẩn đoán → cách xử lý → cách leo thang.
   Tối thiểu: `dlt-not-empty.md` ✅, `outbox-stalled.md` ✅, `reconciliation-break.md` ✅ (3.1 PR1),
-  `saga-stuck.md` ✅, `payment-provider-down.md` ✅, `restore.md` ✅ — còn thiếu **API đóng break** +
-  màn hình cho người trực, hiện `reconciliation-break.md` phải đóng bằng SQL tay (không có audit). Gấp
-  hơn sau 3.1 PR2a: mỗi lần hoàn tay qua portal VNPay để lại một break `PROVIDER_MONEY_NOT_POSTED` phải
-  đóng bằng tay ([ADR-024](adr/ADR-024-reconciliation-provider-ledger.md) §5).
+  `saga-stuck.md` ✅, `payment-provider-down.md` ✅, `restore.md` ✅.
+  ~~Còn thiếu **API đóng break** + màn hình cho người trực~~ — **đã làm ở 3.3 PR1**
+  ([ADR-025](adr/ADR-025-break-closing-admin.md)): `GET /api/v1/admin/reconciliation/breaks` gom ba
+  nguồn, `POST .../{source}/{breakId}/close` có audit hai dòng ở txndb, vai ADMIN/OPS, không 4-eyes.
+  Sửa kèm một lỗi: `close()` ở cả ba repository không lọc `tenant_id` (trái ADR-010).
 - Script điều tra: "giao dịch X đã đi qua những đâu" — gom log + trace + bút toán + provider response
   theo `transactionId`.
 
