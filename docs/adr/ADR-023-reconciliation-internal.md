@@ -198,8 +198,10 @@ nhầm một bản walletdb cũ) không có trần sẽ biến chính lượt đ
   alert. Không mất dữ liệu (phép kiểm là toàn bảng, không incremental) nhưng khoảng trống là thật.
 - **`fixedDelay` tính từ lúc khởi động**, nên tầng 2 chạy vào *giờ deploy + 24h*, không phải ban
   đêm như roadmap viết. Muốn đúng khung giờ thấp điểm thì phải chuyển sang cron.
-- **Chưa có API đóng break** — runbook đóng bằng SQL tay, nên thao tác đó **không** để lại
-  `audit_events`. `ReconciliationBreakRepository.close`/`findOpen` đã có sẵn, chờ controller ở 3.3.
+- ~~**Chưa có API đóng break** — runbook đóng bằng SQL tay, nên thao tác đó **không** để lại
+  `audit_events`.~~ **Đã trả ở 3.3 PR1** ([ADR-025](ADR-025-break-closing-admin.md)): hàng đợi gom ba
+  nguồn + `POST .../close`, audit hai dòng ở txndb. Trả kèm một lỗi phát hiện lúc đó: `close()` ở cả
+  ba repository **không lọc `tenant_id`** (trái ADR-010) — nay đã lọc, mỗi service một IT chứng minh.
 
 ### A5. Sửa con số + tầng 3 tách đôi (2026-11-16, 3.1 PR2a)
 

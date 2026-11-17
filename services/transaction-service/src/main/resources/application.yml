@@ -27,6 +27,13 @@ spring:
       auto-offset-reset: earliest
 
 walletflow:
+  admin:
+    breaks:
+      # Timeout cho màn hình chỗ lệch đối soát (3.3, ADR-025). Tách khỏi namespace per-service vì
+      # MỘT lời gọi ở đây fan-out sang CẢ BA service: tổng thời gian chờ xấu nhất là 3 × read-timeout,
+      # và người trực đang mở màn hình giữa lúc sự cố thì thà thiếu một ô còn hơn treo.
+      connect-timeout: 1s
+      read-timeout: 2s
   wallet:
     # API nội bộ của wallet-service — kiểm ví nguồn/ví nhận trước khi nhận lệnh. Không qua gateway.
     base-url: ${WALLET_URL:http://localhost:8082}

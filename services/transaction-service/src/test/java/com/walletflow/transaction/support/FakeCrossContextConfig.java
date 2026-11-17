@@ -5,8 +5,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 
 /**
- * Thay {@code HttpLedgerEntriesClient} và {@code HttpProviderContextClient} bằng fake trong test
- * (2.5 PR3) — phụ thuộc HTTP sang service khác luôn thay bằng fake, không mock (CLAUDE.md).
+ * Thay {@code HttpLedgerEntriesClient}, {@code HttpProviderContextClient} (2.5 PR3) và
+ * {@code HttpBreakClient} (3.3) bằng fake trong test — phụ thuộc HTTP sang service khác luôn thay
+ * bằng fake, không mock (CLAUDE.md).
  */
 @TestConfiguration
 public class FakeCrossContextConfig {
@@ -21,5 +22,11 @@ public class FakeCrossContextConfig {
     @Primary
     public FakeProviderContextClient fakeProviderContextClient() {
         return new FakeProviderContextClient();
+    }
+
+    @Bean
+    @Primary
+    public FakeBreakClient fakeBreakClient() {
+        return new FakeBreakClient();
     }
 }

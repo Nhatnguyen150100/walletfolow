@@ -155,22 +155,78 @@ docker exec wf-postgres psql -U walletflow -d ledgerdb -c \
 
 ## D. Đóng một break
 
-Chỉ đóng khi **đã hiểu nguyên nhân** và đã xử lý (hoặc đã mở issue có chủ sở hữu). Hiện chưa có API
-đóng break — đóng bằng SQL **trong đúng DB của tầng đó** (`-d ledgerdb` / `walletdb` / `railsdb`), và
-ghi `closed_by` là **id người thật**, không phải một UUID tuỳ ý:
+Chỉ đóng khi **đã hiểu nguyên nhân** và đã xử lý (hoặc đã mở issue có chủ sở hữu).
+
+### Xem hàng đợi (gom cả ba tầng)
 
 ```bash
-docker exec wf-postgres psql -U walletflow -d walletdb -c \
-  "UPDATE reconciliation_breaks
-      SET status = 'CLOSED', closed_at = now(), closed_by = '<user-id>',
-          closed_note = '<nguyên nhân + số issue>', updated_at = now()
-    WHERE id = '<break-id>' AND status = 'OPEN';"
+curl -s -H "Authorization: Bearer <token>" \
+  "http://gateway:8080/api/v1/admin/reconciliation/breaks?limit=50"
 ```
 
-`ck_recon_break_closed` cưỡng chế: đóng mà thiếu `closed_by` hoặc `closed_at` thì câu lệnh bị từ chối.
+Mỗi nguồn (`ledger` / `wallet` / `bank`) là một ô. **Đọc cờ `available` trước khi đọc danh sách:**
+`available=false` với danh sách rỗng nghĩa là *không hỏi được service đó*, **không** phải "không có
+chỗ lệch nào". `complete=false` ở mức trên cùng nói đúng điều đó — `totalOpen` lúc ấy chỉ là phần
+đếm được.
 
-> **Nợ đã biết:** API đóng break + màn hình cho người trực thuộc 3.3 (công cụ vận hành). Tới lúc đó
-> thao tác này là SQL tay — và vì vậy nó **không** để lại `audit_events`. Ghi lại vào issue.
+### Đóng
+
+```bash
+curl -s -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"reason":"<nguyên nhân + số issue/mã hoàn trên portal>"}' \
+  "http://gateway:8080/api/v1/admin/reconciliation/breaks/<ledger|wallet|bank>/<break-id>/close"
+```
+
+- Vai: **ADMIN hoặc OPS**. `AUDITOR` xem được hàng đợi nhưng không đóng được.
+- **Không cần 4-eyes** — đóng break không tạo chuyển động tiền ([ADR-025](../adr/ADR-025-break-closing-admin.md) §3).
+  Thao tác đụng tiền thật (`MARK_REFUNDED_MANUALLY`, `REVERSE_LEDGER_ENTRY`) vẫn đi `POST /resolve`
+  và vẫn cần người thứ hai duyệt.
+- `reason` **bắt buộc**. Để trống ⇒ 400.
+- `404` = không có chỗ lệch đang mở nào khớp: sai id, **của tenant khác**, hoặc đã có người đóng rồi.
+- `503 BREAK_SOURCE_UNAVAILABLE` = không hỏi được service sở hữu. **Chưa biết break đã đóng hay
+  chưa** — mở lại hàng đợi để xem, đừng gửi lại một cách mù quáng.
+
+### Đọc dấu vết
+
+Mọi lần đóng để lại **hai** dòng trong `audit_events` (txndb), `target = '<nguồn>:<break-id>'`:
+
+```bash
+docker exec wf-postgres psql -U walletflow -d txndb -c \
+  "SELECT created_at, actor_email, actor_role, action, target, detail
+     FROM audit_events WHERE action LIKE 'BREAK%' ORDER BY created_at DESC LIMIT 20;"
+```
+
+`BREAK_CLOSE_REQUESTED` (ý định) rồi `BREAK_CLOSED` hoặc `BREAK_CLOSE_FAILED` (kết quả).
+
+> **Một `BREAK_CLOSE_REQUESTED` không có dòng kết quả đi kèm là BÌNH THƯỜNG, không phải dữ liệu
+> hỏng.** Việc đóng nằm ở DB của service khác, sau một lời gọi HTTP, nên không transaction nào bao
+> được cả hai. Thứ tự cố ý là audit-trước-đóng-sau: hỏng ở giữa thì audit **thừa** một dòng "đã thử",
+> chứ không bao giờ **thiếu** dấu vết của một lần đóng đã xảy ra ([ADR-025](../adr/ADR-025-break-closing-admin.md) §2).
+> Gặp dòng lẻ thì tra `reconciliation_breaks` ở service đó để biết break thực sự đóng chưa.
+
+**Chiều ngược lại thì KHÔNG bình thường.** Một break `CLOSED` mà **không** có cặp dòng nào trong
+`audit_events` nghĩa là nó bị đóng *không đi qua* màn hình quản trị — hoặc bằng `UPDATE` tay, hoặc
+bằng một lời gọi thẳng vào `/internal/reconciliation/breaks/.../close` trong mạng cụm (đường đó
+không xác thực — [ADR-025](../adr/ADR-025-break-closing-admin.md) Consequences). Đối chiếu định kỳ:
+
+```bash
+# Lấy break đã đóng ở một tầng, rồi tìm dấu vết tương ứng bên txndb
+docker exec wf-postgres psql -U walletflow -d ledgerdb -At -c \
+  "SELECT id FROM reconciliation_breaks WHERE status='CLOSED' AND closed_at > now() - interval '7 days';" \
+| while read id; do
+    n=$(docker exec wf-postgres psql -U walletflow -d txndb -At -c \
+      "SELECT count(*) FROM audit_events WHERE target = 'ledger:$id' AND action = 'BREAK_CLOSED';")
+    [ "$n" = "0" ] && echo "KHÔNG CÓ DẤU VẾT: $id"
+  done
+```
+
+Ra kết quả ⇒ coi như sự cố bảo mật, không phải lỗi dữ liệu: ai đó đóng được một tín hiệu đối soát mà
+sổ kiểm toán không biết.
+
+**Đóng break không sửa nguyên nhân.** Lượt đối soát sau gặp lại đúng chỗ lệch đó sẽ ghi một hàng
+**mới** (`uk_recon_break_open` chỉ ràng buộc hàng `OPEN`). Đóng nhầm thì đêm sau nó quay lại.
+
+`ck_recon_break_closed` ở DB vẫn cưỡng chế: không có `closed_by`/`closed_at` thì không `CLOSED` được.
 
 ---
 
